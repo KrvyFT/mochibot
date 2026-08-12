@@ -1,0 +1,2845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>🍡 MochiBot 管理后台</title>
+<style>
+:root {
+  --primary: #D4785C;
+  --primary-hover: #B8604A;
+  --primary-bg: #FDF5F2;
+  --dango-pink: #E8A0BF;
+  --dango-green: #7BAE7F;
+  --bg: #FAF7F4;
+  --card: #FFFFFF;
+  --text: #4A4543;
+  --text-heading: #2D2926;
+  --text-soft: #9A9593;
+  --border: #E8DDD4;
+  --success: #7BAE7F;
+  --danger: #C9544D;
+  --warning: #D4A84C;
+  --radius: 12px;
+  --shadow: 0 2px 12px rgba(180,96,74,0.08);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--text); display:flex; min-height:100vh; }
+/* ── Sidebar ─────────────────────────── */
+.sidebar { width:220px; background:var(--card); border-right:1px solid var(--border); display:flex; flex-direction:column; position:fixed; top:0; left:0; bottom:0; z-index:10; }
+.sidebar-header { padding:20px 16px 12px; border-bottom:1px solid var(--border); text-align:center; }
+.sidebar-header h1 { font-size:18px; color:var(--text-heading); }
+.sidebar-header .logo { font-size:32px; display:block; margin-bottom:4px; }
+.sidebar-nav { flex:1; padding:12px 8px; }
+.nav-item { display:flex; align-items:center; gap:8px; padding:10px 12px; border-radius:8px; cursor:pointer; font-size:14px; color:var(--text); border:none; background:none; width:100%; text-align:left; transition:background .15s; }
+.nav-item:hover { background:var(--primary-bg); }
+.nav-item.active { background:var(--primary-bg); color:var(--primary); font-weight:600; }
+.nav-icon { font-size:16px; width:20px; text-align:center; }
+/* ── Content ─────────────────────────── */
+.content { margin-left:220px; flex:1; padding:24px 32px; max-width:1100px; }
+.page { display:none; }
+.page.active { display:block; }
+.page-title { font-size:22px; font-weight:700; color:var(--text-heading); margin-bottom:20px; }
+/* ── Cards ────────────────────────────── */
+.card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:20px; margin-bottom:16px; box-shadow:var(--shadow); }
+.card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-soft); margin-bottom:12px; }
+.card-row { display:flex; gap:16px; }
+.card-row > .card { flex:1; }
+/* ── Buttons ──────────────────────────── */
+.btn { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .15s; }
+.btn-primary { background:var(--primary); color:#fff; border-color:var(--primary); }
+.btn-primary:hover { background:var(--primary-hover); }
+.btn-ghost { background:transparent; color:var(--primary); border-color:var(--border); }
+.btn-ghost:hover { background:var(--primary-bg); border-color:var(--primary); }
+.btn-danger { background:var(--danger); color:#fff; }
+.btn-danger:hover { opacity:.85; }
+.btn-sm { padding:5px 12px; font-size:12px; }
+/* ── Badges ───────────────────────────── */
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; font-weight:600; }
+.badge-ok { background:#e8f5e9; color:#2e7d32; }
+.badge-warn { background:#fff3e0; color:#e65100; }
+.badge-err { background:#ffebee; color:#c62828; }
+.badge-info { background:var(--primary-bg); color:var(--primary); }
+.badge-gray { background:#f0ebe5; color:#7a7573; }
+/* ── Toggle ───────────────────────────── */
+.toggle { position:relative; width:42px; height:24px; display:inline-block; }
+.toggle input { opacity:0; width:0; height:0; }
+.toggle .slider { position:absolute; inset:0; background:#ccc; border-radius:24px; cursor:pointer; transition:.2s; }
+.toggle .slider::before { content:""; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.2s; }
+.toggle input:checked + .slider { background:var(--success); }
+.toggle input:checked + .slider::before { transform:translateX(18px); }
+/* ── Inputs ───────────────────────────── */
+.form-group { margin-bottom:12px; }
+.form-label { display:block; font-size:12px; font-weight:600; color:var(--text-soft); margin-bottom:4px; text-transform:uppercase; letter-spacing:.3px; }
+.form-input { width:100%; padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; color:var(--text); background:var(--card); transition:border .15s; }
+.form-input:focus { outline:none; border-color:var(--primary); }
+select.form-input { cursor:pointer; }
+/* ── Table ────────────────────────────── */
+.tbl { width:100%; border-collapse:collapse; font-size:13px; }
+.tbl th { text-align:left; padding:8px 10px; border-bottom:2px solid var(--border); font-size:11px; text-transform:uppercase; color:var(--text-soft); }
+.tbl td { padding:8px 10px; border-bottom:1px solid var(--border); vertical-align:middle; }
+.tbl tr:last-child td { border-bottom:none; }
+/* ── Toast ────────────────────────────── */
+.toast { position:fixed; bottom:24px; right:24px; background:var(--text-heading); color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; opacity:0; transform:translateY(10px); transition:all .3s; pointer-events:none; z-index:999; }
+.toast.show { opacity:1; transform:translateY(0); }
+/* ── Modal ────────────────────────────── */
+.modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:100; display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity .2s; }
+.modal-overlay.open { opacity:1; pointer-events:auto; }
+.modal { background:var(--card); border-radius:var(--radius); padding:24px; width:520px; max-height:85vh; overflow-y:auto; box-shadow:0 8px 32px rgba(0,0,0,.15); }
+.modal h3 { margin-bottom:16px; color:var(--text-heading); }
+.modal-footer { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
+/* ── Status check ─────────────────────── */
+.check-row { display:flex; align-items:center; gap:8px; padding:6px 0; font-size:14px; }
+.check-icon { font-size:16px; width:20px; text-align:center; }
+/* ── Transport selector cards ────────── */
+.tp-cfg-btns { display:flex; gap:8px; margin:8px 0 4px; }
+.tp-cfg-btn { padding:6px 14px; border:1px solid var(--border); border-radius:20px; font-size:13px; font-weight:500; cursor:pointer; background:var(--bg); color:var(--text); transition:all .15s; }
+.tp-cfg-btn:hover { border-color:var(--primary); color:var(--primary); }
+.tp-cfg-btn.active { border-color:var(--primary); background:var(--primary-bg); color:var(--primary); }
+/* ── Stat cards ───────────────────────── */
+.stat-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:12px; margin-bottom:16px; }
+.stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; text-align:center; }
+.stat-number { font-size:28px; font-weight:700; color:var(--primary); }
+.stat-label { font-size:12px; color:var(--text-soft); margin-top:4px; }
+/* ── Loading ──────────────────────────── */
+.loading { text-align:center; padding:40px; color:var(--text-soft); }
+.spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+/* ── Bot log panel ───────────────────── */
+.bot-log { max-height:260px; overflow-y:auto; background:#1e1e1e; color:#d4d4d4; font-family:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace; font-size:12px; line-height:1.5; padding:10px 12px; border-radius:8px; margin-top:10px; white-space:pre-wrap; word-break:break-all; }
+.bot-log::-webkit-scrollbar { width:6px; }
+.bot-log::-webkit-scrollbar-thumb { background:#555; border-radius:3px; }
+/* ── Mobile ───────────────────────────── */
+.mobile-toggle { display:none; position:fixed; top:12px; left:12px; z-index:20; background:var(--card); border:1px solid var(--border); border-radius:8px; padding:8px 10px; cursor:pointer; font-size:18px; }
+.sidebar-backdrop { display:none; position:fixed; inset:0; background:rgba(0,0,0,.3); z-index:9; }
+@media (max-width:768px) {
+  .mobile-toggle { display:block; }
+  .sidebar { left:-240px; transition:left .2s; }
+  .sidebar.open { left:0; }
+  .sidebar-backdrop.open { display:block; }
+  .content { margin-left:0; padding:60px 16px 24px; }
+  /* Modal: fit mobile screens */
+  .modal { width:calc(100vw - 32px); max-width:520px; padding:16px; }
+  /* Cards: stack vertically */
+  .card-row { flex-direction:column; }
+  .card { overflow-x:auto; }
+  /* Stat grid: 2 columns */
+  .stat-grid { grid-template-columns:1fr 1fr; }
+  /* Touch targets */
+  .btn-sm { padding:8px 14px; font-size:13px; }
+  /* Tables: smaller font */
+  .tbl { font-size:12px; }
+  /* Page title */
+  .page-title { font-size:18px; }
+  /* Config form rows: stack label + input vertically */
+  .config-form-row { flex-direction:column !important; align-items:stretch !important; gap:6px !important; }
+  .config-form-row > div[style*="min-width"] { min-width:0 !important; width:100% !important; }
+  .config-form-row .form-input { width:100% !important; min-width:0 !important; }
+  .config-form-row input[style*="width:100px"] { width:100% !important; }
+  .config-form-row input[style*="width:260px"] { width:100% !important; }
+}
+</style>
+</head>
+<body>
+<button class="mobile-toggle" onclick="toggleSidebar()">☰</button>
+<div class="sidebar-backdrop" id="sidebar-backdrop" onclick="toggleSidebar()"></div>
+
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <span class="logo">🍡</span>
+    <h1>MochiBot</h1>
+  </div>
+  <nav class="sidebar-nav" id="sidebar-nav">
+    <button class="nav-item active" data-page="settings"><span class="nav-icon">🏠</span> 设置</button>
+    <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆</button>
+    <button class="nav-item" data-page="advanced"><span class="nav-icon">🛠️</span> 高级</button>
+    <button class="nav-item" data-page="system"><span class="nav-icon">⚙️</span> 系统</button>
+  </nav>
+  <div style="padding:8px 12px; border-top:1px solid var(--border);">
+    <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启 Agent</button>
+  </div>
+</aside>
+
+<main class="content">
+<!-- ═══════ Settings ═══════ -->
+<section id="page-settings" class="page active">
+  <h2 class="page-title">🍡 设置</h2>
+  <div id="settings-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Memory ═══════ -->
+<section id="page-memory" class="page">
+  <h2 class="page-title">记忆</h2>
+
+  <!-- Core -->
+  <div class="card" style="margin-bottom:20px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">Core</div>
+      <span class="badge badge-info" id="memory-token-badge">-</span>
+    </div>
+    <div id="memory-content">
+      <div class="loading"><div class="spinner"></div> 加载中...</div>
+    </div>
+  </div>
+
+  <!-- Memory Items -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+      <div class="card-title" style="margin-bottom:0">记忆条目</div>
+      <button class="btn btn-ghost btn-sm" onclick="searchMemoryItems(1)">↻ 刷新</button>
+    </div>
+    <div id="memory-extraction-status" style="font-size:12px;color:var(--text-soft);margin-bottom:14px">
+      正在读取自动整理状态…
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px">
+      <input id="mi-q" type="text" placeholder="🔍 关键词搜索…"
+        class="form-input" style="flex:1;min-width:180px;border-radius:20px;padding:8px 14px;font-size:13px"
+        onkeydown="if(event.key==='Enter')searchMemoryItems(1)" />
+      <select id="mi-cat" class="form-input"
+        style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
+        onchange="searchMemoryItems(1)">
+        <option value="">全部分类</option>
+      </select>
+      <select id="mi-sort" class="form-input"
+        style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
+        onchange="searchMemoryItems(1)">
+        <option value="importance">按重要性</option>
+        <option value="updated">按更新时间</option>
+      </select>
+      <button class="btn btn-primary btn-sm" onclick="searchMemoryItems(1)">搜索</button>
+    </div>
+    <div id="l2memory-content">
+      <div class="loading"><div class="spinner"></div> 加载中...</div>
+    </div>
+  </div>
+
+  <div style="margin-top:24px">
+    <h3 style="font-size:17px;color:var(--text-heading);margin-bottom:12px">📦 搬家</h3>
+    <div id="migration-content">
+      <div class="loading"><div class="spinner"></div> 加载中...</div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════ Advanced ═══════ -->
+<section id="page-advanced" class="page">
+  <h2 class="page-title">高级设置</h2>
+  <div id="advanced-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ System ═══════ -->
+<section id="page-system" class="page">
+  <h2 class="page-title">系统</h2>
+  <div id="system-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+</main>
+
+<!-- Modal -->
+<div class="modal-overlay" id="model-modal" onclick="if(event.target===this)closeModelModal()">
+  <div class="modal">
+    <h3 id="model-modal-title">添加模型</h3>
+    <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="mm-name" placeholder="例如 my-gpt4o"></div>
+    <div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="mm-vendor" onchange="onVendorChange()"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="anthropic">Anthropic</option></select>
+    </div>
+    <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
+    <div class="form-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
+    <div class="form-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."></div>
+    <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
+      <button class="btn btn-ghost" onclick="testModelInModal()">🔌 测试</button>
+      <button class="btn btn-primary" onclick="saveModelFromModal()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<!-- Memory Item Edit Modal -->
+<div class="modal-overlay" id="mi-modal" onclick="if(event.target===this)closeMiModal()">
+  <div class="modal">
+    <h3 id="mi-modal-title">编辑记忆</h3>
+    <input type="hidden" id="mi-edit-id" />
+    <div class="form-group"><label class="form-label">内容</label>
+      <textarea class="form-input" id="mi-edit-content" style="min-height:120px;resize:vertical;font-family:inherit"></textarea>
+    </div>
+    <div class="form-group"><label class="form-label">分类</label>
+      <input class="form-input" id="mi-edit-category" type="text" placeholder="如：偏好、事实、事件" />
+    </div>
+    <div class="form-group"><label class="form-label">重要性</label>
+      <select class="form-input" id="mi-edit-importance">
+        <option value="1">★ 日常</option>
+        <option value="2">★★ 重要</option>
+        <option value="3">★★★ 关键</option>
+      </select>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeMiModal()">取消</button>
+      <button class="btn btn-primary" onclick="saveMiEdit()">💾 保存</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Persist token across page refreshes via sessionStorage (cleared when tab closes)
+const _urlToken = new URLSearchParams(location.search).get('token') || '';
+if (_urlToken) {
+  sessionStorage.setItem('_admin_token', _urlToken);
+  // Remove token from URL to prevent exposure in browser history / Referer headers
+  const cleanUrl = new URL(location);
+  cleanUrl.searchParams.delete('token');
+  window.history.replaceState({}, '', cleanUrl);
+}
+const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
+let _telegramBotInfo = null; // {username, first_name} — set after successful token test
+let _weixinConnected = false; // set after successful WeChat token test
+let _openTransportCfg = null; // 'telegram' | 'weixin' | null — which config panel is open
+let _wxQrPollTimer = null;   // QR scan poll interval
+let _wxQrRefreshCount = 0;   // QR refresh counter (max 6)
+let _wxQrStartTime = 0;      // overall timeout tracking
+let _wxQrActiveContent = '';  // current QR URL for re-render after DOM rebuild
+let _wxQrStatusHtml = '';     // current status HTML for re-render after DOM rebuild
+let _wxQrGeneration = 0;       // invalidates cancelled/replaced QR polling sessions
+
+async function api(method, path, body) {
+  const opts = {method, headers:{'Content-Type':'application/json'}};
+  if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+  if (body) opts.body = JSON.stringify(body);
+  const r = await fetch('/api' + path, opts);
+  if (!r.ok) {
+    let msg = r.status + ': 未知错误';
+    try { const j = await r.json(); msg = j.detail || j.error || JSON.stringify(j); }
+    catch { try { msg = await r.text() || msg; } catch {} }
+    const err = new Error(msg); err.status = r.status; throw err;
+  }
+  return r.json();
+}
+function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function showToast(msg) { const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._t); t._t=setTimeout(()=>t.classList.remove('show'),4000); }
+function statusIcon(type) {
+  const m = { ok:['var(--success)','✓'], err:['#d32f2f','✗'], warn:['var(--warning)','!'], off:['var(--border)',''] };
+  const [bg,ch] = m[type] || m.off;
+  return `<span style="display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;background:${bg};color:#fff;font-size:12px;flex-shrink:0">${ch}</span>`;
+}
+
+// ── Navigation ───────────────────────────
+const loaded = {};
+let _settingsRequestGeneration = 0;
+let _systemRequestGeneration = 0;
+const loaders = { settings:loadSettings, memory:loadMemory, advanced:loadAdvanced, system:loadSystem };
+
+document.getElementById('sidebar-nav').addEventListener('click', e => {
+  const item = e.target.closest('.nav-item');
+  if (!item) return;
+  const page = item.dataset.page;
+  stopSettingsPolling();
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  item.classList.add('active');
+  document.getElementById('page-' + page).classList.add('active');
+  if (page === 'settings') { loaded.settings = false; loadSettings(); }
+  else if (page === 'system') { loaded.system = true; loadSystem(); }
+  else if (!loaded[page]) { loaded[page] = true; loaders[page]?.(); }
+  // mobile
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('sidebar-backdrop').classList.remove('open');
+});
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('sidebar-backdrop').classList.toggle('open');
+}
+
+// Auto-load settings
+loaded.settings = true;
+loadSettings();
+
+function showTransportConfig(type) {
+  // Toggle: if already open, close it; otherwise open the selected one
+  _openTransportCfg = (_openTransportCfg === type) ? null : type;
+  const tgCfg = document.getElementById('transport-cfg');
+  const wxCfg = document.getElementById('weixin-cfg');
+  const tgBtn = document.getElementById('tp-btn-telegram');
+  const wxBtn = document.getElementById('tp-btn-weixin');
+  if (tgCfg) tgCfg.style.display = _openTransportCfg === 'telegram' ? 'block' : 'none';
+  if (wxCfg) wxCfg.style.display = _openTransportCfg === 'weixin' ? 'block' : 'none';
+  if (tgBtn) tgBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'telegram' ? ' active' : '');
+  if (wxBtn) wxBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'weixin' ? ' active' : '');
+}
+
+async function unbindTransport(platform) {
+  if (!platform) return;
+  if (!confirm('确定要解绑 ' + platform + ' 吗？Bot 将停止运行。')) return;
+  try {
+    if (platform === 'Telegram') {
+      await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''});
+      _telegramBotInfo = null;
+    } else {
+      await api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''});
+      _weixinConnected = false;
+    }
+    showToast('已解绑 ' + platform);
+    await api('POST', '/bot/stop').catch(() => {});
+    showToast('🔄 Agent 正在重启并应用解绑配置...');
+    waitForServerBack(true);
+  } catch(e) { showToast('操作失败: ' + e.message); }
+}
+
+async function saveTransportConfig() {
+  const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
+  if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  // Confirm if switching from WeChat
+  if (_weixinConnected && !confirm('这将断开 WeChat 连接，确定切换到 Telegram？')) return;
+  const token = tokenInput.value.trim();
+  const statusEl = document.getElementById('tg-connect-status');
+  const saveBtn = document.getElementById('tg-save-btn');
+
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并验证中...</span>';
+
+  try {
+    // Step 1: Save to .env
+    const r = await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': token});
+    if (r.errors && r.errors.length) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 保存失败: ' + r.errors.map(e=>esc(e.key)).join(', ') + '</span>';
+      return;
+    }
+
+    // Step 2: Test connection
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 验证 Token...</span>';
+    const test = await api('POST', '/telegram/test', {token});
+
+    if (test.ok) {
+      _telegramBotInfo = {username: test.username, first_name: test.first_name};
+      // Clear WeChat credentials (mutually exclusive transports)
+      _weixinConnected = false;
+      api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''}).catch(() => {});
+      if (statusEl) {
+        statusEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          + '<span class="badge badge-ok" style="font-size:13px">✅ 已连接</span>'
+          + '<strong>@' + esc(test.username) + '</strong>'
+          + '<span style="color:var(--text-soft);font-size:12px">(' + esc(test.first_name) + ')</span>'
+          + '</div>';
+      }
+      showToast('✅ Telegram 已连接，请继续完成设置');
+      loaded.settings = false;
+      loadSettings();
+    } else {
+      _telegramBotInfo = null;
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ Token 无效: ' + esc(test.error) + '</span>';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 错误: ' + esc(e.message) + '</span>';
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并连接'; }
+  }
+}
+
+async function startBotAndRefresh() {
+  // Disable all restart buttons and show loading state
+  document.querySelectorAll('[data-restart-btn]').forEach(b => {
+    b.disabled = true; b.textContent = 'Agent 重启中...';
+  });
+  try {
+    await api('POST', '/bot/start');
+    showToast('🔄 Agent 重启中，正在等待服务恢复...');
+  } catch(e) {
+    showToast('❌ Agent 重启失败: ' + e.message);
+    document.querySelectorAll('[data-restart-btn]').forEach(b => {
+      b.disabled = false; b.textContent = '重启 Agent';
+    });
+    return;
+  }
+  waitForServerBack(true);
+}
+
+async function stopAgentAndRefresh() {
+  if (!confirm('确定要关闭 Agent 吗？管理后台会继续运行。')) return;
+  document.querySelectorAll('[data-agent-stop-btn]').forEach(b => {
+    b.disabled = true;
+    b.textContent = '关闭中...';
+  });
+  try {
+    await api('POST', '/bot/stop');
+    showToast('Agent 正在关闭...');
+  } catch(e) {
+    showToast('❌ Agent 关闭失败: ' + e.message);
+    document.querySelectorAll('[data-agent-stop-btn]').forEach(b => {
+      b.disabled = false;
+      b.textContent = '关闭 Agent';
+    });
+    return;
+  }
+  waitForServerBack(true);
+}
+
+async function restartAdminServer() {
+  if (!confirm('确定要重启 Agent 吗？页面会短暂断开连接。')) return;
+  const btn = document.getElementById('admin-restart-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '重启中...'; }
+  try {
+    await api('POST', '/admin/restart');
+  } catch(e) {
+    // Server may have already died — that's expected
+  }
+  showToast('🔄 Agent 重启中，等待重新连接...');
+  waitForServerBack(true);
+}
+
+async function exportDiagnostics() {
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; btn.textContent = '导出中...'; }
+  try {
+    const opts = {method:'GET', headers:{}};
+    if (authToken) opts.headers['Authorization'] = 'Bearer ' + authToken;
+    const r = await fetch('/api/diagnostics/export', opts);
+    if (!r.ok) throw new Error(r.status + ': ' + await r.text());
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'mochibot-diagnostics-' + new Date().toISOString().replace(/[T:]/g, '-').slice(0, 19) + '.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+    showToast('✅ 诊断报告已下载');
+  } catch(e) {
+    showToast('❌ 导出失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 导出诊断报告'; }
+  }
+}
+
+async function checkSystemUpdate(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '检查中...';
+  btn.disabled = true;
+  const container = document.getElementById('update-status');
+  container.innerHTML = '';
+  let countdown = false;
+  try {
+    const r = await api('POST', '/system/update-check');
+    if (!r.ok) {
+      container.innerHTML = `<div style="font-size:12px;color:var(--danger)">${esc(r.error)}</div>`;
+      return;
+    }
+    if (!r.available) {
+      container.innerHTML = `<div style="font-size:12px;color:var(--success);display:flex;align-items:center;gap:6px">${statusIcon('ok')} 已是最新版本 (${esc(r.current_hash)})</div>`;
+      showToast('已是最新版本');
+      return;
+    }
+    let h = `<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px">`;
+    h += `<div style="font-size:13px;margin-bottom:8px;display:flex;align-items:center;gap:8px">`;
+    h += `${statusIcon('warn')} 有新版本可用`;
+    h += `<span class="badge badge-info">v${esc(r.current_version)}</span>`;
+    h += `<span style="color:var(--text-soft)">→</span>`;
+    h += `<span class="badge badge-ok">v${esc(r.remote_version)}</span>`;
+    h += `<span style="font-size:11px;color:var(--text-soft)">(${r.commits_behind} 个提交)</span>`;
+    h += `</div>`;
+    if (r.changelog_diff) {
+      h += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-soft)">查看更新日志</summary>`;
+      h += `<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.changelog_diff)}</div>`;
+      h += `</details>`;
+    }
+    h += `<button class="btn btn-primary btn-sm" onclick="applySystemUpdate(this)">更新并重启</button>`;
+    h += `</div>`;
+    container.innerHTML = h;
+  } catch(e) {
+    if (e.status === 429) {
+      let sec = 60;
+      const m = e.message.match(/(\d+)\s*秒/);
+      if (m) sec = parseInt(m[1]);
+      countdown = true;
+      container.innerHTML = '';
+      const tick = () => {
+        if (sec <= 0) { checkSystemUpdate(btn); return; }
+        btn.textContent = `请稍候 (${sec}s)`;
+        sec--;
+        setTimeout(tick, 1000);
+      };
+      tick();
+      return;
+    }
+    container.innerHTML = `<div style="font-size:12px;color:var(--danger)">检查失败：${esc(e.message)}</div>`;
+  } finally {
+    if (!countdown) { btn.textContent = orig; btn.disabled = false; }
+  }
+}
+
+async function applySystemUpdate(btn) {
+  btn.disabled = true;
+  let dots = 0;
+  btn.textContent = '更新中...';
+  const anim = setInterval(() => { dots = (dots + 1) % 3; btn.textContent = '更新中' + '.'.repeat(dots + 1); }, 400);
+  const container = document.getElementById('update-status');
+  try {
+    const r = await api('POST', '/system/update-apply');
+    if (!r.ok) {
+      let msg = `<div style="font-size:12px;color:var(--danger);margin-top:8px">${esc(r.error)}</div>`;
+      if (r.dirty_files) {
+        msg += `<div class="bot-log" style="max-height:120px;overflow:auto;margin-top:6px;font-size:11px;white-space:pre-wrap">${esc(r.dirty_files)}</div>`;
+      }
+      if (r.hint) {
+        msg += `<div style="font-size:11px;color:var(--text-soft);margin-top:6px">${esc(r.hint)}</div>`;
+      }
+      container.innerHTML = msg;
+      showToast('更新失败');
+      return;
+    }
+    let h = `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:6px;margin-top:8px">${statusIcon('ok')} ${esc(r.message)}</div>`;
+    h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">新版本：v${esc(r.new_version)}</div>`;
+    if (r.restarting) {
+      h += `<div id="restart-countdown" style="margin-top:10px;font-size:12px;color:var(--text-soft)">3 秒后自动重启…</div>`;
+      container.innerHTML = h;
+      showToast('✅ 更新完成，正在重启');
+      let n = 3;
+      const tick = setInterval(() => {
+        n -= 1;
+        const el = document.getElementById('restart-countdown');
+        if (el) el.textContent = n > 0 ? `${n} 秒后自动重启…` : '正在重启，页面将自动刷新…';
+        if (n <= 0) {
+          clearInterval(tick);
+          // Wait for the server to actually exit, then poll until it's back.
+          setTimeout(() => waitForServerBack(true), 1500);
+        }
+      }, 1000);
+    } else {
+      h += `<div style="margin-top:10px;display:flex;gap:8px">`;
+      h += `<button class="btn btn-primary btn-sm" onclick="restartAfterUpdate()">重启 Bot + Admin</button>`;
+      h += `</div>`;
+      container.innerHTML = h;
+      showToast('✅ 更新完成，请重启生效');
+    }
+  } catch(e) {
+    container.innerHTML = `<div style="font-size:12px;color:var(--danger);margin-top:8px">更新失败：${esc(e.message)}</div>`;
+    showToast('更新失败');
+  } finally {
+    clearInterval(anim);
+    btn.disabled = false;
+  }
+}
+
+async function waitForServerBack(waitForShutdown) {
+  let sawServerDown = !waitForShutdown;
+  const statusOptions = { cache: 'no-store' };
+  if (authToken) statusOptions.headers = {'Authorization': 'Bearer ' + authToken};
+  for (let i = 0; i < 30; i++) {
+    try {
+      const r = await fetch('/api/status', statusOptions);
+      if (r.ok) {
+        if (sawServerDown) { location.reload(); return; }
+      } else {
+        sawServerDown = true;
+      }
+    } catch (_) { sawServerDown = true; }
+    await new Promise(res => setTimeout(res, 1000));
+  }
+  // Give up gracefully — user can refresh manually.
+  const el = document.getElementById('restart-countdown');
+  if (el) el.textContent = '重启耗时较长，请手动刷新页面。';
+}
+
+async function restartAfterUpdate() {
+  try {
+    await api('POST', '/admin/restart');
+    showToast('正在重启...');
+    document.getElementById('update-status').innerHTML = '<div style="font-size:12px;color:var(--text-soft);margin-top:8px">正在重启，页面将在几秒后自动刷新...</div>';
+    waitForServerBack(true);
+  } catch(e) {
+    showToast('重启请求已发送，请手动刷新页面');
+    waitForServerBack(true);
+  }
+}
+
+function toggleWeixinConfig() {
+  showTransportConfig('weixin');
+}
+
+// ── WeChat QR Scan Flow ──────────
+
+async function startWeixinQR() {
+  const statusEl = document.getElementById('wx-qr-status');
+  const canvasEl = document.getElementById('wx-qr-canvas');
+  const btnEl = document.getElementById('wx-qr-btn');
+  const cancelEl = document.getElementById('wx-qr-cancel');
+  const generation = cancelWeixinQR();
+
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '获取二维码中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 正在获取二维码...</span>';
+  if (canvasEl) { canvasEl.style.display = 'none'; canvasEl.getContext('2d').clearRect(0,0,canvasEl.width,canvasEl.height); }
+
+  try {
+    const r = await api('POST', '/weixin/qr');
+    if (generation !== _wxQrGeneration) return;
+    if (!r.ok) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
+      return;
+    }
+    // Render QR code to canvas
+    if (canvasEl) {
+      renderQRToCanvas(canvasEl, r.qrcode_img_content, 220);
+      canvasEl.style.display = 'block';
+    }
+    _wxQrActiveContent = r.qrcode_img_content;
+    _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
+    if (statusEl) statusEl.innerHTML = _wxQrStatusHtml;
+    if (btnEl) btnEl.style.display = 'none';
+    if (cancelEl) cancelEl.style.display = 'inline-block';
+
+    // Start polling
+    _wxQrRefreshCount = 0;
+    _wxQrStartTime = Date.now();
+    pollWeixinQR(r.qrcode, generation);
+  } catch(e) {
+    if (generation !== _wxQrGeneration) return;
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(e.message) + '</span>';
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
+  }
+}
+
+function pollWeixinQR(qrcode, generation) {
+  if (generation !== _wxQrGeneration) return;
+  if (_wxQrPollTimer) clearInterval(_wxQrPollTimer);
+  const QR_TIMEOUT_MS = 480000; // 8 min
+  const QR_MAX_REFRESH = 6;
+  const POLL_INTERVAL_MS = 3000;
+
+  _wxQrPollTimer = setInterval(async () => {
+    if (generation !== _wxQrGeneration) return;
+    // Overall timeout
+    if (Date.now() - _wxQrStartTime > QR_TIMEOUT_MS) {
+      cancelWeixinQR();
+      const s = document.getElementById('wx-qr-status');
+      if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 扫码超时，请重试</span>';
+      resetWxQrBtn();
+      return;
+    }
+    try {
+      const r = await api('POST', '/weixin/qr/poll', {qrcode});
+      if (generation !== _wxQrGeneration) return;
+
+      if (r.status === 'scaned') {
+        const s = document.getElementById('wx-qr-status');
+        _wxQrStatusHtml = '<span style="color:var(--primary)">✅ 已扫码，请在手机上确认...</span>';
+        if (s) s.innerHTML = _wxQrStatusHtml;
+      } else if (r.status === 'expired') {
+        _wxQrRefreshCount++;
+        if (_wxQrRefreshCount > QR_MAX_REFRESH) {
+          cancelWeixinQR();
+          const s = document.getElementById('wx-qr-status');
+          if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 二维码已过期多次，请重试</span>';
+          resetWxQrBtn();
+          return;
+        }
+        // Fetch new QR
+        const nextGeneration = cancelWeixinQR();
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span style="color:var(--text-soft)">🔄 二维码已过期，自动刷新中...</span>';
+        let fresh;
+        try {
+          fresh = await api('POST', '/weixin/qr');
+        } catch(e) { /* restart polling with the old ID */ }
+        if (nextGeneration !== _wxQrGeneration) return;
+        if (fresh && fresh.ok) {
+          const c = document.getElementById('wx-qr-canvas');
+          if (c) renderQRToCanvas(c, fresh.qrcode_img_content, 220);
+          _wxQrActiveContent = fresh.qrcode_img_content;
+          _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
+          if (s) s.innerHTML = _wxQrStatusHtml;
+          // Restart poll with the new QR's generation.
+          pollWeixinQR(fresh.qrcode, nextGeneration);
+          return;
+        }
+        pollWeixinQR(qrcode, nextGeneration);
+        return;
+      } else if (r.status === 'confirmed') {
+        cancelWeixinQR();
+        _wxQrActiveContent = '';
+        _wxQrStatusHtml = '';
+        _weixinConnected = true;
+        _telegramBotInfo = null; // mutually exclusive
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ 登录成功！Token 已自动保存</span>';
+        const c = document.getElementById('wx-qr-canvas');
+        if (c) c.style.display = 'none';
+        const cancel = document.getElementById('wx-qr-cancel');
+        if (cancel) cancel.style.display = 'none';
+        showToast('✅ WeChat 已连接，请继续完成设置');
+        loaded.settings = false;
+        loadSettings();
+        return;
+      } else if (r.status === 'error') {
+        cancelWeixinQR();
+        const s = document.getElementById('wx-qr-status');
+        if (s) s.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
+        resetWxQrBtn();
+        return;
+      }
+      // status === 'wait' → continue polling
+    } catch(e) {
+      // Transient error — keep polling
+    }
+  }, POLL_INTERVAL_MS);
+}
+
+function cancelWeixinQR() {
+  if (_wxQrPollTimer) { clearInterval(_wxQrPollTimer); _wxQrPollTimer = null; }
+  _wxQrGeneration++;
+  return _wxQrGeneration;
+}
+
+function resetWxQrBtn() {
+  const btn = document.getElementById('wx-qr-btn');
+  const cancel = document.getElementById('wx-qr-cancel');
+  if (btn) { btn.disabled = false; btn.textContent = '扫码登录'; btn.style.display = 'inline-block'; }
+  if (cancel) cancel.style.display = 'none';
+}
+
+function stopWeixinQR() {
+  cancelWeixinQR();
+  _wxQrActiveContent = '';
+  _wxQrStatusHtml = '';
+  const c = document.getElementById('wx-qr-canvas');
+  if (c) c.style.display = 'none';
+  const s = document.getElementById('wx-qr-status');
+  if (s) s.innerHTML = '';
+  resetWxQrBtn();
+}
+
+function toggleWxManualInput() {
+  const el = document.getElementById('wx-manual-input');
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+// ── QR Code Generator (Nayuki qrcodegen, MIT License) ──
+// Project Nayuki — https://www.nayuki.io/page/qr-code-generator-library
+// Compiled from TypeScript source. Supports QR versions 1-40, all 4 EC levels.
+var qrcodegen;
+(function (qrcodegen) {
+    class QrCode {
+        static encodeText(text, ecl) {
+            const segs = qrcodegen.QrSegment.makeSegments(text);
+            return QrCode.encodeSegments(segs, ecl);
+        }
+        static encodeBinary(data, ecl) {
+            const seg = qrcodegen.QrSegment.makeBytes(data);
+            return QrCode.encodeSegments([seg], ecl);
+        }
+        static encodeSegments(segs, ecl, minVersion = 1, maxVersion = 40, mask = -1, boostEcl = true) {
+            if (!(QrCode.MIN_VERSION <= minVersion && minVersion <= maxVersion && maxVersion <= QrCode.MAX_VERSION)
+                || mask < -1 || mask > 7)
+                throw new RangeError("Invalid value");
+            let version;
+            let dataUsedBits;
+            for (version = minVersion;; version++) {
+                const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
+                const usedBits = QrSegment.getTotalBits(segs, version);
+                if (usedBits <= dataCapacityBits) {
+                    dataUsedBits = usedBits;
+                    break;
+                }
+                if (version >= maxVersion)
+                    throw new RangeError("Data too long");
+            }
+            for (const newEcl of [QrCode.Ecc.MEDIUM, QrCode.Ecc.QUARTILE, QrCode.Ecc.HIGH]) {
+                if (boostEcl && dataUsedBits <= QrCode.getNumDataCodewords(version, newEcl) * 8)
+                    ecl = newEcl;
+            }
+            let bb = [];
+            for (const seg of segs) {
+                appendBits(seg.mode.modeBits, 4, bb);
+                appendBits(seg.numChars, seg.mode.numCharCountBits(version), bb);
+                for (const b of seg.getData())
+                    bb.push(b);
+            }
+            assert(bb.length == dataUsedBits);
+            const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
+            assert(bb.length <= dataCapacityBits);
+            appendBits(0, Math.min(4, dataCapacityBits - bb.length), bb);
+            appendBits(0, (8 - bb.length % 8) % 8, bb);
+            assert(bb.length % 8 == 0);
+            for (let padByte = 0xEC; bb.length < dataCapacityBits; padByte ^= 0xEC ^ 0x11)
+                appendBits(padByte, 8, bb);
+            let dataCodewords = [];
+            while (dataCodewords.length * 8 < bb.length)
+                dataCodewords.push(0);
+            bb.forEach((b, i) => dataCodewords[i >>> 3] |= b << (7 - (i & 7)));
+            return new QrCode(version, ecl, dataCodewords, mask);
+        }
+        constructor(version, errorCorrectionLevel, dataCodewords, msk) {
+            this.version = version;
+            this.errorCorrectionLevel = errorCorrectionLevel;
+            this.modules = [];
+            this.isFunction = [];
+            if (version < QrCode.MIN_VERSION || version > QrCode.MAX_VERSION)
+                throw new RangeError("Version value out of range");
+            if (msk < -1 || msk > 7)
+                throw new RangeError("Mask value out of range");
+            this.size = version * 4 + 17;
+            let row = [];
+            for (let i = 0; i < this.size; i++)
+                row.push(false);
+            for (let i = 0; i < this.size; i++) {
+                this.modules.push(row.slice());
+                this.isFunction.push(row.slice());
+            }
+            this.drawFunctionPatterns();
+            const allCodewords = this.addEccAndInterleave(dataCodewords);
+            this.drawCodewords(allCodewords);
+            if (msk == -1) {
+                let minPenalty = 1000000000;
+                for (let i = 0; i < 8; i++) {
+                    this.applyMask(i);
+                    this.drawFormatBits(i);
+                    const penalty = this.getPenaltyScore();
+                    if (penalty < minPenalty) {
+                        msk = i;
+                        minPenalty = penalty;
+                    }
+                    this.applyMask(i);
+                }
+            }
+            assert(0 <= msk && msk <= 7);
+            this.mask = msk;
+            this.applyMask(msk);
+            this.drawFormatBits(msk);
+            this.isFunction = [];
+        }
+        getModule(x, y) {
+            return 0 <= x && x < this.size && 0 <= y && y < this.size && this.modules[y][x];
+        }
+        drawFunctionPatterns() {
+            for (let i = 0; i < this.size; i++) {
+                this.setFunctionModule(6, i, i % 2 == 0);
+                this.setFunctionModule(i, 6, i % 2 == 0);
+            }
+            this.drawFinderPattern(3, 3);
+            this.drawFinderPattern(this.size - 4, 3);
+            this.drawFinderPattern(3, this.size - 4);
+            const alignPatPos = this.getAlignmentPatternPositions();
+            const numAlign = alignPatPos.length;
+            for (let i = 0; i < numAlign; i++) {
+                for (let j = 0; j < numAlign; j++) {
+                    if (!(i == 0 && j == 0 || i == 0 && j == numAlign - 1 || i == numAlign - 1 && j == 0))
+                        this.drawAlignmentPattern(alignPatPos[i], alignPatPos[j]);
+                }
+            }
+            this.drawFormatBits(0);
+            this.drawVersion();
+        }
+        drawFormatBits(mask) {
+            const data = this.errorCorrectionLevel.formatBits << 3 | mask;
+            let rem = data;
+            for (let i = 0; i < 10; i++)
+                rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
+            const bits = (data << 10 | rem) ^ 0x5412;
+            assert(bits >>> 15 == 0);
+            for (let i = 0; i <= 5; i++)
+                this.setFunctionModule(8, i, getBit(bits, i));
+            this.setFunctionModule(8, 7, getBit(bits, 6));
+            this.setFunctionModule(8, 8, getBit(bits, 7));
+            this.setFunctionModule(7, 8, getBit(bits, 8));
+            for (let i = 9; i < 15; i++)
+                this.setFunctionModule(14 - i, 8, getBit(bits, i));
+            for (let i = 0; i < 8; i++)
+                this.setFunctionModule(this.size - 1 - i, 8, getBit(bits, i));
+            for (let i = 8; i < 15; i++)
+                this.setFunctionModule(8, this.size - 15 + i, getBit(bits, i));
+            this.setFunctionModule(8, this.size - 8, true);
+        }
+        drawVersion() {
+            if (this.version < 7)
+                return;
+            let rem = this.version;
+            for (let i = 0; i < 12; i++)
+                rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+            const bits = this.version << 12 | rem;
+            assert(bits >>> 18 == 0);
+            for (let i = 0; i < 18; i++) {
+                const color = getBit(bits, i);
+                const a = this.size - 11 + i % 3;
+                const b = Math.floor(i / 3);
+                this.setFunctionModule(a, b, color);
+                this.setFunctionModule(b, a, color);
+            }
+        }
+        drawFinderPattern(x, y) {
+            for (let dy = -4; dy <= 4; dy++) {
+                for (let dx = -4; dx <= 4; dx++) {
+                    const dist = Math.max(Math.abs(dx), Math.abs(dy));
+                    const xx = x + dx;
+                    const yy = y + dy;
+                    if (0 <= xx && xx < this.size && 0 <= yy && yy < this.size)
+                        this.setFunctionModule(xx, yy, dist != 2 && dist != 4);
+                }
+            }
+        }
+        drawAlignmentPattern(x, y) {
+            for (let dy = -2; dy <= 2; dy++) {
+                for (let dx = -2; dx <= 2; dx++)
+                    this.setFunctionModule(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) != 1);
+            }
+        }
+        setFunctionModule(x, y, isDark) {
+            this.modules[y][x] = isDark;
+            this.isFunction[y][x] = true;
+        }
+        addEccAndInterleave(data) {
+            const ver = this.version;
+            const ecl = this.errorCorrectionLevel;
+            if (data.length != QrCode.getNumDataCodewords(ver, ecl))
+                throw new RangeError("Invalid argument");
+            const numBlocks = QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver];
+            const blockEccLen = QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver];
+            const rawCodewords = Math.floor(QrCode.getNumRawDataModules(ver) / 8);
+            const numShortBlocks = numBlocks - rawCodewords % numBlocks;
+            const shortBlockLen = Math.floor(rawCodewords / numBlocks);
+            let blocks = [];
+            const rsDiv = QrCode.reedSolomonComputeDivisor(blockEccLen);
+            for (let i = 0, k = 0; i < numBlocks; i++) {
+                let dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
+                k += dat.length;
+                const ecc = QrCode.reedSolomonComputeRemainder(dat, rsDiv);
+                if (i < numShortBlocks)
+                    dat.push(0);
+                blocks.push(dat.concat(ecc));
+            }
+            let result = [];
+            for (let i = 0; i < blocks[0].length; i++) {
+                blocks.forEach((block, j) => {
+                    if (i != shortBlockLen - blockEccLen || j >= numShortBlocks)
+                        result.push(block[i]);
+                });
+            }
+            assert(result.length == rawCodewords);
+            return result;
+        }
+        drawCodewords(data) {
+            if (data.length != Math.floor(QrCode.getNumRawDataModules(this.version) / 8))
+                throw new RangeError("Invalid argument");
+            let i = 0;
+            for (let right = this.size - 1; right >= 1; right -= 2) {
+                if (right == 6)
+                    right = 5;
+                for (let vert = 0; vert < this.size; vert++) {
+                    for (let j = 0; j < 2; j++) {
+                        const x = right - j;
+                        const upward = ((right + 1) & 2) == 0;
+                        const y = upward ? this.size - 1 - vert : vert;
+                        if (!this.isFunction[y][x] && i < data.length * 8) {
+                            this.modules[y][x] = getBit(data[i >>> 3], 7 - (i & 7));
+                            i++;
+                        }
+                    }
+                }
+            }
+            assert(i == data.length * 8);
+        }
+        applyMask(mask) {
+            if (mask < 0 || mask > 7)
+                throw new RangeError("Mask value out of range");
+            for (let y = 0; y < this.size; y++) {
+                for (let x = 0; x < this.size; x++) {
+                    let invert;
+                    switch (mask) {
+                        case 0: invert = (x + y) % 2 == 0; break;
+                        case 1: invert = y % 2 == 0; break;
+                        case 2: invert = x % 3 == 0; break;
+                        case 3: invert = (x + y) % 3 == 0; break;
+                        case 4: invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 == 0; break;
+                        case 5: invert = x * y % 2 + x * y % 3 == 0; break;
+                        case 6: invert = (x * y % 2 + x * y % 3) % 2 == 0; break;
+                        case 7: invert = ((x + y) % 2 + x * y % 3) % 2 == 0; break;
+                        default: throw new Error("Unreachable");
+                    }
+                    if (!this.isFunction[y][x] && invert)
+                        this.modules[y][x] = !this.modules[y][x];
+                }
+            }
+        }
+        getPenaltyScore() {
+            let result = 0;
+            for (let y = 0; y < this.size; y++) {
+                let runColor = false; let runX = 0; let runHistory = [0,0,0,0,0,0,0];
+                for (let x = 0; x < this.size; x++) {
+                    if (this.modules[y][x] == runColor) { runX++; if (runX == 5) result += QrCode.PENALTY_N1; else if (runX > 5) result++; }
+                    else { this.finderPenaltyAddHistory(runX, runHistory); if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3; runColor = this.modules[y][x]; runX = 1; }
+                }
+                result += this.finderPenaltyTerminateAndCount(runColor, runX, runHistory) * QrCode.PENALTY_N3;
+            }
+            for (let x = 0; x < this.size; x++) {
+                let runColor = false; let runY = 0; let runHistory = [0,0,0,0,0,0,0];
+                for (let y = 0; y < this.size; y++) {
+                    if (this.modules[y][x] == runColor) { runY++; if (runY == 5) result += QrCode.PENALTY_N1; else if (runY > 5) result++; }
+                    else { this.finderPenaltyAddHistory(runY, runHistory); if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3; runColor = this.modules[y][x]; runY = 1; }
+                }
+                result += this.finderPenaltyTerminateAndCount(runColor, runY, runHistory) * QrCode.PENALTY_N3;
+            }
+            for (let y = 0; y < this.size - 1; y++) { for (let x = 0; x < this.size - 1; x++) { const color = this.modules[y][x]; if (color == this.modules[y][x + 1] && color == this.modules[y + 1][x] && color == this.modules[y + 1][x + 1]) result += QrCode.PENALTY_N2; } }
+            let dark = 0; for (const row of this.modules) dark = row.reduce((sum, color) => sum + (color ? 1 : 0), dark);
+            const total = this.size * this.size;
+            const k = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
+            assert(0 <= k && k <= 9); result += k * QrCode.PENALTY_N4;
+            assert(0 <= result && result <= 2568888); return result;
+        }
+        getAlignmentPatternPositions() {
+            if (this.version == 1) return [];
+            else { const numAlign = Math.floor(this.version / 7) + 2; const step = Math.floor((this.version * 8 + numAlign * 3 + 5) / (numAlign * 4 - 4)) * 2; let result = [6]; for (let pos = this.size - 7; result.length < numAlign; pos -= step) result.splice(1, 0, pos); return result; }
+        }
+        static getNumRawDataModules(ver) { if (ver < QrCode.MIN_VERSION || ver > QrCode.MAX_VERSION) throw new RangeError("Version number out of range"); let result = (16 * ver + 128) * ver + 64; if (ver >= 2) { const numAlign = Math.floor(ver / 7) + 2; result -= (25 * numAlign - 10) * numAlign - 55; if (ver >= 7) result -= 36; } assert(208 <= result && result <= 29648); return result; }
+        static getNumDataCodewords(ver, ecl) { return Math.floor(QrCode.getNumRawDataModules(ver) / 8) - QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver] * QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver]; }
+        static reedSolomonComputeDivisor(degree) { if (degree < 1 || degree > 255) throw new RangeError("Degree out of range"); let result = []; for (let i = 0; i < degree - 1; i++) result.push(0); result.push(1); let root = 1; for (let i = 0; i < degree; i++) { for (let j = 0; j < result.length; j++) { result[j] = QrCode.reedSolomonMultiply(result[j], root); if (j + 1 < result.length) result[j] ^= result[j + 1]; } root = QrCode.reedSolomonMultiply(root, 0x02); } return result; }
+        static reedSolomonComputeRemainder(data, divisor) { let result = divisor.map(_ => 0); for (const b of data) { const factor = b ^ result.shift(); result.push(0); divisor.forEach((coef, i) => result[i] ^= QrCode.reedSolomonMultiply(coef, factor)); } return result; }
+        static reedSolomonMultiply(x, y) { if (x >>> 8 != 0 || y >>> 8 != 0) throw new RangeError("Byte out of range"); let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; } assert(z >>> 8 == 0); return z; }
+        finderPenaltyCountPatterns(runHistory) { const n = runHistory[1]; assert(n <= this.size * 3); const core = n > 0 && runHistory[2] == n && runHistory[3] == n * 3 && runHistory[4] == n && runHistory[5] == n; return (core && runHistory[0] >= n * 4 && runHistory[6] >= n ? 1 : 0) + (core && runHistory[6] >= n * 4 && runHistory[0] >= n ? 1 : 0); }
+        finderPenaltyTerminateAndCount(currentRunColor, currentRunLength, runHistory) { if (currentRunColor) { this.finderPenaltyAddHistory(currentRunLength, runHistory); currentRunLength = 0; } currentRunLength += this.size; this.finderPenaltyAddHistory(currentRunLength, runHistory); return this.finderPenaltyCountPatterns(runHistory); }
+        finderPenaltyAddHistory(currentRunLength, runHistory) { if (runHistory[0] == 0) currentRunLength += this.size; runHistory.pop(); runHistory.unshift(currentRunLength); }
+    }
+    QrCode.MIN_VERSION = 1; QrCode.MAX_VERSION = 40;
+    QrCode.PENALTY_N1 = 3; QrCode.PENALTY_N2 = 3; QrCode.PENALTY_N3 = 40; QrCode.PENALTY_N4 = 10;
+    QrCode.ECC_CODEWORDS_PER_BLOCK = [[-1,7,10,15,20,26,18,20,24,30,18,20,24,26,30,22,24,28,30,28,28,28,28,30,30,26,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],[-1,10,16,26,18,24,16,18,22,22,26,30,22,22,24,24,28,28,26,26,26,26,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28],[-1,13,22,18,26,18,24,18,22,20,24,28,26,24,20,30,24,28,28,26,30,28,30,30,30,30,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],[-1,17,28,22,16,22,28,26,26,24,28,24,28,22,24,24,30,28,28,26,28,30,24,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30]];
+    QrCode.NUM_ERROR_CORRECTION_BLOCKS = [[-1,1,1,1,1,1,2,2,2,2,4,4,4,4,4,6,6,6,6,7,8,8,9,9,10,12,12,12,13,14,15,16,17,18,19,19,20,21,22,24,25],[-1,1,1,1,2,2,4,4,4,5,5,5,8,9,9,10,10,11,13,14,16,17,17,18,20,21,23,25,26,28,29,31,33,35,37,38,40,43,45,47,49],[-1,1,1,2,2,4,4,6,6,8,8,8,10,12,16,12,17,16,18,21,20,23,23,25,27,29,34,34,35,38,40,43,45,48,51,53,56,59,62,65,68],[-1,1,1,2,4,4,4,5,6,8,8,11,11,16,16,18,16,19,21,25,25,25,34,30,32,35,37,40,42,45,48,51,54,57,60,63,66,70,74,77,81]];
+    qrcodegen.QrCode = QrCode;
+    function appendBits(val, len, bb) { if (len < 0 || len > 31 || val >>> len != 0) throw new RangeError("Value out of range"); for (let i = len - 1; i >= 0; i--) bb.push((val >>> i) & 1); }
+    function getBit(x, i) { return ((x >>> i) & 1) != 0; }
+    function assert(cond) { if (!cond) throw new Error("Assertion error"); }
+    class QrSegment {
+        static makeBytes(data) { let bb = []; for (const b of data) appendBits(b, 8, bb); return new QrSegment(QrSegment.Mode.BYTE, data.length, bb); }
+        static makeNumeric(digits) { if (!QrSegment.isNumeric(digits)) throw new RangeError("String contains non-numeric characters"); let bb = []; for (let i = 0; i < digits.length;) { const n = Math.min(digits.length - i, 3); appendBits(parseInt(digits.substring(i, i + n), 10), n * 3 + 1, bb); i += n; } return new QrSegment(QrSegment.Mode.NUMERIC, digits.length, bb); }
+        static makeAlphanumeric(text) { if (!QrSegment.isAlphanumeric(text)) throw new RangeError("String contains unencodable characters in alphanumeric mode"); let bb = []; let i; for (i = 0; i + 2 <= text.length; i += 2) { let temp = QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)) * 45; temp += QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i + 1)); appendBits(temp, 11, bb); } if (i < text.length) appendBits(QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)), 6, bb); return new QrSegment(QrSegment.Mode.ALPHANUMERIC, text.length, bb); }
+        static makeSegments(text) { if (text == "") return []; else if (QrSegment.isNumeric(text)) return [QrSegment.makeNumeric(text)]; else if (QrSegment.isAlphanumeric(text)) return [QrSegment.makeAlphanumeric(text)]; else return [QrSegment.makeBytes(QrSegment.toUtf8ByteArray(text))]; }
+        static isNumeric(text) { return QrSegment.NUMERIC_REGEX.test(text); }
+        static isAlphanumeric(text) { return QrSegment.ALPHANUMERIC_REGEX.test(text); }
+        constructor(mode, numChars, bitData) { this.mode = mode; this.numChars = numChars; this.bitData = bitData; if (numChars < 0) throw new RangeError("Invalid argument"); this.bitData = bitData.slice(); }
+        getData() { return this.bitData.slice(); }
+        static getTotalBits(segs, version) { let result = 0; for (const seg of segs) { const ccbits = seg.mode.numCharCountBits(version); if (seg.numChars >= (1 << ccbits)) return Infinity; result += 4 + ccbits + seg.bitData.length; } return result; }
+        static toUtf8ByteArray(str) { str = encodeURI(str); let result = []; for (let i = 0; i < str.length; i++) { if (str.charAt(i) != "%") result.push(str.charCodeAt(i)); else { result.push(parseInt(str.substring(i + 1, i + 3), 16)); i += 2; } } return result; }
+    }
+    QrSegment.NUMERIC_REGEX = /^[0-9]*$/;
+    QrSegment.ALPHANUMERIC_REGEX = /^[A-Z0-9 $%*+.\/:-]*$/;
+    QrSegment.ALPHANUMERIC_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
+    qrcodegen.QrSegment = QrSegment;
+})(qrcodegen || (qrcodegen = {}));
+(function (qrcodegen) { var QrCode; (function (QrCode) { class Ecc { constructor(ordinal, formatBits) { this.ordinal = ordinal; this.formatBits = formatBits; } } Ecc.LOW = new Ecc(0, 1); Ecc.MEDIUM = new Ecc(1, 0); Ecc.QUARTILE = new Ecc(2, 3); Ecc.HIGH = new Ecc(3, 2); QrCode.Ecc = Ecc; })(QrCode = qrcodegen.QrCode || (qrcodegen.QrCode = {})); })(qrcodegen || (qrcodegen = {}));
+(function (qrcodegen) { var QrSegment; (function (QrSegment) { class Mode { constructor(modeBits, numBitsCharCount) { this.modeBits = modeBits; this.numBitsCharCount = numBitsCharCount; } numCharCountBits(ver) { return this.numBitsCharCount[Math.floor((ver + 7) / 17)]; } } Mode.NUMERIC = new Mode(0x1, [10, 12, 14]); Mode.ALPHANUMERIC = new Mode(0x2, [9, 11, 13]); Mode.BYTE = new Mode(0x4, [8, 16, 16]); Mode.KANJI = new Mode(0x8, [8, 10, 12]); Mode.ECI = new Mode(0x7, [0, 0, 0]); QrSegment.Mode = Mode; })(QrSegment = qrcodegen.QrSegment || (qrcodegen.QrSegment = {})); })(qrcodegen || (qrcodegen = {}));
+
+function renderQRToCanvas(canvas, text, size) {
+  const ctx = canvas.getContext('2d');
+  try {
+    const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.LOW);
+    const moduleCount = qr.size;
+    const minCellPx = 4;
+    const effectiveSize = Math.max(size, (moduleCount + 8) * minCellPx);
+    canvas.width = effectiveSize;
+    canvas.height = effectiveSize;
+    canvas.style.maxWidth = size + 'px';
+    canvas.style.height = 'auto';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, effectiveSize, effectiveSize);
+    const cellSize = effectiveSize / (moduleCount + 8);
+    const offset = (effectiveSize - cellSize * moduleCount) / 2;
+    ctx.fillStyle = '#000000';
+    for (let r = 0; r < moduleCount; r++) {
+      for (let c = 0; c < moduleCount; c++) {
+        if (qr.getModule(c, r)) {
+          ctx.fillRect(
+            Math.round(offset + c * cellSize),
+            Math.round(offset + r * cellSize),
+            Math.ceil(cellSize),
+            Math.ceil(cellSize)
+          );
+        }
+      }
+    }
+  } catch(e) {
+    canvas.width = size;
+    canvas.height = size;
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, size, size);
+    ctx.fillStyle = '#ff0000';
+    ctx.font = '12px sans-serif';
+    ctx.fillText('QR Error', 10, size/2);
+  }
+}
+// ── End QR Code Generator ──
+
+async function saveWeixinConfig() {
+  const tokenInput = document.getElementById('cfg-WEIXIN_BOT_TOKEN');
+  if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
+  // Confirm if switching from Telegram
+  if (_telegramBotInfo && !confirm('这将断开 Telegram 连接，确定切换到 WeChat？')) return;
+  const token = tokenInput.value.trim();
+  const allowedInput = document.getElementById('cfg-WEIXIN_ALLOWED_USERS');
+  const allowed = allowedInput ? allowedInput.value.trim() : '';
+  const statusEl = document.getElementById('wx-connect-status');
+  const saveBtn = document.getElementById('wx-save-btn');
+
+  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
+  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并验证中...</span>';
+
+  try {
+    // Step 1: Save to .env
+    const envData = {
+      'WEIXIN_ENABLED': 'true',
+      'WEIXIN_BOT_TOKEN': token,
+    };
+    if (allowed) envData['WEIXIN_ALLOWED_USERS'] = allowed;
+    const r = await api('PUT', '/env', envData);
+    if (r.errors && r.errors.length) {
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 保存失败: ' + r.errors.map(e=>esc(e.key)).join(', ') + '</span>';
+      return;
+    }
+
+    // Step 2: Test connection
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 验证 Token...</span>';
+    const test = await api('POST', '/weixin/test', {token});
+
+    if (test.ok) {
+      _weixinConnected = true;
+      // Clear Telegram credentials (mutually exclusive transports)
+      _telegramBotInfo = null;
+      api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''}).catch(() => {});
+      if (statusEl) statusEl.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ Token 有效</span>'
+        + '<div style="margin-top:8px;color:var(--text-soft);font-size:13px">继续完成设置后手动启动 Agent。</div>';
+      showToast('✅ WeChat 已连接，请继续完成设置');
+      loaded.settings = false;
+      loadSettings();
+    } else {
+      _weixinConnected = false;
+      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ Token 无效: ' + esc(test.error) + '</span>';
+    }
+  } catch(e) {
+    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 错误: ' + esc(e.message) + '</span>';
+  } finally {
+    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并连接'; }
+  }
+}
+
+// ── Settings page bot-status polling ─────
+let _settingsPollTimer = null;
+let _settingsLastRunning = null;
+let _settingsLastOwner = null;
+
+function startSettingsPolling() {
+  if (_settingsPollTimer) clearInterval(_settingsPollTimer);
+  _settingsPollTimer = setInterval(async () => {
+    if (!document.getElementById('page-settings').classList.contains('active')) return;
+    try {
+      const st = await api('GET', '/bot/status');
+      const full = await api('GET', '/status');
+      const ownerNow = full.config_status?.owner_user_id?.set || false;
+      if (st.running !== _settingsLastRunning || ownerNow !== _settingsLastOwner) {
+        _settingsLastRunning = st.running;
+        _settingsLastOwner = ownerNow;
+        if (document.getElementById('page-settings').classList.contains('active')) {
+          loaded.settings = false;
+          loadSettings();
+        }
+      }
+    } catch(e) { /* ignore transient errors */ }
+  }, 8000);
+}
+function stopSettingsPolling() {
+  if (_settingsPollTimer) { clearInterval(_settingsPollTimer); _settingsPollTimer = null; }
+  _settingsLastRunning = null;
+  _settingsLastOwner = null;
+}
+
+// ═══════════════════════════════════════════
+// Settings and system pages
+// ═══════════════════════════════════════════
+
+function _fmtBytes(b) {
+  if (b >= 1024*1024) return (b/1024/1024).toFixed(1)+' MB';
+  return (b/1024).toFixed(1)+' KB';
+}
+
+function renderCheckupBody(c) {
+  let h = '';
+
+  // Core budget
+  const ps = c.prompt_size;
+  if (ps && !ps.error) {
+    h += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:6px">Core 容量</div>';
+    const cm = ps.core_memory || {};
+    const cmBadge = cm.over_budget ? 'badge-warn' : 'badge-ok';
+    h += `<div class="check-row">${cm.over_budget ? statusIcon('warn') : statusIcon('ok')}`
+      + `<span>Core</span>`
+      + `<span class="badge ${cmBadge}" style="margin-left:auto">${cm.tokens} / ${cm.max_tokens} tokens</span></div>`;
+    h += '</div>';
+  } else if (ps && ps.error) {
+    h += `<div style="margin-bottom:12px;color:var(--danger)">Core 容量: ${esc(ps.error)}</div>`;
+  }
+
+  // Database
+  const db = c.database;
+  if (db && !db.error) {
+    h += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:6px">数据库</div>';
+    const intOk = db.integrity_ok;
+    h += `<div class="check-row">${intOk ? statusIcon('ok') : statusIcon('err')}`
+      + `<span>大小: ${_fmtBytes(db.file_size_bytes || 0)}</span>`
+      + `<span class="badge ${intOk ? 'badge-ok' : 'badge-err'}" style="margin-left:auto">`
+      + `完整性: ${intOk ? 'ok' : '异常'}</span></div>`;
+    const tc = db.table_counts || {};
+    const parts = Object.entries(tc).map(([t,n]) => `${t} ${n}`).join(' | ');
+    h += `<div style="font-size:12px;color:var(--text-soft);margin-top:4px;padding-left:28px">${esc(parts)}</div>`;
+    h += '</div>';
+  } else if (db && db.error) {
+    h += `<div style="margin-bottom:12px;color:var(--danger)">数据库: ${esc(db.error)}</div>`;
+  }
+
+  // Memory
+  const mem = c.memory;
+  if (mem && !mem.error) {
+    h += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:6px">记忆系统</div>';
+    h += `<div class="check-row">${statusIcon('ok')}<span>总记忆: ${mem.total} 条</span></div>`;
+    const cats = mem.categories || {};
+    if (Object.keys(cats).length) {
+      const catStr = Object.entries(cats).map(([k,v]) => `${k} ${v}`).join(', ');
+      h += `<div style="font-size:12px;color:var(--text-soft);padding-left:28px">${esc(catStr)}</div>`;
+    }
+    h += `<div class="check-row">${statusIcon('ok')}<span>KG: ${mem.kg_entities} 实体, ${mem.kg_active_triples} 三元组</span></div>`;
+    h += `<div class="check-row">${statusIcon('ok')}<span>回收站: ${mem.trash_count} 条</span></div>`;
+    h += '</div>';
+  } else if (mem && mem.error) {
+    h += `<div style="margin-bottom:12px;color:var(--danger)">记忆系统: ${esc(mem.error)}</div>`;
+  }
+
+  // Runtime
+  const rt = c.runtime;
+  if (rt && !rt.error) {
+    h += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:6px">运行状态</div>';
+    const errN = rt.error_count_24h || 0;
+    h += `<div class="check-row">${errN === 0 ? statusIcon('ok') : statusIcon('warn')}`
+      + `<span>24h 错误: ${errN} 条</span></div>`;
+    h += '</div>';
+  } else if (rt && rt.error) {
+    h += `<div style="margin-bottom:12px;color:var(--danger)">运行状态: ${esc(rt.error)}</div>`;
+  }
+
+  // Timestamp
+  if (c.checked_at) {
+    h += `<div style="font-size:11px;color:var(--text-soft);margin-top:4px">检查时间: ${esc(c.checked_at)}</div>`;
+  }
+  return h;
+}
+
+function renderCheckupCard(c) {
+  let h = '<div class="card" id="checkup-card">';
+  h += '<div class="card-title" style="display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="toggleCheckup()">';
+  h += '<span>系统体检 <span id="checkup-toggle-hint" style="font-size:11px;color:var(--text-soft);font-weight:400">▶ 点击展开</span></span>';
+  h += '<button class="btn btn-ghost btn-sm" onclick="event.stopPropagation();refreshCheckup()" style="font-size:12px;padding:2px 8px">刷新</button>';
+  h += '</div>';
+  h += '<div id="checkup-body" style="display:none">';
+  h += renderCheckupBody(c);
+  h += '</div></div>';
+  return h;
+}
+
+function toggleCheckup() {
+  const body = document.getElementById('checkup-body');
+  const hint = document.getElementById('checkup-toggle-hint');
+  if (!body) return;
+  const hidden = body.style.display === 'none';
+  body.style.display = hidden ? '' : 'none';
+  if (hint) hint.textContent = hidden ? '▼' : '▶ 点击展开';
+}
+
+async function refreshCheckup() {
+  const body = document.getElementById('checkup-body');
+  if (!body) return;
+  body.innerHTML = '<div style="color:var(--text-soft);font-size:13px">正在检查…</div>';
+  try {
+    const data = await api('GET', '/checkup');
+    if (data && data.ok) {
+      body.innerHTML = renderCheckupBody(data);
+    } else {
+      body.innerHTML = '<div style="color:var(--danger)">体检失败: ' + esc(data?.error || 'unknown') + '</div>';
+    }
+  } catch(e) {
+    body.innerHTML = '<div style="color:var(--danger)">体检请求失败: ' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadSettings() {
+  const generation = ++_settingsRequestGeneration;
+  const el = document.getElementById('settings-content');
+  try {
+    const [s, botStatus, models, tiers, prefs] = await Promise.all([
+      api('GET', '/status'),
+      api('GET', '/bot/status').catch(() => ({running: false})),
+      api('GET', '/models'),
+      api('GET', '/tiers'),
+      api('GET', '/preferences'),
+    ]);
+    if (generation !== _settingsRequestGeneration) return;
+    const hasMainModel = Boolean(tiers.main?.assigned_name && tiers.main?.supported && tiers.main?.api_key_set);
+    const hasLiteModel = Boolean(tiers.lite?.assigned_name && tiers.lite?.supported && tiers.lite?.api_key_set);
+    const hasModel = hasMainModel && hasLiteModel;
+    const tgConfigured = s.config_status.telegram_bot_token.set || _telegramBotInfo;
+    const wxConfigured = (
+      s.config_status.weixin_enabled?.set
+      && s.config_status.weixin_bot_token?.set
+    ) || _weixinConnected;
+    const hasTransport = tgConfigured || wxConfigured;
+    const transportOk = hasTransport && botStatus.running;
+    const ownerBound = s.config_status.owner_user_id?.set || false;
+    const preferencesConfigured = (
+      prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
+      && prefs.MAX_DAILY_PROACTIVE?.source === 'user'
+    );
+    const setupComplete = hasModel && hasTransport && preferencesConfigured;
+    let html = '';
+
+    html += '<div class="card">';
+    html += '<div class="card-title">设置向导</div>';
+    html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成 3 步，然后启动你的 Agent。</p>';
+    html += `<div class="check-row">${hasModel?statusIcon('ok'):statusIcon('warn')}<strong>Step 1 · 配置模型</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${hasModel?'已完成':'为 Main 和 Lite 选择模型'}</span></div>`;
+    html += `<div class="check-row">${hasTransport?statusIcon('ok'):statusIcon('off')}<strong>Step 2 · 连接消息平台</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${hasTransport?'已完成':'选择 Telegram 或微信'}</span></div>`;
+    html += `<div class="check-row">${preferencesConfigured?statusIcon('ok'):statusIcon('off')}<strong>Step 3 · 确认相处偏好</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${preferencesConfigured?'已完成':'保存时区和主动关心设置'}</span></div>`;
+    const agentStatus = transportOk ? '运行中' : (setupComplete ? '已关闭' : '尚未启动');
+    const agentStatusBadge = transportOk ? 'badge-ok' : 'badge-gray';
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><strong style="font-size:13px">Agent 状态</strong><span class="badge ${agentStatusBadge}">${agentStatus}</span>`;
+    if (setupComplete && transportOk) {
+      html += '<button class="btn btn-ghost btn-sm" data-agent-stop-btn onclick="stopAgentAndRefresh()">关闭 Agent</button>';
+    } else if (setupComplete) {
+      html += '<button class="btn btn-primary" data-restart-btn onclick="startBotAndRefresh()">启动 Agent</button>';
+    } else {
+      html += '<button class="btn btn-primary" disabled>完成以上 3 步后启动</button>';
+    }
+    html += '</div>';
+    html += '</div>';
+
+    const tierDescriptions = {
+      main: 'Agent 主体',
+      lite: '打工模型，不和你直接对话',
+    };
+    const tierLabels = {main: 'Main', lite: 'Lite'};
+    html += `<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div class="card-title" style="margin-bottom:0">Step 1 · 模型</div>
+      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=advanced]').click()">模型配置</button>
+    </div>`;
+    for (const tier of ['main', 'lite']) {
+      const cfg = tiers[tier] || {};
+      const selected = cfg.assigned_name || '';
+      html += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:260px;flex:1">
+          <div style="font-weight:600">${tierLabels[tier]}</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">${tierDescriptions[tier]}</div>
+        </div>
+        <select class="form-input" style="width:220px" onchange="assignTier('${tier}',this.value)">
+          <option value="" disabled ${selected?'':'selected'}>请选择模型</option>
+          ${models.map(m=>`<option value="${esc(m.name)}" ${selected===m.name?'selected':''} ${m.supported?'':'disabled'}>${esc(m.name)}${m.supported?'':'（不支持）'}</option>`).join('')}
+        </select>
+      </div>`;
+    }
+    html += '</div>';
+
+    const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
+    const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
+    let transportStatus = '';
+    if (hasTransport) {
+      let statusBadge = botStatus.running
+        ? '<span class="badge badge-ok">运行中</span>'
+        : '<span class="badge badge-warn">已配置，未运行</span>';
+      if (botStatus.weixin_session_expired) statusBadge += ' <span class="badge badge-err">会话过期</span>';
+      transportStatus = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <strong>${activeIcon} ${activeTransport}</strong>${statusBadge}
+        ${botStatus.running?'<button class="btn btn-ghost btn-sm" data-restart-btn onclick="startBotAndRefresh()">重启</button>':''}
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="unbindTransport('${activeTransport}')">解绑</button>
+      </div>`;
+      if (tgConfigured) {
+        transportStatus += ownerBound
+          ? '<div style="font-size:12px;color:var(--success);margin-top:6px">✓ Owner 已绑定</div>'
+          : '<div style="font-size:12px;color:var(--warning);margin-top:6px">⚠ 在 Telegram 中向 Bot 发送一条消息即可绑定 Owner</div>';
+      }
+    }
+
+    html += '<div class="card"><div class="card-title">Step 2 · 消息平台</div>';
+    if (hasTransport) {
+      html += transportStatus;
+    } else {
+      html += `<p style="font-size:12px;color:var(--text-soft);margin-bottom:10px">选择一个聊天入口。推荐 Telegram，支持图片和表情包。</p>
+        <div class="tp-cfg-btns">
+          <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">Telegram</button>
+          <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">微信</button>
+        </div>
+        <div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+            <div class="form-group"><label class="form-label">Telegram Bot Token</label>
+              <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="123456:ABC-DEF..."></div>
+            <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>
+            <div id="tg-connect-status" style="margin-top:10px"></div>
+          </div>
+        </div>
+        <div id="weixin-cfg" style="display:${_openTransportCfg==='weixin'?'block':'none'};margin-top:10px">
+          <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+            <div id="wx-qr-section">
+              <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入。</p>
+              <div style="text-align:center">
+                <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
+                <button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>
+              </div>
+              <div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>
+              <div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>
+            </div>
+            <div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>
+            <div id="wx-manual-input" style="display:none;margin-top:10px">
+              <div class="form-group"><label class="form-label">Bot Token</label>
+                <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="580ba3c1dc75@im.bot:..."></div>
+              <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
+                <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
+              <button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>
+              <div id="wx-connect-status" style="margin-top:10px"></div>
+            </div>
+          </div>
+        </div>`;
+    }
+    html += '</div>';
+
+    const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
+    const browserTimezone = -(new Date().getTimezoneOffset() / 60);
+    const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
+    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
+    const proactiveEnabled = Number(proactive.value) > 0;
+    const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
+    html += `<div class="card"><div class="card-title">Step 3 · 相处偏好</div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <div style="min-width:260px;flex:1">
+          <div style="font-size:14px">时区</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">用于提醒、日记和日常时间判断${timezone.source==='default'?' · 已按浏览器自动检测':''}</div>
+        </div>
+        <input class="form-input" id="pref-timezone" type="number" min="-12" max="14" step="0.25" style="width:100px" value="${esc(timezoneValue)}">
+        <span style="font-size:12px;color:var(--text-soft)">UTC 偏移</span>
+      </div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
+        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
+        <div style="min-width:220px;flex:1">
+          <div style="font-size:14px">主动关心</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">允许 Agent 在有值得说的事情时主动联系你</div>
+        </div>
+        <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
+        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
+        <span style="font-size:12px;color:var(--text-soft)">次</span>
+      </div>
+      <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
+        <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
+    </div>`;
+
+    el.innerHTML = html;
+    if (_wxQrPollTimer && _wxQrActiveContent) {
+      const canvas = document.getElementById('wx-qr-canvas');
+      if (canvas) { renderQRToCanvas(canvas, _wxQrActiveContent, 220); canvas.style.display = 'block'; }
+      const qrStatus = document.getElementById('wx-qr-status');
+      if (qrStatus && _wxQrStatusHtml) qrStatus.innerHTML = _wxQrStatusHtml;
+      const qrButton = document.getElementById('wx-qr-btn');
+      if (qrButton) qrButton.style.display = 'none';
+      const cancel = document.getElementById('wx-qr-cancel');
+      if (cancel) cancel.style.display = 'inline-block';
+    }
+    _settingsLastRunning = botStatus.running;
+    _settingsLastOwner = ownerBound;
+    if (document.getElementById('page-settings').classList.contains('active')) {
+      startSettingsPolling();
+    }
+  } catch(e) {
+    if (generation !== _settingsRequestGeneration) return;
+    el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+function toggleProactivePreference() {
+  const enabled = document.getElementById('pref-proactive-enabled')?.checked;
+  const limit = document.getElementById('pref-proactive-limit');
+  if (limit) limit.disabled = !enabled;
+}
+
+async function savePreferences() {
+  const timezone = Number(document.getElementById('pref-timezone')?.value);
+  const enabled = document.getElementById('pref-proactive-enabled')?.checked;
+  const limit = Number(document.getElementById('pref-proactive-limit')?.value);
+  if (!Number.isFinite(timezone) || timezone < -12 || timezone > 14) {
+    return showToast('时区必须在 UTC-12 到 UTC+14 之间');
+  }
+  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
+    return showToast('主动关心上限必须是 1 到 50 的整数');
+  }
+  try {
+    await api('PUT', '/preferences', {
+      TIMEZONE_OFFSET_HOURS: timezone,
+      MAX_DAILY_PROACTIVE: enabled ? limit : 0,
+    });
+    showToast('✅ 偏好已保存');
+    loaded.settings = false;
+    loadSettings();
+  } catch(e) {
+    showToast('保存失败: ' + e.message);
+  }
+}
+
+async function loadSystem() {
+  const generation = ++_systemRequestGeneration;
+  const el = document.getElementById('system-content');
+  try {
+    const [s, botStatus, checkupData] = await Promise.all([
+      api('GET', '/status'),
+      api('GET', '/bot/status').catch(() => ({running: false})),
+      api('GET', '/checkup').catch(() => null),
+    ]);
+    if (generation !== _systemRequestGeneration) return;
+    let html = '<div class="stat-grid">';
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${botStatus.running?'运行中':'未运行'}</div><div class="stat-label">Agent</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">Heartbeat</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">v${esc(s.version || 'unknown')}</div><div class="stat-label">版本</div></div>`;
+    html += '</div>';
+
+    if (checkupData?.ok) html += renderCheckupCard(checkupData);
+
+    const dbSize = s.db_size_bytes || 0;
+    const dbSizeStr = dbSize > 1024*1024 ? (dbSize/1024/1024).toFixed(1)+' MB' : (dbSize/1024).toFixed(1)+' KB';
+    html += '<div class="card"><div class="card-title">数据库</div>';
+    html += `<div class="check-row">${dbSize>0?statusIcon('ok'):statusIcon('err')}<span>数据库文件</span><span class="badge ${dbSize>0?'badge-ok':'badge-err'}" style="margin-left:8px">${dbSize>0?dbSizeStr:'不存在'}</span></div>`;
+    if (dbSize > 0) {
+      html += `<div class="check-row">${s.db_writable?statusIcon('ok'):statusIcon('warn')}<span>可写入</span><span class="badge ${s.db_writable?'badge-ok':'badge-warn'}" style="margin-left:8px">${s.db_writable?'正常':'只读'}</span></div>`;
+    }
+    html += `<div style="font-size:11px;color:var(--text-soft);margin-top:6px">路径: ${esc(s.db_path)}</div></div>`;
+
+    html += '<div class="card"><div class="card-title">系统更新</div>';
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><span class="badge badge-info">v${esc(s.version || 'unknown')}</span>`;
+    if (s.git_available) html += '<button class="btn btn-ghost btn-sm" onclick="checkSystemUpdate(this)">检查更新</button>';
+    html += '</div>';
+    if (!s.git_available) html += '<div style="font-size:12px;color:var(--text-soft)">当前安装不是 Git 仓库，请通过命令行或 Docker 手动更新。</div>';
+    html += '<div id="update-status"></div></div>';
+
+    const errCount = s.recent_error_count || 0;
+    html += '<div class="card"><div class="card-title">诊断</div>';
+    html += errCount === 0
+      ? `<div style="font-size:13px;color:var(--success);display:flex;align-items:center;gap:8px">${statusIcon('ok')} 最近 24 小时无错误</div>`
+      : `<div style="font-size:13px;color:#e65100;margin-bottom:8px;display:flex;align-items:center;gap:8px">${statusIcon('warn')} 最近 24 小时有 ${errCount} 条错误</div><div id="diag-error-list"></div>`;
+    html += '<div style="margin-top:12px;display:flex;gap:8px;align-items:center"><button class="btn btn-ghost" onclick="exportDiagnostics()">📋 导出诊断报告</button><span style="font-size:11px;color:var(--text-soft)">API Key 已脱敏</span></div></div>';
+    html += '<div class="card"><div class="card-title">模型健康</div><div id="model-health-content" style="font-size:13px;color:var(--text-soft)">加载中…</div></div>';
+    el.innerHTML = html;
+
+    if (errCount > 0) {
+      api('GET', '/diagnostics/errors').then(data => {
+        if (generation !== _systemRequestGeneration) return;
+        const container = document.getElementById('diag-error-list');
+        if (!container || !data.errors?.length) return;
+        let content = '<div class="bot-log" style="max-height:180px;overflow:auto;margin-top:4px">';
+        for (const error of data.errors.slice(-20)) {
+          const color = ['ERROR', 'CRITICAL'].includes(error.level) ? '#e53935' : '#e65100';
+          content += `<div style="margin-bottom:4px"><span style="color:${color}">[${esc(error.level)}]</span> <span style="color:#888">${esc(error.time)}</span> ${esc(error.name)} — ${esc(error.message)}`;
+          if (error.traceback) content += `\n<span style="color:#c9544d;font-size:11px">${esc(error.traceback)}</span>`;
+          content += '</div>';
+        }
+        container.innerHTML = content + '</div>';
+      }).catch(() => {});
+    }
+
+    api('GET', '/models/health').then(data => {
+      if (generation !== _systemRequestGeneration) return;
+      const container = document.getElementById('model-health-content');
+      if (!container) return;
+      const tierEntries = Object.entries(data.tiers || {});
+      if (!tierEntries.length) {
+        container.innerHTML = '<span style="color:var(--text-soft)">暂无数据（Agent 启动后开始统计）</span>';
+        return;
+      }
+      container.innerHTML = tierEntries.map(([tier, stats]) => {
+        const rate = stats.success_rate;
+        const color = rate < 0.7 ? 'var(--danger)' : rate < 0.9 ? '#e65100' : 'var(--success)';
+        return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px"><span class="badge" style="min-width:48px;text-align:center">${esc(tier)}</span><span style="color:${color};font-weight:600">${(rate*100).toFixed(1)}%</span><span style="color:var(--text-soft);font-size:12px">(${stats.total-stats.failures}/${stats.total})</span></div>`;
+      }).join('');
+    }).catch(() => {
+      if (generation !== _systemRequestGeneration) return;
+      const container = document.getElementById('model-health-content');
+      if (container) container.textContent = '无法获取模型健康数据';
+    });
+  } catch(e) {
+    if (generation !== _systemRequestGeneration) return;
+    el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+// ═══════════════════════════════════════════
+// Page 1: Models
+// ═══════════════════════════════════════════
+const VENDOR_PRESETS = [
+  { vendor: 'openai',    label: 'OpenAI',    provider: 'openai',    baseUrl: '',                                                           placeholder: 'gpt-4o' },
+  { vendor: 'deepseek',  label: 'DeepSeek',  provider: 'openai',    baseUrl: 'https://api.deepseek.com/v1',                                placeholder: 'deepseek-chat', fixedBaseUrl: true },
+  { vendor: 'gemini',    label: 'Gemini',    provider: 'openai',    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',    placeholder: 'gemini-2.5-flash', fixedBaseUrl: true },
+  { vendor: 'anthropic', label: 'Anthropic', provider: 'anthropic', baseUrl: '',                                                           placeholder: 'claude-sonnet-4-20250514' },
+];
+
+const EMB_VENDOR_PRESETS = [
+  { vendor: 'openai',   label: 'OpenAI / 兼容接口', compatibleLabel: 'OpenAI 兼容接口', provider: 'openai', baseUrl: '', placeholder: 'text-embedding-3-small' },
+  { vendor: 'azure',    label: 'Azure AI Foundry',  provider: 'openai',       baseUrl: 'https://RESOURCE.services.ai.azure.com/openai/v1', placeholder: '' },
+  { vendor: 'dashscope', label: '阿里云百炼',        provider: 'openai',       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1', placeholder: '' },
+  { vendor: 'none',     label: '禁用',              provider: 'none',         baseUrl: '',                            placeholder: '' },
+];
+
+function _normalizeUrl(u) { return (u || '').toLowerCase().replace(/\/+$/, '').replace(/\/v\d+$/, ''); }
+
+function resolveVendorLabel(provider, baseUrl, presets) {
+  presets = presets || VENDOR_PRESETS;
+  const url = _normalizeUrl(baseUrl);
+  if (provider === 'openai' && (url.includes('.services.ai.azure.com/openai') || url.includes('.openai.azure.com/openai'))) return 'Azure AI Foundry';
+  for (const p of presets) {
+    if (p.provider === provider && p.baseUrl) {
+      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.label;
+    }
+  }
+  if (provider === 'anthropic') return 'Anthropic';
+  if (provider === 'openai') {
+    const generic = presets.find(p => p.provider === 'openai' && !p.baseUrl);
+    if (!url) return generic ? generic.label : 'OpenAI';
+    if (generic && generic.compatibleLabel) return generic.compatibleLabel;
+  }
+  if (provider === 'none') return '禁用';
+  return '不支持';
+}
+
+function endpointHost(baseUrl) {
+  if (!baseUrl) return '';
+  try { return new URL(baseUrl).host; }
+  catch (_) { return baseUrl; }
+}
+
+function resolveVendorKey(provider, baseUrl, presets) {
+  presets = presets || VENDOR_PRESETS;
+  const url = _normalizeUrl(baseUrl);
+  if (provider === 'openai' && (url.includes('.services.ai.azure.com/openai') || url.includes('.openai.azure.com/openai'))) return 'azure';
+  for (const p of presets) {
+    if (p.provider === provider && p.baseUrl) {
+      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.vendor;
+    }
+  }
+  if (provider === 'anthropic') return 'anthropic';
+  if (provider === 'none') return 'none';
+  if (provider === 'openai' && !url) return 'openai';
+  return 'openai';
+}
+
+let _modelEditName = null;
+let _modelEditGeneration = 0;
+let _modelTargetTier = null;
+let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
+
+async function loadAdvanced() {
+  const el = document.getElementById('advanced-content');
+  try {
+    const [models, embCfg] = await Promise.all([api('GET','/models'), api('GET','/embedding/config')]);
+    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、自定义接口与语义检索。正常使用通常无需调整这里。</p>';
+
+    // Model Registry
+    html += '<div class="card"><div class="card-title">模型注册表</div>';
+    if (models.length === 0) {
+      html += '<p style="color:var(--text-soft);font-size:13px">还没有注册模型。添加一个开始使用。</p>';
+    } else {
+      html += '<table class="tbl"><tr><th>名称</th><th>服务商</th><th>模型</th><th>Key</th><th></th></tr>';
+      for (const m of models) {
+        html += `<tr>
+          <td><strong>${esc(m.name)}</strong></td>
+          <td><span class="badge ${m.supported?'badge-info':'badge-warn'}">${esc(resolveVendorLabel(m.provider, m.base_url))}</span></td>
+          <td>${esc(m.model)}</td>
+          <td>${m.api_key_set?'<span class="badge badge-ok">已设置</span>':'<span class="badge badge-warn">未设置</span>'}</td>
+          <td style="text-align:right">
+            <button class="btn btn-ghost btn-sm" data-model-action="edit" data-model-name="${esc(m.name)}">编辑</button>
+            <button class="btn btn-ghost btn-sm" data-model-action="test" data-model-name="${esc(m.name)}">测试</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--danger)" data-model-action="delete" data-model-name="${esc(m.name)}">删除</button>
+          </td></tr>`;
+      }
+      html += '</table>';
+    }
+    html += `<div style="margin-top:12px"><button class="btn btn-primary" onclick="openModelModal()">+ 添加模型</button></div></div>`;
+
+    // Embedding Config
+    const embBadge = embCfg.disabled
+      ? '<span class="badge badge-gray" style="margin-left:8px">已禁用</span>'
+      : embCfg.configured
+        ? '<span class="badge badge-ok" style="margin-left:8px">已配置</span>'
+        : '<span class="badge badge-warn" style="margin-left:8px">未配置</span>';
+    const embProvider = embCfg.provider || '';
+    const embConfigured = embCfg.configured && !embCfg.disabled;
+    const embVendorKey = embConfigured ? resolveVendorKey(embProvider, embCfg.base_url, EMB_VENDOR_PRESETS) : '';
+    const embVendorLabel = embConfigured ? resolveVendorLabel(embProvider, embCfg.base_url, EMB_VENDOR_PRESETS) : '';
+    const embEndpointHost = embConfigured ? endpointHost(embCfg.base_url) : '';
+
+    html += `<div class="card"><div class="card-title">Embedding 配置 ${embBadge}</div>`;
+    if (!embConfigured && !embCfg.disabled) {
+      html += '<div style="font-size:12px;color:var(--text-soft);margin-bottom:12px">💡 建议配置 Embedding 服务。未配置时，记忆检索将退化为关键词匹配，无法进行语义搜索，记忆能力会大幅下降。</div>';
+    }
+
+    // Summary row (shown when configured)
+    html += `<div id="emb-summary" style="display:${embConfigured ? 'block' : 'none'}">`;
+    html += '<table class="tbl"><tr><th>服务商</th><th>模型</th><th>Key</th><th></th></tr>';
+    html += `<tr>
+      <td><span class="badge badge-info">${esc(embVendorLabel)}</span>${embEndpointHost ? `<div style="font-size:11px;color:var(--text-soft);margin-top:3px">${esc(embEndpointHost)}</div>` : ''}</td>
+      <td>${esc(embCfg.model || '（默认）')}</td>
+      <td>${embCfg.api_key_set ? '<span class="badge badge-ok">已设置</span>' : '<span class="badge badge-warn">未设置</span>'}</td>
+      <td style="text-align:right">
+        <button class="btn btn-ghost btn-sm" onclick="openEmbeddingEdit()">编辑</button>
+        <button class="btn btn-ghost btn-sm" onclick="testEmbeddingSummary(this)">测试</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteEmbeddingConfig()">删除</button>
+      </td></tr>`;
+    html += '</table></div>';
+
+    // Edit form (shown when not configured, or when editing)
+    html += `<div id="emb-form" style="display:${embConfigured ? 'none' : 'block'}">`;
+    const apiKeyBadge = embCfg.api_key_set ? ' <span class="badge badge-ok" style="margin-left:6px">已设置</span>' : '';
+    // Vendor selector
+    html += `<div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="emb-vendor" onchange="onEmbVendorChange()">
+        ${EMB_VENDOR_PRESETS.map(p => `<option value="${p.vendor}" ${(embConfigured ? embVendorKey : (embProvider === 'none' || !embProvider ? 'none' : '')) === p.vendor ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+      </select></div>`;
+    // Unified fields
+    html += `<div id="emb-fields-main" style="display:none">
+      <div class="form-group"><label class="form-label">API Key${apiKeyBadge}</label>
+        <input class="form-input" id="emb-apikey" type="password" autocomplete="new-password" placeholder="${embCfg.api_key_set ? '（不修改）' : 'sk-...'}"></div>
+      <div class="form-group"><label class="form-label">模型</label>
+        <input class="form-input" id="emb-model" placeholder="" value="${esc(embCfg.model)}"></div>
+      <div class="form-group"><label class="form-label">Base URL（可选）</label>
+        <input class="form-input" id="emb-baseurl" placeholder="留空使用 OpenAI；兼容接口填写完整 API 根路径" value="${esc(embCfg.base_url)}">
+        <div style="font-size:11px;color:var(--text-soft);margin-top:4px">兼容接口请填写完整 API 根路径，例如服务商提供的 <code>/openai/v1/</code> 地址。</div></div>
+    </div>`;
+    // "none" message
+    html += '<div id="emb-fields-none" style="display:none"><p style="color:var(--text-soft);font-size:13px">Embedding 已禁用，向量记忆搜索不可用。</p></div>';
+    // save/cancel buttons
+    html += `<div style="margin-top:12px">
+      <button class="btn btn-primary" onclick="saveEmbeddingConfig()">保存</button>
+      <button class="btn btn-ghost" onclick="testEmbedding(this)">🔌 测试连接</button>
+      ${embConfigured ? '<button class="btn btn-ghost" onclick="closeEmbeddingEdit()">取消</button>' : ''}
+      <span style="font-size:11px;color:var(--text-soft)">保存到 .env（重启生效）</span>
+    </div>`;
+    html += '<div id="emb-test-result" style="font-size:13px;margin-top:8px"></div>';
+    html += '</div>'; // end emb-form
+    html += '</div>'; // end card
+
+    el.innerHTML = html;
+    updateEmbeddingFields();
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+document.getElementById('advanced-content').addEventListener('click', event => {
+  const button = event.target.closest('[data-model-action]');
+  if (!button) return;
+  const name = button.dataset.modelName;
+  if (button.dataset.modelAction === 'edit') editModel(name);
+  else if (button.dataset.modelAction === 'test') testModel(name, button);
+  else if (button.dataset.modelAction === 'delete') deleteModel(name);
+});
+function onVendorChange() {
+  const sel = document.getElementById('mm-vendor');
+  const preset = VENDOR_PRESETS.find(v => v.vendor === sel.value);
+  if (!preset) return;
+  const urlEl = document.getElementById('mm-baseurl');
+  const modelEl = document.getElementById('mm-model');
+  urlEl.readOnly = !!preset.fixedBaseUrl;
+  // Auto-fill base_url only if current value is empty or was auto-filled last time
+  if (preset.fixedBaseUrl || !urlEl.value || urlEl.value === _lastAutoBaseUrl) {
+    urlEl.value = preset.baseUrl;
+    _lastAutoBaseUrl = preset.baseUrl;
+  }
+  if (preset.placeholder) {
+    modelEl.placeholder = '例如 ' + preset.placeholder;
+    if (!modelEl.value) modelEl.value = preset.placeholder;
+  }
+  else modelEl.placeholder = '';
+}
+
+function openModelModal(name, targetTier) {
+  const requestedName = name || null;
+  const requestGeneration = ++_modelEditGeneration;
+  _modelEditName = name || null;
+  _modelTargetTier = targetTier || null;
+  _lastAutoBaseUrl = '';
+  document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
+  document.getElementById('mm-name').value = name || '';
+  document.getElementById('mm-name').disabled = !!name;
+  document.getElementById('mm-vendor').value = 'openai';
+  document.getElementById('mm-model').value = '';
+  document.getElementById('mm-apikey').value = '';
+  document.getElementById('mm-apikey').placeholder = name ? '（不修改）' : 'sk-...';
+  document.getElementById('mm-baseurl').value = '';
+  document.getElementById('mm-test-result').innerHTML = '';
+  onVendorChange();
+  if (name) {
+    api('GET','/models').then(models => {
+      const modal = document.getElementById('model-modal');
+      if (_modelEditGeneration !== requestGeneration || _modelEditName !== requestedName || !modal.classList.contains('open') ||
+          document.getElementById('mm-name').value !== requestedName) return;
+      const m = models.find(x=>x.name===name);
+      if (m) {
+        const vendor = resolveVendorKey(m.provider, m.base_url);
+        document.getElementById('mm-vendor').value = vendor;
+        document.getElementById('mm-model').value = m.model;
+        document.getElementById('mm-baseurl').value = m.base_url || '';
+        _lastAutoBaseUrl = m.base_url || '';
+        onVendorChange();
+        // Restore actual base_url after onVendorChange (in case it differs from preset)
+        document.getElementById('mm-baseurl').value = m.base_url || '';
+      }
+    });
+  }
+  document.getElementById('model-modal').classList.add('open');
+}
+function closeModelModal() {
+  _modelEditName = null;
+  _modelTargetTier = null;
+  _modelEditGeneration++;
+  document.getElementById('model-modal').classList.remove('open');
+}
+
+async function saveModelFromModal(stayOpen) {
+  const name = document.getElementById('mm-name').value.trim();
+  if (!name) return showToast('名称不能为空');
+  const apiKey = document.getElementById('mm-apikey').value;
+  const preset = VENDOR_PRESETS.find(v => v.vendor === document.getElementById('mm-vendor').value) || VENDOR_PRESETS[0];
+  const body = {
+    name,
+    provider: preset.provider,
+    model: document.getElementById('mm-model').value.trim(),
+    api_key: (_modelEditName && !apiKey) ? '__KEEP__' : apiKey,
+    base_url: preset.fixedBaseUrl ? preset.baseUrl : document.getElementById('mm-baseurl').value.trim(),
+  };
+  const targetTier = stayOpen ? null : _modelTargetTier;
+  try {
+    const result = await api('POST','/models', body);
+    if (targetTier) {
+      await api('PUT','/tiers/'+targetTier, {model_name:name});
+    }
+    showToast('模型已保存');
+    if (!stayOpen) {
+      closeModelModal();
+      loaded.settings = false;
+      loaded.advanced = false;
+      if (document.getElementById('page-advanced').classList.contains('active')) loadAdvanced();
+      else loadSettings();
+    }
+    return result;
+  } catch(e) {
+    showToast('错误: ' + e.message);
+    if (stayOpen) throw e;
+  }
+}
+
+function editModel(name) { openModelModal(name); }
+
+async function deleteModel(name) {
+  if (!confirm('确定删除模型 "' + name + '"？')) return;
+  try {
+    await api('DELETE','/models/'+encodeURIComponent(name));
+    showToast('已删除');
+    loaded.settings = false;
+    loaded.advanced = false;
+    loadAdvanced();
+  }
+  catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ═══════ Memory ═══════
+let _coreRequestGeneration = 0;
+let _coreHistoryRequestGeneration = 0;
+let _migrationLoaded = false;
+
+async function loadMemory() {
+  const generation = ++_coreRequestGeneration;
+  loaded.memory = true;
+  const el = document.getElementById('memory-content');
+  const badge = document.getElementById('memory-token-badge');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
+  try {
+    const data = await api('GET', '/memory');
+    if (generation !== _coreRequestGeneration) return;
+    const approxTok = data.tokens || 0;
+    const maxTok = data.max_tokens || 1400;
+    const tokClass = approxTok < maxTok * .75 ? 'badge-ok' : approxTok <= maxTok ? 'badge-warn' : 'badge-err';
+    badge.className = 'badge ' + tokClass;
+    badge.textContent = '~' + approxTok + ' / ' + maxTok + ' tokens';
+    el.innerHTML = `
+      ${data.migration && data.migration.status === 'migrated'
+        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ 已从旧版 Soul / User / SQLite Core 迁移。</div>'
+        : data.migration && data.migration.status === 'migrated_over_budget'
+        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 旧版内容已完整迁移并备份，但超过新 Core 预算。请精简后保存；系统没有截断任何内容。</div>'
+        : ''}
+      ${data.notes_retirement && data.notes_retirement.status === 'migrated'
+        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ Notes 已原文备份并迁入 Core「正在惦记」。备份：data/' + esc(data.notes_retirement.backup || '') + '</div>'
+        : data.notes_retirement && data.notes_retirement.status === 'migrated_over_budget'
+        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ Notes 已完整迁入 Core 并备份，但 Core 超过预算。请精简后保存；迁移没有截断任何内容。备份：data/' + esc(data.notes_retirement.backup || '') + '</div>'
+        : data.notes_retirement && data.notes_retirement.status === 'retired_no_entries'
+        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ 旧 Notes 文件已备份并退休，没有发现需要迁入 Core 的有效条目。</div>'
+        : data.notes_retirement && data.notes_retirement.status === 'failed'
+        ? '<div style="background:#FFEBEE;color:#B71C1C;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">❌ Notes 迁移未完成；旧文件保持原样。请查看日志后重启重试。</div>'
+        : ''}
+      ${data.hygiene && data.hygiene.needs_cleanup
+        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 当前 Core 来自忠实恢复或旧版数据，包含完全重复的结构。请在下方一次性整理后保存；系统没有删除任何原文。</div>'
+        : ''}
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">
+        每轮常驻的自由文本。推荐用 # 我 / # 用户 / # 我们 组织；持续关注的内容可放在「正在惦记」，保存时不会截断。
+      </p>
+      <textarea class="form-input" id="memory-textarea" style="min-height:200px;resize:vertical;font-family:monospace;font-size:13px;line-height:1.6"
+        data-max-tokens="${maxTok}" oninput="updateMemoryCount()">${esc(data.content)}</textarea>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+        <span style="font-size:12px;color:var(--text-soft)" id="memory-char-count">~${approxTok} / ${maxTok} tokens（${data.chars.toLocaleString()} 字符）</span>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-ghost btn-sm" onclick="loadMemory()">↺ 重置</button>
+          <button class="btn btn-primary btn-sm" onclick="saveMemory()">💾 保存 Core</button>
+        </div>
+      </div>
+      <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <strong style="font-size:13px">最近版本</strong>
+          <button class="btn btn-ghost btn-sm" onclick="loadCoreHistory()">↻ 刷新</button>
+        </div>
+        <div id="core-history" style="margin-top:8px;color:var(--text-soft);font-size:12px">加载中…</div>
+      </div>
+    `;
+    loadCoreHistory(generation);
+  } catch (e) {
+    if (generation !== _coreRequestGeneration) return;
+    el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
+  }
+  // Also load L2 memory
+  loadMemoryExtractionStatus();
+  searchMemoryItems(1);
+  if (!_migrationLoaded) {
+    _migrationLoaded = true;
+    loadMigration();
+  }
+}
+
+function updateMemoryCount() {
+  const ta = document.getElementById('memory-textarea');
+  const el = document.getElementById('memory-char-count');
+  const badge = document.getElementById('memory-token-badge');
+  if (!ta || !el) return;
+  const chars = ta.value.length;
+  const approxTok = Math.round(chars / 2);
+  const maxTok = parseInt(ta.dataset.maxTokens || '1400');
+  el.textContent = '~' + approxTok.toLocaleString() + ' / ' + maxTok + ' tokens（' + chars.toLocaleString() + ' 字符）';
+  if (badge) {
+    badge.className = 'badge ' + (approxTok < maxTok * .75 ? 'badge-ok' : approxTok <= maxTok ? 'badge-warn' : 'badge-err');
+    badge.textContent = '~' + approxTok + ' / ' + maxTok + ' tokens';
+  }
+}
+
+async function saveMemory() {
+  const ta = document.getElementById('memory-textarea');
+  if (!ta) return;
+  try {
+    await api('POST', '/memory', { content: ta.value });
+    showToast('✅ Core 已更新并保存上一版');
+    loadMemory();
+  } catch (e) { showToast('❌ 保存失败: ' + e.message); }
+}
+
+async function loadCoreHistory(expectedCoreGeneration) {
+  const generation = ++_coreHistoryRequestGeneration;
+  const el = document.getElementById('core-history');
+  if (!el) return;
+  try {
+    const data = await api('GET', '/core/history');
+    if (generation !== _coreHistoryRequestGeneration || (expectedCoreGeneration && expectedCoreGeneration !== _coreRequestGeneration)) return;
+    const rows = data.snapshots || [];
+    if (!rows.length) { el.textContent = '暂无历史版本'; return; }
+    el.innerHTML = rows.map(s => `
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
+        <span>${esc((s.created_at || '').replace('T',' ').slice(0,19))} · ${esc(s.source)} · ~${s.tokens} tokens</span>
+        <button class="btn btn-ghost btn-sm" onclick="restoreCore('${esc(s.id)}')">恢复</button>
+      </div>`).join('');
+  } catch(e) {
+    if (generation !== _coreHistoryRequestGeneration || (expectedCoreGeneration && expectedCoreGeneration !== _coreRequestGeneration)) return; el.textContent = '历史加载失败: ' + e.message; }
+}
+
+async function restoreCore(id) {
+  if (!confirm('恢复这个 Core 版本？当前内容会先自动保存为一个快照。')) return;
+  try {
+    const result = await api('POST', '/core/history/' + encodeURIComponent(id) + '/restore', {});
+    showToast(result.needs_cleanup
+      ? '⚠️ Core 已忠实恢复，请按页面提示整理重复内容'
+      : '✅ Core 已恢复');
+    loadMemory();
+  } catch(e) { showToast('❌ 恢复失败: ' + e.message); }
+}
+
+// ── Memory Items ───────────────────────────
+const IMPORTANCE_STARS = ['', '★ 日常', '★★ 重要', '★★★ 关键'];
+const MEMORY_SOURCE_LABELS = {
+  lite_extracted: '自动整理',
+  migration: '导入',
+  import: '导入',
+  admin: '后台',
+  manual: '后台',
+  extracted: '旧版自动整理',
+  main: '历史聊天'
+};
+let _miCurrentPage = 1;
+let _miCatsLoaded = false;
+let _miSearchGeneration = 0;
+
+async function loadMemoryExtractionStatus() {
+  const el = document.getElementById('memory-extraction-status');
+  if (!el) return;
+  try {
+    const state = await api('GET', '/memory-extraction-status');
+    const success = state.last_success_at
+      ? state.last_success_at.slice(0, 16).replace('T', ' ')
+      : '尚未完成';
+    const error = state.last_error
+      ? '<div style="color:var(--danger);margin-top:4px">最近错误：' + esc(state.last_error) + '</div>'
+      : '';
+    el.innerHTML =
+      '等待整理 ' + state.pending_messages + ' / ' + state.threshold +
+      ' 条聊天消息 · 上次成功：' + esc(success) + error;
+  } catch (e) {
+    el.textContent = '自动整理状态读取失败：' + e.message;
+  }
+}
+
+async function searchMemoryItems(page) {
+  const generation = ++_miSearchGeneration;
+  page = page || 1;
+  _miCurrentPage = page;
+  const el = document.getElementById('l2memory-content');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> 搜索中...</div>';
+  const q = (document.getElementById('mi-q').value || '').trim();
+  const cat = document.getElementById('mi-cat').value;
+  const sort = document.getElementById('mi-sort').value;
+  const limit = 20;
+  try {
+    const params = new URLSearchParams({ page, limit, sort });
+    if (q) params.set('q', q);
+    if (cat) params.set('category', cat);
+    const data = await api('GET', '/memory-items?' + params);
+    if (generation !== _miSearchGeneration) return;
+
+    // Populate category dropdown once
+    if (!_miCatsLoaded && data.categories) {
+      const sel = document.getElementById('mi-cat');
+      const cur = sel.value;
+      sel.innerHTML = '<option value="">全部分类</option>' +
+        data.categories.map(c =>
+          '<option value="' + esc(c.name === '(无)' ? '' : c.name) + '"' +
+          (cur === c.name ? ' selected' : '') + '>' +
+          esc(c.name) + ' (' + c.count + ')</option>'
+        ).join('');
+      _miCatsLoaded = true;
+    }
+
+    if (!data.items.length) {
+      el.innerHTML = '<div class="loading" style="color:var(--text-soft)">没有匹配的记忆条目</div>';
+      return;
+    }
+
+    const rows = data.items.map(function(item) {
+      const stars = IMPORTANCE_STARS[item.importance] || item.importance;
+      const starsColor = item.importance >= 3 ? 'var(--danger)' : item.importance >= 2 ? 'var(--warning)' : 'var(--text-soft)';
+      const catBadge = item.category ? '<span class="badge badge-gray" style="font-size:10px">' + esc(item.category) + '</span>' : '';
+      const sourceLabel = MEMORY_SOURCE_LABELS[item.source] || '其他';
+      const srcBadge = '<span class="badge badge-gray" style="font-size:10px">' + esc(sourceLabel) + '</span>';
+      const ts = item.updated_at ? item.updated_at.slice(0, 16).replace('T', ' ') : '';
+      return '<tr>' +
+        '<td style="max-width:420px;word-break:break-all;white-space:pre-wrap;font-size:13px;line-height:1.5">' + esc(item.content) + '</td>' +
+        '<td style="white-space:nowrap">' + catBadge + '</td>' +
+        '<td style="color:' + starsColor + ';white-space:nowrap;font-size:12px">' + stars + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + srcBadge + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + item.access_count + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + ts + '</td>' +
+        '<td style="white-space:nowrap">' +
+          '<button class="btn btn-ghost btn-sm" onclick=\'openMiEdit(' + JSON.stringify(item).replace(/'/g,"&#39;") + ')\' title="编辑">✏️</button> ' +
+          '<button class="btn btn-danger btn-sm" onclick="deleteMi(' + item.id + ')" title="删除">🗑</button>' +
+        '</td>' +
+      '</tr>';
+    }).join('');
+
+    const pages = data.pages;
+    const pageNums = Array.from({length:pages},function(_,i){return i+1})
+      .filter(function(p){return p===1||p===pages||Math.abs(p-page)<=2});
+    const pageBtns = pageNums.reduce(function(acc,p,i,arr){
+      if(i>0 && p-arr[i-1]>1) acc.push('…');
+      acc.push(p);
+      return acc;
+    }, []).map(function(p){
+      return p==='…'
+        ? '<span style="padding:4px 8px;color:var(--text-soft)">…</span>'
+        : '<button class="btn '+(p===page?'btn-primary':'btn-ghost')+'" style="min-width:32px;padding:4px 10px;font-size:12px" onclick="searchMemoryItems('+p+')">'+p+'</button>';
+    }).join('');
+
+    el.innerHTML =
+      '<div style="margin-bottom:10px;font-size:13px;color:var(--text-soft)">共 ' + data.total.toLocaleString() + ' 条 · 第 ' + page + '/' + pages + ' 页</div>' +
+      '<div style="overflow-x:auto"><table class="tbl"><thead><tr>' +
+      '<th>内容</th><th>分类</th><th>重要性</th><th>来源</th><th>访问</th><th>更新时间</th><th>操作</th>' +
+      '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
+      '<div style="display:flex;gap:6px;justify-content:center;margin-top:14px;flex-wrap:wrap">' +
+        (page > 1 ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page-1)+')">‹ 上一页</button>' : '') +
+        pageBtns +
+        (page < pages ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page+1)+')">下一页 ›</button>' : '') +
+      '</div>';
+  } catch (e) {
+    if (generation !== _miSearchGeneration) return;
+    el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
+  }
+}
+
+function openMiEdit(item) {
+  document.getElementById('mi-edit-id').value = item.id;
+  document.getElementById('mi-edit-content').value = item.content;
+  document.getElementById('mi-edit-category').value = item.category || '';
+  document.getElementById('mi-edit-importance').value = item.importance;
+  document.getElementById('mi-modal-title').textContent = '编辑记忆 #' + item.id;
+  document.getElementById('mi-modal').classList.add('open');
+}
+
+function closeMiModal() {
+  document.getElementById('mi-modal').classList.remove('open');
+}
+
+async function saveMiEdit() {
+  const id = document.getElementById('mi-edit-id').value;
+  const content = document.getElementById('mi-edit-content').value.trim();
+  const category = document.getElementById('mi-edit-category').value.trim();
+  const importance = parseInt(document.getElementById('mi-edit-importance').value);
+  if (!content) { showToast('❌ 内容不能为空'); return; }
+  try {
+    await api('POST', '/memory-items/' + id, { content, category, importance });
+    showToast('✅ 记忆已更新');
+    closeMiModal();
+    searchMemoryItems(_miCurrentPage);
+  } catch (e) { showToast('❌ 更新失败: ' + e.message); }
+}
+
+async function deleteMi(id) {
+  if (!confirm('确定删除记忆 #' + id + '？\n（会移入回收站，不会永久丢失）')) return;
+  try {
+    await api('POST', '/memory-items/delete', { ids: [id] });
+    showToast('🗑 已删除');
+    searchMemoryItems(_miCurrentPage);
+  } catch (e) { showToast('❌ 删除失败: ' + e.message); }
+}
+
+async function testModel(name, btn) {
+  const orig = btn.textContent;
+  btn.textContent = '测试中...';
+  btn.disabled = true;
+  try {
+    const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
+    if (r.ok) {
+      btn.textContent = '✅ 成功';
+      btn.style.color = 'var(--success)';
+      showToast('✅ 模型 ' + name + ' 连接成功' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    } else {
+      btn.textContent = '❌ 失败';
+      btn.style.color = 'var(--danger)';
+      showToast('❌ 模型 ' + name + ' 连接失败: ' + (r.error||'未知错误'));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.textContent = '❌ 失败';
+    btn.style.color = 'var(--danger)';
+    showToast('❌ ' + e.message);
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+  }
+  finally { btn.disabled = false; }
+}
+
+async function testModelInModal() {
+  const res = document.getElementById('mm-test-result');
+  const name = document.getElementById('mm-name').value.trim();
+  if (!name) return;
+  // Save first, then test
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
+  try {
+    await saveModelFromModal(true);
+    const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
+    if (r.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600;font-size:14px">✅ 连接成功！${r.latency_ms?'延迟 '+r.latency_ms+'ms':''}</span>`;
+      showToast('✅ 模型 ' + name + ' 测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600;font-size:14px">❌ 连接失败: ${esc(r.error||'未知错误')}</span>`;
+    }
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600;font-size:14px">❌ ${esc(e.message)}</span>`;
+  }
+}
+
+async function assignTier(tier, modelName) {
+  try {
+    if (modelName) { await api('PUT','/tiers/'+tier, {model_name:modelName}); }
+    else { await api('DELETE','/tiers/'+tier); }
+    showToast(tier + ' 模型已更新');
+    loaded.advanced = false;
+    loaded.settings = false;
+    loadSettings();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+// ── Embedding Config helpers ──────────────
+
+let _embApiKeySet = false;
+function updateEmbeddingFields() {
+  const sel = document.getElementById('emb-vendor');
+  if (!sel) return;
+  const v = sel.value;
+  const mainFields = document.getElementById('emb-fields-main');
+  const noneFields = document.getElementById('emb-fields-none');
+
+  if (v === 'none') {
+    if (mainFields) mainFields.style.display = 'none';
+    if (noneFields) noneFields.style.display = 'block';
+  } else {
+    if (mainFields) mainFields.style.display = 'block';
+    if (noneFields) noneFields.style.display = 'none';
+  }
+}
+
+function onEmbVendorChange() {
+  const sel = document.getElementById('emb-vendor');
+  const preset = EMB_VENDOR_PRESETS.find(p => p.vendor === sel.value);
+  if (!preset) return;
+  const urlEl = document.getElementById('emb-baseurl');
+  const modelEl = document.getElementById('emb-model');
+  // This handler only runs after an explicit dropdown change. Initial render
+  // keeps an existing compatible endpoint exactly as configured.
+  if (urlEl) urlEl.value = preset.baseUrl;
+  if (modelEl && preset.placeholder) {
+    modelEl.placeholder = '例如 ' + preset.placeholder;
+  }
+  else if (modelEl) modelEl.placeholder = '';
+  updateEmbeddingFields();
+}
+
+function openEmbeddingEdit() {
+  const summary = document.getElementById('emb-summary');
+  const form = document.getElementById('emb-form');
+  if (summary) summary.style.display = 'none';
+  if (form) form.style.display = 'block';
+  updateEmbeddingFields();
+}
+
+function closeEmbeddingEdit() {
+  const summary = document.getElementById('emb-summary');
+  const form = document.getElementById('emb-form');
+  if (summary) summary.style.display = 'block';
+  if (form) form.style.display = 'none';
+}
+
+async function testEmbeddingSummary(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '测试中...';
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/embedding/test');
+    if (r.ok) {
+      btn.textContent = '✅ 成功';
+      btn.style.color = 'var(--success)';
+      showToast('✅ Embedding 测试通过' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    } else {
+      btn.textContent = '❌ 失败';
+      btn.style.color = 'var(--danger)';
+      showToast('❌ Embedding 测试失败: ' + (r.error||'未知错误') + (r.code ? '（code: '+r.code+'）' : ''));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.textContent = '❌ 失败';
+    btn.style.color = 'var(--danger)';
+    showToast('❌ ' + e.message);
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+  } finally { btn.disabled = false; }
+}
+
+async function deleteEmbeddingConfig() {
+  if (!confirm('确定禁用 Embedding？这会清除 .env 中的 Embedding 配置。')) return;
+  try {
+    await api('PUT', '/env', {EMBEDDING_PROVIDER: 'none', EMBEDDING_API_KEY: '', EMBEDDING_MODEL: '', EMBEDDING_BASE_URL: ''});
+    showToast('Embedding 已禁用');
+    loaded.advanced = false;
+    loadAdvanced();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function saveEmbeddingConfig(skipReload) {
+  const vendorSel = document.getElementById('emb-vendor');
+  const vendor = vendorSel ? vendorSel.value : 'none';
+  const preset = EMB_VENDOR_PRESETS.find(p => p.vendor === vendor) || EMB_VENDOR_PRESETS[EMB_VENDOR_PRESETS.length - 1];
+  const body = {EMBEDDING_PROVIDER: preset.provider};
+
+  if (vendor !== 'none') {
+    const apiKey = (document.getElementById('emb-apikey') || {}).value || '';
+    if (apiKey.trim()) body.EMBEDDING_API_KEY = apiKey.trim();
+    const model = (document.getElementById('emb-model') || {}).value || '';
+    body.EMBEDDING_MODEL = model.trim();
+    const baseUrl = (document.getElementById('emb-baseurl') || {}).value || '';
+    body.EMBEDDING_BASE_URL = baseUrl.trim();
+  }
+
+  try {
+    await api('PUT', '/env', body);
+    if (!skipReload) {
+      showToast('Embedding 配置已保存（重启生效）');
+      loaded.advanced = false;
+      loadAdvanced();
+    }
+  } catch(e) { showToast('错误: ' + e.message); throw e; }
+}
+
+async function testEmbedding(btn) {
+  const res = document.getElementById('emb-test-result');
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
+  btn.disabled = true;
+  try {
+    await saveEmbeddingConfig(true);
+    const r = await api('POST', '/embedding/test');
+    if (r.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 连接成功！模型: ${esc(r.model)}，维度: ${r.dim}${r.latency_ms ? '，延迟 '+r.latency_ms+'ms' : ''}</span>`;
+      showToast('✅ Embedding 测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ 失败: ${esc(r.error||'未知错误')}${r.code ? ' <small>（code: '+esc(r.code)+'）</small>' : ''}</span>`;
+    }
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(e.message)}</span>`;
+  } finally { btn.disabled = false; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Migration (搬家)
+// ═══════════════════════════════════════════════════════════════════════════
+
+let _migSession = null;
+let _migStats = null;
+let _migModels = [];
+let _migContextWindows = {};
+let _migJobId = null;
+let _migJobPollTimer = null;
+let _migPollStart = null;
+let _migResult = null;
+
+async function loadMigration() {
+  _migrationLoaded = true;
+  const el = document.getElementById('migration-content');
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">从 ChatGPT 导入</div>
+      <p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">
+        上传从 ChatGPT 导出的 JSON 聊天记录文件，系统将生成一个可审阅的 Core 草稿和按需回忆的记忆条目。
+      </p>
+      <div style="background:var(--warning);color:#fff;padding:10px 14px;border-radius:8px;font-size:13px;margin-bottom:16px">
+        ⚠️ 提取过程使用 LLM 处理聊天记录，根据文件大小可能消耗大量 token，费用由你的 API key 承担。
+      </div>
+      <div class="form-group">
+        <label class="form-label">选择 ChatGPT 导出文件（JSON，最大 50MB）</label>
+        <input type="file" id="mig-file-input" accept=".json" class="form-input" style="padding:6px">
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="btn btn-primary" onclick="migUpload()">上传并分析</button>
+        <span id="mig-upload-status" style="font-size:13px"></span>
+      </div>
+    </div>
+  `;
+  // Reset state
+  _migSession = null; _migStats = null; _migResult = null;
+  _migJobId = null; _migPollStart = null;
+  if (_migJobPollTimer) { clearInterval(_migJobPollTimer); _migJobPollTimer = null; }
+}
+
+async function migUpload() {
+  const fileInput = document.getElementById('mig-file-input');
+  const file = fileInput?.files?.[0];
+  if (!file) return showToast('请先选择文件');
+  if (file.size > 50 * 1024 * 1024) return showToast('文件超过 50MB 限制');
+
+  const statusEl = document.getElementById('mig-upload-status');
+  statusEl.innerHTML = '<span class="spinner" style="width:16px;height:16px;border-width:2px;display:inline-block;vertical-align:middle"></span> 上传分析中...';
+
+  const formData = new FormData();
+  formData.append('file', file);
+  const headers = {};
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+
+  try {
+    const r = await fetch('/api/migration/upload', {method:'POST', headers, body:formData});
+    if (!r.ok) {
+      let msg = r.status + ': 未知错误';
+      try { const j = await r.json(); msg = j.detail || j.error || JSON.stringify(j); }
+      catch { try { msg = await r.text() || msg; } catch {} }
+      const err = new Error(msg); err.status = r.status; throw err;
+    }
+    const data = await r.json();
+    if (!data.ok) throw new Error(data.error || '上传失败');
+    _migSession = data.session_id;
+    _migStats = data;
+
+    // Also load models
+    const mdata = await api('GET', '/migration/models');
+    _migModels = mdata.models || [];
+    _migContextWindows = mdata.context_windows || {};
+
+    migShowStep2();
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(e.message)}</span>`;
+  }
+}
+
+function migShowStep2() {
+  const el = document.getElementById('migration-content');
+  const s = _migStats;
+
+  if (_migModels.length === 0) {
+    el.innerHTML = `
+      <div class="card">
+        <div class="card-title">⚠️ 未配置模型</div>
+        <p style="font-size:13px;color:var(--text-soft)">请先在「设置」中配置 Main 模型，再使用搬家功能。</p>
+        <button class="btn btn-ghost" style="margin-top:12px" onclick="loadMigration()">← 返回</button>
+      </div>
+    `;
+    return;
+  }
+
+  const modelOpts = _migModels.map(m =>
+    `<option value="${esc(m.name)}">${esc(m.name)} (${esc(m.model)})</option>`
+  ).join('');
+
+  el.innerHTML = `
+    <div class="card" style="margin-bottom:16px">
+      <div class="card-title">分析结果</div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;margin-bottom:16px">
+        <div style="background:var(--primary-bg);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:var(--primary)">${s.conversation_count}</div>
+          <div style="font-size:12px;color:var(--text-soft)">对话数</div>
+        </div>
+        <div style="background:var(--primary-bg);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:var(--primary)">${s.raw_message_count}</div>
+          <div style="font-size:12px;color:var(--text-soft)">原始消息</div>
+        </div>
+        <div style="background:var(--primary-bg);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:var(--primary)">${s.filtered_message_count}</div>
+          <div style="font-size:12px;color:var(--text-soft)">过滤后消息</div>
+        </div>
+        <div style="background:var(--primary-bg);padding:12px;border-radius:8px;text-align:center">
+          <div style="font-size:22px;font-weight:700;color:var(--primary)">${s.estimated_tokens.toLocaleString()}</div>
+          <div style="font-size:12px;color:var(--text-soft)">预估 tokens</div>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">选择用于提取的模型</label>
+        <select id="mig-model-select" class="form-input" style="width:auto;min-width:240px" onchange="migCheckContext()">
+          ${modelOpts}
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">记忆提取颗粒度</label>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="detailed"> 精细 <span style="color:var(--text-soft);font-size:11px">— 尽可能多，包括日常琐事</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="standard" checked> 标准 <span style="color:var(--text-soft);font-size:11px">— 有记忆价值的，跳过纯闲聊</span>
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+            <input type="radio" name="mig-granularity" value="essential"> 精简 <span style="color:var(--text-soft);font-size:11px">— 只保留关键信息</span>
+          </label>
+        </div>
+      </div>
+      <div id="mig-context-warning" style="margin-bottom:12px"></div>
+
+      <div style="display:flex;align-items:center;gap:12px">
+        <button class="btn btn-primary" onclick="migStartExtract()" id="mig-extract-btn">开始提取</button>
+        <button class="btn btn-ghost" onclick="loadMigration()">← 返回</button>
+      </div>
+    </div>
+  `;
+  migCheckContext();
+}
+
+function migCheckContext() {
+  const sel = document.getElementById('mig-model-select');
+  const warn = document.getElementById('mig-context-warning');
+  if (!sel || !warn) return;
+
+  const modelName = sel.value;
+  const modelEntry = _migModels.find(m => m.name === modelName);
+  const modelId = modelEntry ? modelEntry.model.toLowerCase() : '';
+  const tokens = _migStats.estimated_tokens;
+
+  let ctxSize = null;
+  for (const [key, val] of Object.entries(_migContextWindows)) {
+    if (modelId.includes(key)) { ctxSize = val; break; }
+  }
+
+  if (!ctxSize) {
+    warn.innerHTML = '<span style="font-size:12px;color:var(--text-soft)">未知模型的 context 窗口大小，无法预估是否超限</span>';
+    return;
+  }
+
+  const pct = tokens / ctxSize;
+  if (pct >= 0.8) {
+    warn.innerHTML = `<div style="background:#FFF3E0;color:#E65100;padding:10px 14px;border-radius:8px;font-size:13px">
+      ⚠️ 预估 token 数约占模型 context 的 ${Math.round(pct*100)}%（${tokens.toLocaleString()} / ${ctxSize.toLocaleString()}），内容可能被截断。建议选择 context 更大的模型。
+    </div>`;
+  } else {
+    warn.innerHTML = `<span style="font-size:12px;color:var(--success)">✓ 预估 token 数约占 context 的 ${Math.round(pct*100)}%，可正常处理</span>`;
+  }
+}
+
+async function migStartExtract() {
+  const sel = document.getElementById('mig-model-select');
+  const modelName = sel.value;
+  if (!modelName) return showToast('请选择模型');
+
+  const btn = document.getElementById('mig-extract-btn');
+  btn.disabled = true; btn.textContent = '启动中...';
+
+  try {
+    const granularity = document.querySelector('input[name="mig-granularity"]:checked')?.value || 'standard';
+    const data = await api('POST', '/migration/extract', {
+      session_id: _migSession,
+      model_name: modelName,
+      granularity: granularity,
+    });
+    if (!data.ok) throw new Error(data.error || '启动失败');
+    _migJobId = data.job_id;
+    migShowStep3();
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '开始提取';
+    showToast('❌ ' + e.message);
+  }
+}
+
+function migShowStep3() {
+  const el = document.getElementById('migration-content');
+  _migPollStart = Date.now();
+
+  el.innerHTML = `
+    <div class="card" style="text-align:center;padding:48px 24px">
+      <div class="spinner" style="width:40px;height:40px;border-width:4px;margin:0 auto 20px"></div>
+      <h3 style="color:var(--text-heading);margin-bottom:8px">正在分析聊天记录...</h3>
+      <p style="color:var(--text-soft);font-size:14px;margin-bottom:4px">LLM 正在提取你的记忆和偏好</p>
+      <p style="color:var(--danger);font-size:13px;font-weight:600">⚠️ 请不要关闭或刷新页面</p>
+      <div id="mig-poll-status" style="margin-top:16px;font-size:12px;color:var(--text-soft)">已等待 0 秒...</div>
+    </div>
+  `;
+
+  _migJobPollTimer = setInterval(migPollJob, 3000);
+}
+
+async function migPollJob() {
+  try {
+    const data = await api('GET', '/migration/job/status?job_id=' + _migJobId);
+    const elapsed = Math.round((Date.now() - _migPollStart) / 1000);
+    const pollEl = document.getElementById('mig-poll-status');
+    if (pollEl) pollEl.textContent = `已等待 ${elapsed} 秒...`;
+
+    if (data.status === 'done') {
+      clearInterval(_migJobPollTimer); _migJobPollTimer = null;
+      _migResult = data.result;
+      migShowStep4();
+    } else if (data.status === 'error') {
+      clearInterval(_migJobPollTimer); _migJobPollTimer = null;
+      migShowError(data.error);
+    }
+  } catch(e) {
+    // network blip — keep polling
+  }
+}
+
+function migShowError(error) {
+  const el = document.getElementById('migration-content');
+  el.innerHTML = `
+    <div class="card" style="text-align:center;padding:32px 24px">
+      <div style="font-size:40px;margin-bottom:12px">❌</div>
+      <h3 style="color:var(--danger);margin-bottom:8px">提取失败</h3>
+      <p style="font-size:13px;color:var(--text-soft);margin-bottom:16px;word-break:break-all">${esc(error || '未知错误')}</p>
+      <div style="display:flex;gap:12px;justify-content:center">
+        <button class="btn btn-primary" onclick="migShowStep2()">重新选择模型</button>
+        <button class="btn btn-ghost" onclick="loadMigration()">重新开始</button>
+      </div>
+    </div>
+  `;
+}
+
+function migShowStep4() {
+  const el = document.getElementById('migration-content');
+  const r = _migResult || {};
+  const items = r.memory_items || [];
+
+  const itemRows = items.map((item, i) => `
+    <tr>
+      <td style="width:36px;text-align:center"><input type="checkbox" checked data-mig-item="${i}"></td>
+      <td><input type="text" value="${esc(item.category||'其他')}" class="form-input" style="padding:4px 8px;font-size:12px" data-mig-cat="${i}"></td>
+      <td><input type="text" value="${esc(item.content||'')}" class="form-input" style="padding:4px 8px;font-size:12px" data-mig-content="${i}"></td>
+      <td style="width:70px">
+        <select class="form-input" style="padding:4px;font-size:12px" data-mig-imp="${i}">
+          <option value="1" ${item.importance==1?'selected':''}>★</option>
+          <option value="2" ${item.importance==2?'selected':''}>★★</option>
+          <option value="3" ${item.importance==3?'selected':''}>★★★</option>
+        </select>
+      </td>
+    </tr>
+  `).join('');
+
+  // Helper to make a section card with its own save button
+  function sectionCard(id, title, desc, content, height) {
+    return `
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <div class="card-title" style="margin-bottom:0">${title}</div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <span id="mig-${id}-status" style="font-size:12px"></span>
+          <button class="btn btn-primary btn-sm" onclick="migApplySection('${id}')">确认写入</button>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">${desc}</p>
+      <textarea id="mig-${id}" class="form-input" style="min-height:${height};font-size:13px;font-family:inherit;resize:vertical">${esc(content)}</textarea>
+    </div>`;
+  }
+
+  el.innerHTML = `
+    ${sectionCard('core', 'Core 草稿', '统一包含 Agent、用户与关系的常驻摘要；确认后写入 Core，并自动保留当前版本', r.core||'', '220px')}
+
+    <div class="card" style="margin-bottom:16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div class="card-title" style="margin-bottom:0">记忆条目</div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-ghost btn-sm" onclick="migToggleAll(true)">全选</button>
+          <button class="btn btn-ghost btn-sm" onclick="migToggleAll(false)">全不选</button>
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">勾选要导入的条目，可编辑内容、分类和重要性（最多导入 500 条）</p>
+      ${items.length ? `
+      <div style="overflow-x:auto">
+        <table class="tbl" style="width:100%">
+          <thead><tr>
+            <th style="width:36px"></th>
+            <th style="width:100px">分类</th>
+            <th>内容</th>
+            <th style="width:70px">重要性</th>
+          </tr></thead>
+          <tbody>${itemRows}</tbody>
+        </table>
+      </div>` : '<p style="font-size:13px;color:var(--text-soft)">未提取到记忆条目</p>'}
+      <div style="margin-top:12px;display:flex;align-items:center;gap:12px">
+        <button class="btn btn-primary btn-sm" onclick="migApplyMemories()" id="mig-mem-btn">开始导入</button>
+        <span id="mig-mem-status" style="font-size:12px"></span>
+      </div>
+      <div id="mig-mem-progress" style="display:none;margin-top:8px">
+        <div style="background:var(--bg-subtle);border-radius:4px;height:8px;overflow:hidden">
+          <div id="mig-mem-bar" style="height:100%;background:var(--primary);width:0%;transition:width .3s"></div>
+        </div>
+        <div id="mig-mem-progress-text" style="font-size:11px;color:var(--text-soft);margin-top:4px"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:12px;align-items:center">
+      <button class="btn btn-ghost" onclick="loadMigration()">重新开始</button>
+      <span style="font-size:12px;color:var(--text-soft)">未配置 embedding 时，导入的记忆条目不支持向量搜索</span>
+    </div>
+  `;
+}
+
+function migToggleAll(checked) {
+  document.querySelectorAll('[data-mig-item]').forEach(cb => cb.checked = checked);
+}
+
+async function migApplySection(id) {
+  const sectionMap = {core: 'core'};
+  const section = sectionMap[id];
+  if (!section) return;
+
+  const statusEl = document.getElementById(`mig-${id}-status`);
+  const content = document.getElementById(`mig-${id}`)?.value || '';
+  statusEl.innerHTML = '<span style="color:var(--text-soft)">保存中...</span>';
+
+  try {
+    const data = await api('POST', '/migration/apply/section', {section, content});
+    if (!data.ok) throw new Error(data.error || '保存失败');
+    statusEl.innerHTML = data.written
+      ? '<span style="color:var(--success)">✅ 已写入</span>'
+      : '<span style="color:var(--text-soft)">⏭ 跳过（内容为空）</span>';
+    if (section === 'core' && data.written) {
+      loaded.memory = false;
+      loadMemory();
+    }
+  } catch(e) {
+    statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(e.message)}</span>`;
+  }
+}
+
+async function migApplyMemories() {
+  const btn = document.getElementById('mig-mem-btn');
+  const statusEl = document.getElementById('mig-mem-status');
+  const progressWrap = document.getElementById('mig-mem-progress');
+
+  // Collect selected items
+  const items = (_migResult?.memory_items || []).map((_, i) => {
+    const cb = document.querySelector(`[data-mig-item="${i}"]`);
+    const cat = document.querySelector(`[data-mig-cat="${i}"]`);
+    const content = document.querySelector(`[data-mig-content="${i}"]`);
+    const imp = document.querySelector(`[data-mig-imp="${i}"]`);
+    return {
+      category: cat?.value || '其他',
+      content: content?.value || '',
+      importance: parseInt(imp?.value || '1'),
+      selected: cb?.checked ?? false,
+    };
+  });
+
+  const selectedCount = items.filter(it => it.selected && it.content.trim()).length;
+  if (!selectedCount) { showToast('没有勾选任何条目'); return; }
+
+  btn.disabled = true; btn.textContent = '导入中...';
+  statusEl.innerHTML = '';
+  progressWrap.style.display = 'block';
+
+  try {
+    const data = await api('POST', '/migration/apply/memories', {memory_items: items});
+    if (!data.ok) throw new Error(data.error || '启动失败');
+    _migMemJobId = data.job_id;
+    _migMemPollTimer = setInterval(migPollMemJob, 2000);
+  } catch(e) {
+    btn.disabled = false; btn.textContent = '开始导入';
+    progressWrap.style.display = 'none';
+    showToast('❌ ' + e.message);
+  }
+}
+
+let _migMemJobId = null;
+let _migMemPollTimer = null;
+
+async function migPollMemJob() {
+  try {
+    const data = await api('GET', '/migration/job/status?job_id=' + _migMemJobId);
+    const bar = document.getElementById('mig-mem-bar');
+    const txt = document.getElementById('mig-mem-progress-text');
+    const pct = data.total > 0 ? Math.round((data.progress / data.total) * 100) : 0;
+    if (bar) bar.style.width = pct + '%';
+    if (txt) txt.textContent = `${data.progress || 0} / ${data.total || 0} 条`;
+
+    if (data.status === 'done') {
+      clearInterval(_migMemPollTimer); _migMemPollTimer = null;
+      const btn = document.getElementById('mig-mem-btn');
+      const statusEl = document.getElementById('mig-mem-status');
+      if (bar) bar.style.width = '100%';
+      if (btn) { btn.disabled = true; btn.textContent = '导入完成'; }
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--success)">✅ 已导入 ${data.result?.memory_items_imported || 0} 条</span>`;
+      loaded.memory = false;
+      _miCatsLoaded = false;
+      loadMemoryExtractionStatus();
+      searchMemoryItems(1);
+    } else if (data.status === 'error') {
+      clearInterval(_migMemPollTimer); _migMemPollTimer = null;
+      const btn = document.getElementById('mig-mem-btn');
+      const statusEl = document.getElementById('mig-mem-status');
+      if (btn) { btn.disabled = false; btn.textContent = '重试'; }
+      if (statusEl) statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(data.error || '导入失败')}</span>`;
+    }
+  } catch(e) { /* network blip — keep polling */ }
+}
+</script>
+</body>
+</html>

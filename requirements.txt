@@ -1,0 +1,23 @@
+# Core
+openai>=1.30.0
+anthropic>=0.39.0
+python-telegram-bot>=21.0
+
+# Utilities
+python-dotenv>=1.0.0
+httpx>=0.27.0
+ddgs>=8.0.0
+
+# Admin Portal (web UI for setup & config)
+fastapi>=0.100.0
+uvicorn>=0.20.0
+python-multipart>=0.0.6
+
+# API key encryption at rest
+cryptography>=42.0.0
+
+# Native vector search (used by memory auto-recall)
+sqlite-vec>=0.1.6
+
+# WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
+aiohttp>=3.9

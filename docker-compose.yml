@@ -1,0 +1,10 @@
+services:
+  mochibot:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # data/ includes the SQLite DB and prompt overrides under data/prompts/
+      - ./data:/app/data
+    ports:
+      - "8080:8080"

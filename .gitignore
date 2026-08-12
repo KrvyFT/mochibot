@@ -1,0 +1,52 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+.pytest_cache/
+
+# Data
+data/
+
+# Claude Code
+CLAUDE.md
+/ARCHITECTURE.md
+.claude/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# WIP (work-in-progress files, not shipped)
+wip/
+
+# Temp scripts
+run_admin.py
+
+# Debug screenshots
+*.png
+
+# Playwright MCP
+.playwright-mcp/
+
+# Live E2E tests (use real LLM + real DB — not for public repo)
+tests/live/

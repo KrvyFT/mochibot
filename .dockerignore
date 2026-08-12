@@ -1,0 +1,20 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+data/
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.venv
+venv
+# Keep runtime markdowns (prompts and SKILL.md) in the build context.
+LICENSE
+.claude/
+.playwright-mcp/
+tests/
+*.png
+*.jpg
+*.jpeg

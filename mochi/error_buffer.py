@@ -1,0 +1,211 @@
+"""In-memory error buffer for diagnostics.
+
+Captures WARNING+ log records in a bounded ring buffer.
+Provides a one-click diagnostic report for bug reporting.
+"""
+
+import collections
+import logging
+import platform
+import sys
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Callable, List, Optional
+
+_buffer: collections.deque = collections.deque(maxlen=500)
+_log_source: Optional[Callable[[], List[str]]] = None
+_diagnostic_providers: dict[str, Callable[[], str]] = {}
+
+
+# ── BufferHandler ───────────────────────────────────────────────────────
+
+class BufferHandler(logging.Handler):
+    """Logging handler that captures WARNING+ records into the ring buffer."""
+
+    def __init__(self):
+        super().__init__(level=logging.WARNING)
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            from mochi.config import TZ
+            entry = {
+                "time": datetime.fromtimestamp(record.created, tz=TZ).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "level": record.levelname,
+                "name": record.name,
+                "message": record.getMessage(),
+                "traceback": (
+                    self.format(record).split("\n", 1)[1]
+                    if record.exc_info and record.exc_info[0]
+                    else None
+                ),
+            }
+            _buffer.append(entry)
+        except Exception:
+            pass  # never crash the logging pipeline
+
+
+# ── Public API ──────────────────────────────────────────────────────────
+
+def get_recent_errors(hours: int = 24) -> list:
+    """Return buffer entries from the last *hours*."""
+    from mochi.config import TZ
+    cutoff = datetime.now(TZ) - timedelta(hours=hours)
+    cutoff_str = cutoff.strftime("%Y-%m-%d %H:%M:%S")
+    return [e for e in _buffer if e["time"] >= cutoff_str]
+
+
+def register_log_source(fn: Callable[[], List[str]]):
+    """Register a callable that returns recent runtime log lines.
+
+    Called by admin_server to supply bot subprocess stdout without
+    error_buffer needing to import admin_server (correct dependency
+    direction: admin -> error_buffer).
+    """
+    global _log_source
+    _log_source = fn
+
+
+def register_diagnostic_provider(name: str, fn: Callable[[], str]) -> None:
+    """Register a callable that returns a diagnostic section as a string.
+
+    Follows the same pattern as register_log_source(). Higher-layer callers
+    (main.py) register providers so error_buffer never imports from skills.
+    """
+    _diagnostic_providers[name] = fn
+
+
+# ── Diagnostic report ───────────────────────────────────────────────────
+
+def _mask(val: str) -> str:
+    """Mask a potentially sensitive config value."""
+    if not val:
+        return "(not set)"
+    if len(val) > 8:
+        return val[:3] + "***" + val[-3:]
+    return "***"
+
+
+def get_diagnostic_report() -> str:
+    """Assemble a full plaintext diagnostic report for bug reporting."""
+    # Lazy imports to avoid circular dependencies
+    from mochi.config import (  # noqa: E402
+        MAIN_PROVIDER, MAIN_MODEL, MAIN_BASE_URL, MAIN_API_KEY,
+        TELEGRAM_BOT_TOKEN, WEIXIN_ENABLED,
+        EMBEDDING_API_KEY,
+        HEARTBEAT_INTERVAL_MINUTES,
+        ADMIN_PORT, ADMIN_BIND,
+        TIMEZONE_OFFSET_HOURS,
+        DB_PATH, TZ,
+    )
+
+    lines: list[str] = []
+    now = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S")
+
+    # ── Header ──
+    lines.append("=" * 50)
+    lines.append("  MochiBot Diagnostic Report")
+    lines.append("=" * 50)
+    lines.append(f"Generated: {now}")
+    try:
+        from mochi._version import read_version
+        lines.append(f"Version: {read_version()}")
+    except Exception:
+        lines.append("Version: unknown")
+    lines.append("")
+
+    # ── System Info ──
+    lines.append("--- System Info ---")
+    lines.append(f"Platform: {platform.platform()}")
+    lines.append(f"Python: {sys.version}")
+    lines.append("")
+
+    # ── Config Summary (safe values shown, secrets masked) ──
+    lines.append("--- Config Summary ---")
+    lines.append(f"MAIN_PROVIDER: {MAIN_PROVIDER}")
+    lines.append(f"MAIN_MODEL: {MAIN_MODEL or '(not set)'}")
+    lines.append(f"MAIN_BASE_URL: {MAIN_BASE_URL or '(default)'}")
+    lines.append(f"MAIN_API_KEY: {_mask(MAIN_API_KEY)}")
+    lines.append(f"TELEGRAM_BOT_TOKEN: {_mask(TELEGRAM_BOT_TOKEN)}")
+    lines.append(f"WEIXIN_ENABLED: {WEIXIN_ENABLED}")
+    lines.append(f"EMBEDDING_API_KEY: {_mask(EMBEDDING_API_KEY)}")
+    lines.append(f"HEARTBEAT_INTERVAL_MINUTES: {HEARTBEAT_INTERVAL_MINUTES}")
+    lines.append(f"TIMEZONE_OFFSET_HOURS: {TIMEZONE_OFFSET_HOURS}")
+    lines.append(f"ADMIN_PORT: {ADMIN_PORT}")
+    lines.append(f"ADMIN_BIND: {ADMIN_BIND}")
+    lines.append("")
+
+    # ── Database Status ──
+    lines.append("--- Database ---")
+    db_path = Path(DB_PATH)
+    if db_path.exists():
+        size = db_path.stat().st_size
+        if size > 1024 * 1024:
+            size_str = f"{size / 1024 / 1024:.1f} MB"
+        else:
+            size_str = f"{size / 1024:.1f} KB"
+        lines.append(f"Path: {db_path}")
+        lines.append(f"Size: {size_str}")
+        # integrity check (only in export, not polled)
+        try:
+            from mochi.db import _connect
+            conn = _connect()
+            result = conn.execute("PRAGMA integrity_check").fetchone()[0]
+            conn.close()
+            lines.append(f"Integrity: {result}")
+        except Exception as e:
+            lines.append(f"Integrity check failed: {e}")
+    else:
+        lines.append(f"Path: {db_path}")
+        lines.append("Status: NOT FOUND")
+    lines.append("")
+
+    # ── Diagnostic Providers (registered at startup) ──
+    for provider_name, provider_fn in _diagnostic_providers.items():
+        try:
+            section_text = provider_fn()
+            if section_text:
+                lines.append(section_text)
+                lines.append("")
+        except Exception as e:
+            lines.append(f"--- {provider_name} ---")
+            lines.append(f"(provider failed: {e})")
+            lines.append("")
+
+    # ── Recent Errors (24h) ──
+    errors = get_recent_errors(24)
+    lines.append(f"--- Recent Errors (last 24h): {len(errors)} ---")
+    if not errors:
+        lines.append("(none)")
+    else:
+        for e in errors:
+            lines.append(
+                f"[{e['time']}] {e['level']} {e['name']} — {e['message']}"
+            )
+            if e.get("traceback"):
+                for tb_line in e["traceback"].splitlines():
+                    lines.append(f"  {tb_line}")
+    lines.append("")
+
+    # ── Recent Run Log ──
+    lines.append("--- Recent Run Log ---")
+    if _log_source:
+        try:
+            log_lines = _log_source()
+            if log_lines:
+                for line in log_lines[-500:]:
+                    lines.append(line.rstrip() if isinstance(line, str) else line)
+            else:
+                lines.append("(no log lines captured)")
+        except Exception as e:
+            lines.append(f"(failed to read log source: {e})")
+    else:
+        lines.append("(log source not registered — only available in standalone admin mode)")
+    lines.append("")
+
+    lines.append("=" * 50)
+    lines.append("  End of Report")
+    lines.append("=" * 50)
+
+    return "\n".join(lines)
