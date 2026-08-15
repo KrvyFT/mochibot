@@ -1,6 +1,5 @@
 """Memory skill — update Core and manage background-extracted memories."""
 
-import json
 import logging
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
@@ -25,7 +24,6 @@ class MemorySkill(Skill):
 
         if tool == "recall_memory":
             query = args.get("query", "")
-            category = args.get("category", "")
             # Generate embedding for hybrid vector search
             query_embedding = None
             if query:
@@ -35,15 +33,16 @@ class MemorySkill(Skill):
                 except Exception:
                     pass  # fall back to keyword-only search
             try:
-                items = db_recall(uid, query=query, category=category,
-                                  query_embedding=query_embedding)
+                items = db_recall(
+                    uid, query=query, query_embedding=query_embedding,
+                )
             except Exception as e:
                 log.error("recall_memory failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed to recall memories: {e}", success=False)
             if not items:
                 return SkillResult(output="No matching memories found.")
             lines = [
-                f"- #{m['id']} [{m['category']}] ★{m['importance']} | {m['content']}"
+                f"- #{m['id']} ★{m['importance']} | {m['content']}"
                 for m in items[:15]
             ]
             return SkillResult(output=f"Found {len(items)} memories:\n" + "\n".join(lines))
@@ -81,18 +80,17 @@ class MemorySkill(Skill):
             )
 
         elif tool == "list_memories":
-            category = args.get("category", "")
             limit = args.get("limit", 30)
             try:
-                items = db_list_all(uid, category=category, limit=limit)
+                items = db_list_all(uid, limit=limit)
             except Exception as e:
                 log.error("list_memories failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed: {e}", success=False)
             if not items:
                 return SkillResult(output="No memories found.")
             lines = [
-                f"#{m['id']} [{m['category']}] ★{m['importance']} | {m['content']} "
-                f"(updated {m['updated_at'][:10]})"
+                f"#{m['id']} ★{m['importance']} | {m['content']} "
+                f"(evidence {_evidence_label(m)})"
                 for m in items
             ]
             return SkillResult(output="\n".join(lines))
@@ -120,7 +118,6 @@ class MemorySkill(Skill):
                 "Memory Stats:",
                 f"- Total memories: {stats['total']}",
                 f"- 关键 (★3): {stats['high_importance']}",
-                f"- Categories: {json.dumps(stats['categories'], ensure_ascii=False)}",
                 f"- Trash bin: {len(trash)} items",
             ]
             try:
@@ -153,7 +150,7 @@ class MemorySkill(Skill):
                 lines = ["Deleted memories (kept 30 days):"]
                 for t in trash:
                     lines.append(
-                        f"Trash#{t['id']} (was #{t['original_id']}) [{t['category']}] "
+                        f"Trash#{t['id']} (was #{t['original_id']}) "
                         f"★{t['importance']} | {t['content']} "
                         f"(deleted {t['deleted_at'][:10]} by {t['deleted_by']})"
                     )
@@ -174,3 +171,11 @@ class MemorySkill(Skill):
             return SkillResult(output=f"Unknown action: {action}", success=False)
 
         return SkillResult(output=f"Unknown tool: {tool}", success=False)
+
+
+def _evidence_label(item: dict) -> str:
+    start = item.get("evidence_start", "")
+    end = item.get("evidence_end", "")
+    if start and end and start != end:
+        return f"{start} to {end}"
+    return start or "unknown"

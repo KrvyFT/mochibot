@@ -4,9 +4,6 @@ description: "饮食记录 — 记录饮食、查询历史、删除记录"
 type: tool
 multi_turn: true
 diary_status_order: 40
-writes:
-  diary: [diary]
-  db: [health_log]
 ---
 
 # Meal Skill

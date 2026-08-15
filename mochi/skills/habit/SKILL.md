@@ -4,9 +4,6 @@ description: "习惯打卡 — 需要长期坚持并追踪'做了没有'的事�
 type: tool
 multi_turn: true
 diary_status_order: 10
-writes:
-  diary: [diary]
-  db: [habit_checkins]
 ---
 
 # Habit Skill

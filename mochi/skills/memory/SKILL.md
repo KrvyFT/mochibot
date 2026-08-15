@@ -25,14 +25,12 @@ locked: true
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | query | string | no | 搜索关键词 |
-| category | string | no | 按分类筛选 |
 
 ### list_memories (on_demand)
-列出已保存的记忆，可按分类筛选。
+列出已保存的记忆。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| category | string | no | 按分类筛选 |
 | limit | integer | no | 最大返回条数（默认 30） |
 
 ### delete_memory (on_demand)
@@ -43,7 +41,7 @@ locked: true
 | memory_id | integer | yes | 要删除的记忆 ID |
 
 ### memory_stats (on_demand)
-显示记忆系统统计（总数、分类分布、回收站大小）。
+显示记忆系统统计（总数、重要记忆和回收站大小）。
 
 无需参数。
 
@@ -63,7 +61,6 @@ locked: true
 ## Usage Rules
 - **update_core 每轮都可用**：Main 只维护每轮常驻的稳定 Core
 - 具体 Memory Items 由后台 Lite 按聊天批次整理；Main 不直接创建条目
-- 持续关注但还不是具体任务的内容放 Core「正在惦记」；明确任务用 Todo，具体时间触发用 Reminder
 - Core 是持续修订的文档，不是事件流水账；新事实优先合并到已有表达，不得重复整段用户画像或创建同名 H1 区块
 - 已有内容用 edit；只有真正独立的新内容才用 insert_after。两者都必须先读取当前 Core，并使用精确且唯一的 old_text/anchor_text
 - 冲突时用 view_core_memory 重新读取再重试，不要盲目追加、猜测或模糊删除

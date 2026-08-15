@@ -3,8 +3,6 @@ name: workspace
 description: "日记读写、markdown 文件编辑 — 写日记、查日记、编辑 data 目录下的 md 文件"
 type: tool
 locked: true
-writes:
-  diary: [journal]
 ---
 
 # Workspace Skill
@@ -13,7 +11,7 @@ writes:
 
 ## Tools
 
-### write_diary (on_demand)
+### write_diary (resident)
 向今天的日记追加一段经历或感受，例如心情起伏、争执和状态变化。
 
 | Parameter | Type | Required | Description |

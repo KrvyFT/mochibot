@@ -10,6 +10,8 @@ This is the "brain" that ties together:
 import asyncio
 import json
 import logging
+import os
+import platform
 import re
 import time
 import uuid
@@ -35,6 +37,7 @@ from mochi.main_runtime import (
 from mochi.request_tools import ToolLoopBudget, resolve_request
 from mochi.token_estimator import estimate_tokens
 from mochi.tool_availability import ToolAvailability, unavailable_tool_error
+from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
 
@@ -43,7 +46,21 @@ log = logging.getLogger(__name__)
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
-_TOOL_HISTORY_EXCLUDE = frozenset({"request_tools", "send_sticker"})
+_TOOL_HISTORY_EXCLUDE = frozenset({
+    "request_tools", "send_sticker", ENTER_BEDTIME_TOOL_NAME,
+})
+
+
+def _deployment_environment() -> str:
+    system = platform.system() or "Unknown"
+    if os.path.exists("/.dockerenv"):
+        return f"Docker 容器（{system}）"
+    return {
+        "Windows": "Windows 环境",
+        "Linux": "Linux 环境",
+        "Darwin": "macOS 环境",
+    }.get(system, "其他系统环境")
+
 
 def _image_content(text: str, image: ImageAttachment) -> list[dict]:
     """Build the framework's OpenAI-style canonical multimodal content."""
@@ -79,11 +96,17 @@ _USER_LAST_RECALL_MAX = 100                # evict oldest when exceeded
 
 
 def _format_recalled_memories(memories: list[dict]) -> str:
-    lines = [
-        f"- [{memory.get('ts', '')}] {memory.get('category', '')} — "
-        f"{memory.get('text', '')}"
-        for memory in memories
-    ]
+    lines = []
+    for memory in memories:
+        start = memory.get("evidence_start", "")
+        end = memory.get("evidence_end", "")
+        if start and end and start != end:
+            prefix = f"[用户于 {start} 至 {end} 提到] "
+        elif start:
+            prefix = f"[用户于 {start} 提到] "
+        else:
+            prefix = ""
+        lines.append(f"- {prefix}{memory.get('text', '')}")
     return (
         "## 相关记忆\n"
         "以下是系统根据当前对话自动检索的历史片段，可能与当前话题相关：\n"
@@ -151,8 +174,8 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
             candidates.append({
                 "text": content,
                 "score": round(max(0.0, min(1.0, raw_score / 10.0)), 2),
-                "ts": str(item.get("updated_at") or item.get("created_at") or "")[:10],
-                "category": str(item.get("category") or ""),
+                "evidence_start": str(item.get("evidence_start") or "")[:10],
+                "evidence_end": str(item.get("evidence_end") or "")[:10],
             })
 
         from mochi.config import KG_ENABLED
@@ -167,8 +190,8 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
                         kg_candidates.append({
                             "text": kg_text,
                             "score": 0.95,
-                            "ts": "",
-                            "category": "knowledge_graph",
+                            "evidence_start": "",
+                            "evidence_end": "",
                         })
                 candidates = kg_candidates + candidates
             except Exception:
@@ -262,6 +285,7 @@ class ChatResult:
     stickers: list[str] = field(default_factory=list)
     tool_audit: list[dict] = field(default_factory=list)
     successful_effects: bool = False
+    bedtime_requested: bool = False
     disposition: str = "deliver"
     _pending_history: dict | None = field(default=None, repr=False)
     _delivery_confirmed: bool = field(default=False, init=False, repr=False)
@@ -367,7 +391,12 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if core_memory:
         stable_identity.append(core_memory)
     if "agent" in modules:
-        stable_identity.append(modules["agent"])
+        stable_identity.append(
+            modules["agent"].replace(
+                "{{deployment_environment}}",
+                _deployment_environment(),
+            )
+        )
     early_runtime_situation = []
     if policy.early_runtime_situation and runtime_entry:
         if runtime_entry.kind == "free_time":
@@ -657,11 +686,16 @@ async def chat(
                 "trailing": [],
             }
         from mochi.config import MAX_HISTORY_TURNS
+        recent_turns = (
+            prompt_policy.recent_turns
+            if prompt_policy.recent_turns is not None
+            else MAX_HISTORY_TURNS
+        )
         try:
             return await asyncio.to_thread(
                 get_conversation_context,
                 user_id,
-                MAX_HISTORY_TURNS,
+                recent_turns,
                 include_summary=prompt_policy.conversation_summary,
             )
         except Exception as e:
@@ -701,7 +735,6 @@ async def chat(
             logical_date=runtime_entry.logical_date or "",
             period_key=runtime_entry.period_key or "",
         )
-        await weekly_session.complete_pending_projection()
         tools = weekly_session.definitions()
         core_memory, conversation_context = await asyncio.gather(
             asyncio.to_thread(read_core),
@@ -793,7 +826,11 @@ async def chat(
         [
             *conversation_context["overflow"],
             *conversation_context["recent"],
-            *conversation_context["trailing"],
+            *(
+                conversation_context["trailing"]
+                if prompt_policy.trailing_history
+                else []
+            ),
         ]
         if prompt_policy.recent_history
         else []
@@ -813,6 +850,11 @@ async def chat(
     ):
         from mochi.request_tools import REQUEST_TOOLS_DEF
         tools.append(REQUEST_TOOLS_DEF)
+    if message is not None and runtime_entry is None:
+        from mochi.heartbeat import bedtime_tool_available
+
+        if bedtime_tool_available():
+            tools.append(ENTER_BEDTIME_DEF)
 
     # ── Policy: filter denied tools before LLM sees them ──
     from mochi.tool_policy import filter_tools, check as policy_check
@@ -882,6 +924,7 @@ async def chat(
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
     successful_effects = False
+    bedtime_requested = False
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
     bedtime_finalization_attempted = False
@@ -918,8 +961,6 @@ async def chat(
             if tool_names_used else None
         )
         if is_bedtime:
-            if "[SKIP]" in reply:
-                reply = ""
             if not reply and not pending_stickers:
                 log.warning("Bedtime Main turn returned no disposition")
                 return ChatResult()
@@ -935,9 +976,9 @@ async def chat(
                 },
             )
         if is_self_reminder or is_autonomous:
-            skipped = "[SKIP]" in reply
+            skipped = reply == "[SKIP]"
             if skipped:
-                reply = reply.replace("[SKIP]", "").strip()
+                reply = ""
             if skipped and not successful_effects and not pending_stickers:
                 return ChatResult(
                     tool_audit=tool_audit,
@@ -977,6 +1018,7 @@ async def chat(
         return ChatResult(
             text=reply,
             stickers=pending_stickers,
+            bedtime_requested=bedtime_requested,
             _pending_history={
                 "user_id": user_id,
                 "content": reply,
@@ -1006,6 +1048,17 @@ async def chat(
             call_type="bedtime_finalization",
         )
         return STICKER_RE.sub("", final_response.content or "").strip()
+
+    async def _ensure_bedtime_farewell(reply: str) -> str:
+        if not (is_bedtime or bedtime_requested):
+            return reply
+        if reply == "[SKIP]":
+            reply = ""
+        if pending_stickers:
+            return reply
+        if not reply:
+            reply = await _finalize_bedtime()
+        return "" if reply == "[SKIP]" else reply
 
     for round_num in range(max_tool_rounds):
         round_availability = availability
@@ -1047,8 +1100,7 @@ async def chat(
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = STICKER_RE.sub("", response.content or "").strip()
-            if is_bedtime and not reply and not pending_stickers:
-                reply = await _finalize_bedtime()
+            reply = await _ensure_bedtime_farewell(reply)
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
@@ -1091,6 +1143,33 @@ async def chat(
                     )
                 pending_definitions.extend(additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": result_text,
+                })
+                continue
+
+            if tc["name"] == ENTER_BEDTIME_TOOL_NAME:
+                if not round_availability.allows(ENTER_BEDTIME_TOOL_NAME):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": unavailable_tool_error(tc["name"]),
+                    })
+                    continue
+                if tc["arguments"]:
+                    result_text = json.dumps({
+                        "ok": False,
+                        "error": "enter_bedtime accepts no arguments",
+                    }, ensure_ascii=False)
+                else:
+                    bedtime_requested = True
+                    result_text = json.dumps({
+                        "ok": True,
+                        "bedtime_requested": True,
+                        "message": "Bedtime will begin after your farewell.",
+                    }, ensure_ascii=False)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
@@ -1235,8 +1314,7 @@ async def chat(
 
     # If we exhausted tool rounds, return whatever we have
     reply = STICKER_RE.sub("", response.content or "").strip()
-    if is_bedtime and not reply and not pending_stickers:
-        reply = await _finalize_bedtime()
+    reply = await _ensure_bedtime_farewell(reply)
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous
     ):

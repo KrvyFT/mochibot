@@ -34,21 +34,13 @@ def _save_turns(count):
 
 @pytest.fixture(autouse=True)
 def extraction_state(monkeypatch):
-    import mochi.knowledge_graph as kg
-
     monkeypatch.setattr(extraction, "EXTRACTION_BATCH_SIZE", 2)
     monkeypatch.setattr(extraction, "get_pool", lambda: type(
         "Pool", (), {"embed_batch": lambda self, texts: [None] * len(texts)},
     )())
-    monkeypatch.setattr(
-        kg, "project_memory_items", lambda *_args: {"entities": 0, "triples": 0},
-    )
-
-
 def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
     turns = _save_turns(2)
     candidate = json.dumps([{
-        "category": "\u504f\u597d",
         "content": "\u559c\u6b22\u5468\u672b\u722c\u5c71",
         "importance": 2,
         "evidence_message_ids": [turns[0][0]],
@@ -58,11 +50,20 @@ def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
 
     assert extraction.drain_memory_extraction(1) == 1
     row = _connect().execute(
-        "SELECT content, evidence_message_ids FROM memory_items"
+        "SELECT category, content, evidence_message_ids FROM memory_items"
     ).fetchone()
+    assert row["category"] == ""
     assert row["content"] == "\u559c\u6b22\u5468\u672b\u722c\u5c71"
     assert json.loads(row["evidence_message_ids"]) == [turns[0][0]]
-    assert get_memory_extraction_status(1, 2)["pending_turns"] == 0
+    status = get_memory_extraction_status(1, 2)
+    assert status["pending_turns"] == 0
+    assert "pending_projection_items" not in status
+    conn = _connect()
+    assert conn.execute(
+        "SELECT 1 FROM sqlite_master "
+        "WHERE type = 'table' AND name = 'memory_projection_queue'"
+    ).fetchone() is None
+    conn.close()
 
 
 def test_failure_retries_same_batch(monkeypatch):

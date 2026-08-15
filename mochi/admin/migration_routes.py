@@ -35,7 +35,6 @@ def register_migration_routes(app, verify_token_dep):
         _MAX_UPLOAD_BYTES,
         parse_chatgpt_export,
         preprocess,
-        estimate_context_fit,
         start_extract_job,
         get_job_status,
         apply_section,
@@ -121,11 +120,6 @@ def register_migration_routes(app, verify_token_dep):
         except KeyError as e:
             raise HTTPException(status_code=404, detail=str(e))
         return status
-
-    # Keep old endpoint for backwards compat
-    @app.get("/api/migration/extract/status", dependencies=[Depends(verify_token_dep)])
-    async def api_migration_extract_status(job_id: str):
-        return await api_migration_job_status(job_id)
 
     # ── Apply Core draft (fast, synchronous) ──────────────────────────────
 

@@ -69,7 +69,7 @@ class LLMProvider(ABC):
 
     @abstractmethod
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
-             temperature: float = 1.0, max_tokens: int = 2048,
+             temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
         """Send a chat completion request.
 
@@ -216,10 +216,10 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
 
 
 class _OpenAICompatChat:
-    """Mixin: auto-negotiate max_tokens vs max_completion_tokens and temperature.
+    """Mixin: negotiate max_tokens vs max_completion_tokens.
 
     On first call, tries the modern parameter set. If the API returns 400
-    for an unsupported parameter, it retries with the legacy variant and
+    explicitly naming the token parameters, it retries with the other variant and
     caches the capability so subsequent calls don't need a retry.
 
     Learned capabilities are also persisted in a class-level cache keyed by
@@ -227,59 +227,35 @@ class _OpenAICompatChat:
     a hot-swap) skips the probe-and-retry round-trip entirely.
     """
 
-    # Class-level cache: model → {use_max_completion_tokens, use_temperature}
+    # Class-level cache: model → {use_max_completion_tokens}
     # Survives provider instance recreation (hot-swap, pool reload).
     # GIL-safe: dict read/write is atomic; values are write-once per model.
     _model_caps: dict[str, dict[str, bool]] = {}
 
-    # Class-level cache for response_format (json_mode) capability.
-    # Keyed by (model, base_url) because the same model name on different
-    # endpoints (e.g. real OpenAI vs self-hosted vLLM exposing "gpt-4o")
-    # may have divergent json_mode support.
-    # Value: True = supports response_format, False = does not.
-    _json_mode_caps: dict[tuple[str, str], bool] = {}
-
-    # Class-level cache for reasoning_effort capability.
-    # Keyed by (model, base_url) — third-party gateways often pass through
-    # reasoning models with different upstream support than direct API.
-    # Value: True = supports reasoning_effort, False = does not.
-    _reasoning_caps: dict[tuple[str, str], bool] = {}
-
-    # Default reasoning_effort sent to reasoning-capable models. "minimal"
-    # keeps chat-style replies fast; non-reasoning models reject it on first
-    # call and we cache the negative for that (model, base_url).
-    _REASONING_EFFORT_DEFAULT = "minimal"
-
     # Per-instance capability flags (set after first successful call)
     # None = unknown, True = supported, False = not supported
     _use_max_completion_tokens: bool | None = None
-    _use_temperature: bool | None = None
 
     def _init_caps_from_cache(self, model: str) -> None:
         """Seed instance flags from class-level cache if available."""
         cached = self._model_caps.get(model)
         if cached:
             self._use_max_completion_tokens = cached.get("use_max_completion_tokens")
-            self._use_temperature = cached.get("use_temperature")
-            log.debug("Model %s: restored caps from cache "
-                      "(max_completion_tokens=%s, temperature=%s)",
-                      model, self._use_max_completion_tokens,
-                      self._use_temperature)
+            log.debug(
+                "Model %s: restored max_completion_tokens=%s from cache",
+                model, self._use_max_completion_tokens,
+            )
 
     def _save_caps_to_cache(self, model: str) -> None:
         """Persist resolved capability flags to the class-level cache."""
-        if self._use_max_completion_tokens is not None or self._use_temperature is not None:
-            caps: dict[str, bool] = {}
-            if self._use_max_completion_tokens is not None:
-                caps["use_max_completion_tokens"] = self._use_max_completion_tokens
-            if self._use_temperature is not None:
-                caps["use_temperature"] = self._use_temperature
-            self._model_caps[model] = caps
+        if self._use_max_completion_tokens is not None:
+            self._model_caps[model] = {
+                "use_max_completion_tokens": self._use_max_completion_tokens,
+            }
 
     def _do_chat(self, client, model: str, messages: list[dict],
-                 tools: list[dict] | None, temperature: float,
-                 max_tokens: int, json_mode: bool = False,
-                 base_url: str = "") -> Any:
+                 tools: list[dict] | None, temperature: float | None,
+                 max_tokens: int, json_mode: bool = False) -> Any:
         """Call chat.completions.create with auto-negotiation."""
         from openai import BadRequestError
 
@@ -297,34 +273,11 @@ class _OpenAICompatChat:
         else:
             kwargs["max_tokens"] = max_tokens
 
-        # --- temperature ---
-        if self._use_temperature is None:
-            # Unknown — include it (most models support it)
+        if temperature is not None:
             kwargs["temperature"] = temperature
-        elif self._use_temperature:
-            kwargs["temperature"] = temperature
-        # else: omit temperature entirely
 
-        # --- json_mode (response_format) ---
-        # Cache key uses base_url because the same model name on different
-        # endpoints can have divergent capability.
-        json_cache_key = (model, base_url)
-        json_mode_supported = self._json_mode_caps.get(json_cache_key)
-        sent_response_format = False
-        if json_mode and json_mode_supported is not False:
+        if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-            sent_response_format = True
-
-        # --- reasoning_effort ---
-        # Send "minimal" by default to keep reasoning models (GPT-5,
-        # o-series) fast on chat workloads. Non-reasoning models will
-        # reject it; the fallback below caches the negative per (model, base_url).
-        reasoning_cache_key = (model, base_url)
-        reasoning_supported = self._reasoning_caps.get(reasoning_cache_key)
-        sent_reasoning = False
-        if reasoning_supported is not False:
-            kwargs["reasoning_effort"] = self._REASONING_EFFORT_DEFAULT
-            sent_reasoning = True
 
         try:
             resp = client.chat.completions.create(**kwargs)
@@ -332,16 +285,6 @@ class _OpenAICompatChat:
             if self._use_max_completion_tokens is None:
                 self._use_max_completion_tokens = True
                 log.debug("Model %s: using max_completion_tokens", model)
-            if self._use_temperature is None:
-                self._use_temperature = True
-            if sent_response_format and json_mode_supported is None:
-                self._json_mode_caps[json_cache_key] = True
-                log.debug("Model %s @ %s: json_mode supported",
-                          model, base_url or "default")
-            if sent_reasoning and reasoning_supported is None:
-                self._reasoning_caps[reasoning_cache_key] = True
-                log.debug("Model %s @ %s: reasoning_effort supported",
-                          model, base_url or "default")
             self._save_caps_to_cache(model)
             return resp
         except BadRequestError as e:
@@ -365,45 +308,11 @@ class _OpenAICompatChat:
                     log.info("Model %s: falling back to max_completion_tokens", model)
                     retried = True
 
-            # Handle unsupported temperature
-            if "temperature" in err_msg and ("unsupported" in err_msg or "not supported" in err_msg):
-                self._use_temperature = False
-                kwargs.pop("temperature", None)
-                log.info("Model %s: disabling temperature", model)
-                retried = True
-
-            # Handle unsupported response_format — broad fallback.
-            # Don't match on error text; if we sent response_format and got
-            # any 400, drop it and retry once. If retry also fails, the
-            # original problem wasn't response_format.
-            if sent_response_format:
-                self._json_mode_caps[json_cache_key] = False
-                kwargs.pop("response_format", None)
-                sent_response_format = False
-                log.info("Model %s @ %s: json_mode unsupported, falling back",
-                         model, base_url or "default")
-                retried = True
-
-            # Handle unsupported reasoning_effort — same broad pattern as
-            # response_format. If retry succeeds, original cause WAS one of
-            # the dropped suspects (we cache reasoning=False). If retry also
-            # fails, the cache write is still correct: this gateway/model
-            # combo doesn't support it.
-            if sent_reasoning:
-                self._reasoning_caps[reasoning_cache_key] = False
-                kwargs.pop("reasoning_effort", None)
-                sent_reasoning = False
-                log.info("Model %s @ %s: reasoning_effort unsupported, falling back",
-                         model, base_url or "default")
-                retried = True
-
             if retried:
                 resp = client.chat.completions.create(**kwargs)
                 # Lock in capabilities from the successful retry
                 if self._use_max_completion_tokens is None:
                     self._use_max_completion_tokens = "max_completion_tokens" in kwargs
-                if self._use_temperature is None:
-                    self._use_temperature = "temperature" in kwargs
                 self._save_caps_to_cache(model)
                 return resp
             raise
@@ -417,7 +326,6 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         self._model = model
         self._base_url = base_url
         self._use_max_completion_tokens = None
-        self._use_temperature = None
         self._init_caps_from_cache(model)
         kwargs: dict = {
             "api_key": api_key,
@@ -432,11 +340,10 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         return "openai"
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
-             temperature: float = 1.0, max_tokens: int = 2048,
+             temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
         resp = self._do_chat(self._client, self._model, messages, tools,
-                             temperature, max_tokens, json_mode=json_mode,
-                             base_url=self._base_url)
+                             temperature, max_tokens, json_mode=json_mode)
         choice = resp.choices[0]
         response = _openai_response(choice, resp.usage, self._model,
                                     _parse_openai_tool_calls(choice))
@@ -457,7 +364,7 @@ class AnthropicProvider(LLMProvider):
         return "anthropic"
 
     def chat(self, messages: list[dict], tools: list[dict] | None = None,
-             temperature: float = 1.0, max_tokens: int = 2048,
+             temperature: float | None = None, max_tokens: int = 2048,
              json_mode: bool = False) -> LLMResponse:
         # Anthropic has no native JSON mode. Caller must rely on prompting.
         # Framework-layer strip below is the safety net (gated on json_mode).
@@ -477,8 +384,9 @@ class AnthropicProvider(LLMProvider):
             model=self._model,
             messages=conversation,
             max_tokens=max_tokens,
-            temperature=temperature,
         )
+        if temperature is not None:
+            kwargs["temperature"] = temperature
         if system_msg:
             # System as a list-of-blocks with cache_control: ephemeral.
             # Mochi's system prompt (Core + Agent + runtime) is 4-8KB and

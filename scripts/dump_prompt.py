@@ -227,7 +227,10 @@ async def dump() -> str:
     out.append("=" * 60)
     if recalled_memories:
         for m in recalled_memories:
-            out.append(f"  - [{m.get('category')}] {m.get('text')} (score={m.get('score')}, {m.get('ts')})")
+            out.append(
+                f"  - {m.get('text')} "
+                f"(score={m.get('score')}, evidence={m.get('evidence_start')})"
+            )
     else:
         out.append("  (none)")
     out.append("")

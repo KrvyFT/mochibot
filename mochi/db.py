@@ -83,7 +83,7 @@ def init_db() -> None:
             updated_at TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_memory_items_user
-            ON memory_items(user_id, category);
+            ON memory_items(user_id);
 
         -- Durable cursor for continuous Lite memory extraction.
         CREATE TABLE IF NOT EXISTS memory_extraction_state (
@@ -93,20 +93,6 @@ def init_db() -> None:
             last_error                TEXT DEFAULT NULL,
             updated_at                TEXT NOT NULL
         );
-
-        -- Derived KG projection is retryable independently of authoritative items.
-        CREATE TABLE IF NOT EXISTS memory_projection_queue (
-            user_id        INTEGER NOT NULL,
-            memory_item_id INTEGER NOT NULL,
-            status         TEXT NOT NULL DEFAULT 'pending'
-                           CHECK(status IN ('pending', 'failed', 'success')),
-            last_error     TEXT NOT NULL DEFAULT '',
-            created_at     TEXT NOT NULL,
-            updated_at     TEXT NOT NULL,
-            PRIMARY KEY(user_id, memory_item_id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_memory_projection_pending
-            ON memory_projection_queue(user_id, status, memory_item_id);
 
         -- LLM usage tracking
         CREATE TABLE IF NOT EXISTS usage_log (
@@ -187,11 +173,9 @@ def init_db() -> None:
             ON attention_facts(status, observed_at DESC);
 
         CREATE TABLE IF NOT EXISTS weekly_curation_batches (
-            user_id           INTEGER NOT NULL,
+            user_id            INTEGER NOT NULL,
             period_key        TEXT    NOT NULL,
             result_json       TEXT    NOT NULL,
-            projection_status TEXT    NOT NULL DEFAULT 'pending',
-            projection_error  TEXT    NOT NULL DEFAULT '',
             created_at        TEXT    NOT NULL,
             PRIMARY KEY(user_id, period_key)
         );
@@ -221,17 +205,6 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_tool_exec_turn
             ON tool_executions(turn_id, id);
 
-        -- Domain knowledge (reserved)
-        CREATE TABLE IF NOT EXISTS knowledge (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            domain     TEXT    NOT NULL,
-            subject    TEXT    NOT NULL DEFAULT '',
-            content    TEXT    NOT NULL,
-            created_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_knowledge_domain ON knowledge(user_id, domain);
-
         -- Proactive message history
         CREATE TABLE IF NOT EXISTS proactive_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -240,62 +213,6 @@ def init_db() -> None:
             created_at TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_proactive_created ON proactive_log(created_at);
-
-        -- Operational context items (code digests, system metadata)
-        CREATE TABLE IF NOT EXISTS ops_context_items (
-            id            INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id       INTEGER NOT NULL,
-            context_type  TEXT    NOT NULL DEFAULT '',
-            content       TEXT    NOT NULL,
-            source        TEXT    NOT NULL DEFAULT 'system',
-            created_at    TEXT    NOT NULL,
-            updated_at    TEXT    NOT NULL,
-            embedding     BLOB    DEFAULT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_ops_context_user_type ON ops_context_items(user_id, context_type);
-
-        -- Pet device snapshots (reserved)
-        CREATE TABLE IF NOT EXISTS pet_log (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            date       TEXT    NOT NULL,
-            pet_name   TEXT    DEFAULT NULL,
-            source     TEXT    NOT NULL DEFAULT 'petkit_daily',
-            content    TEXT    NOT NULL,
-            metrics    TEXT    DEFAULT NULL,
-            importance INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_pl_pet_date ON pet_log(user_id, pet_name, date DESC);
-
-        -- Life events triage (reserved)
-        CREATE TABLE IF NOT EXISTS life_log (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            date       TEXT    NOT NULL,
-            category   TEXT    NOT NULL,
-            source     TEXT    NOT NULL DEFAULT 'memory_triage',
-            content    TEXT    NOT NULL,
-            importance INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT    NOT NULL,
-            updated_at TEXT    NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_ll_cat_date ON life_log(user_id, category, date DESC);
-
-        -- Notification queue (reserved)
-        CREATE TABLE IF NOT EXISTS notifications (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id    INTEGER NOT NULL,
-            ntype      TEXT    NOT NULL DEFAULT 'reminder',
-            title      TEXT    NOT NULL DEFAULT '',
-            body       TEXT    NOT NULL,
-            channel_id INTEGER NOT NULL DEFAULT 0,
-            acked      INTEGER NOT NULL DEFAULT 0,
-            tg_sent    INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT    NOT NULL,
-            acked_at   TEXT    DEFAULT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_notifications_pending ON notifications(acked, tg_sent, created_at);
 
         -- Soft-delete archive for memory items
         CREATE TABLE IF NOT EXISTS memory_trash (
@@ -347,7 +264,8 @@ def init_db() -> None:
             user_id      INTEGER NOT NULL,
             name         TEXT    NOT NULL,
             display_name TEXT    NOT NULL,
-            entity_type  TEXT    NOT NULL DEFAULT 'concept',
+            entity_type  TEXT    NOT NULL
+                         CHECK(entity_type IN ('person', 'pet', 'place')),
             created_at   TEXT    NOT NULL
         );
         CREATE UNIQUE INDEX IF NOT EXISTS idx_kg_entity_user_name
@@ -438,14 +356,6 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "memory_trash", "evidence_message_ids",
         "TEXT NOT NULL DEFAULT '[]'",
     )
-    _add_col(
-        "weekly_curation_batches", "projection_status",
-        "TEXT NOT NULL DEFAULT 'pending'",
-    )
-    _add_col(
-        "weekly_curation_batches", "projection_error",
-        "TEXT NOT NULL DEFAULT ''",
-    )
     had_kg_provenance = _has_col("kg_triples", "source_memory_id")
     _add_col("kg_triples", "source_memory_id", "INTEGER DEFAULT NULL")
     conn.execute(
@@ -480,77 +390,7 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
     ]:
         _add_col("usage_log", col, typedef)
 
-    # Unsupported legacy registry entries keep their encrypted credentials for
-    # reuse, but cannot remain assigned to a product tier. Do this before the
-    # chat -> main migration so a valid chat assignment can replace an invalid
-    # legacy main assignment.
-    removed_unsupported = conn.execute(
-        """
-        DELETE FROM tier_assignments
-        WHERE model_name IN (
-            SELECT name FROM model_registry
-            WHERE NOT (
-                (
-                    provider = 'openai'
-                    AND rtrim(lower(COALESCE(base_url, '')), '/') IN (
-                        '',
-                        'https://api.openai.com/v1',
-                        'https://api.deepseek.com/v1',
-                        'https://generativelanguage.googleapis.com/v1beta/openai'
-                    )
-                )
-                OR (
-                    provider = 'anthropic'
-                    AND trim(COALESCE(base_url, '')) = ''
-                )
-            )
-        )
-        """
-    ).rowcount
-    if removed_unsupported:
-        logger.info(
-            "Removed %d unsupported model tier assignment(s); registry entries retained",
-            removed_unsupported,
-        )
-
-    # Main replaced chat. Move only the assignment row so encrypted registry
-    # credentials remain untouched and reusable. Deep is no longer assignable,
-    # but its registry entry is intentionally retained.
-    legacy_chat = conn.execute(
-        "SELECT model_name, updated_at FROM tier_assignments WHERE tier = 'chat'"
-    ).fetchone()
-    if legacy_chat:
-        has_main = conn.execute(
-            "SELECT 1 FROM tier_assignments WHERE tier = 'main'"
-        ).fetchone()
-        if not has_main:
-            conn.execute(
-                "INSERT INTO tier_assignments (tier, model_name, updated_at) "
-                "VALUES ('main', ?, ?)",
-                (legacy_chat[0], legacy_chat[1]),
-            )
-        conn.execute("DELETE FROM tier_assignments WHERE tier = 'chat'")
-        logger.info("Migrated model tier: chat -> main")
-
-    removed_deep = conn.execute(
-        "DELETE FROM tier_assignments WHERE tier = 'deep'"
-    ).rowcount
-    if removed_deep:
-        logger.info("Removed retired deep model assignment")
-
     conn.commit()
-
-    # heartbeat_log: old schema (state/action/summary) → new (trigger/observations/actions/thought)
-    if _has_col("heartbeat_log", "state") and not _has_col("heartbeat_log", "trigger"):
-        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN trigger TEXT NOT NULL DEFAULT 'delta'")
-        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN observations TEXT NOT NULL DEFAULT '{}'")
-        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN actions TEXT NOT NULL DEFAULT '[]'")
-        conn.execute("ALTER TABLE heartbeat_log ADD COLUMN thought TEXT NOT NULL DEFAULT ''")
-        conn.execute("UPDATE heartbeat_log SET trigger = state, thought = summary")
-        logger.info("Migrated heartbeat_log: state/action/summary → trigger/observations/actions/thought")
-
-    conn.commit()
-
 
 def _init_fts(conn: sqlite3.Connection) -> None:
     """Initialize FTS5 virtual table for memory keyword search."""
@@ -1286,7 +1126,7 @@ def get_memory_extraction_batch(
 def get_memory_extraction_status(
     user_id: int, batch_turns: int = 10,
 ) -> dict:
-    """Return cursor, complete pending turns, and projection retry state."""
+    """Return the extraction cursor and complete pending turns."""
     conn = _connect()
     try:
         state = _ensure_memory_extraction_state(conn, user_id)
@@ -1299,13 +1139,6 @@ def get_memory_extraction_status(
                 > state["last_processed_message_id"]
             )
         ])
-        projection = conn.execute(
-            "SELECT COUNT(*) AS count, "
-            "MAX(CASE WHEN status = 'failed' THEN last_error ELSE '' END) AS error "
-            "FROM memory_projection_queue "
-            "WHERE user_id = ? AND status IN ('pending', 'failed')",
-            (user_id,),
-        ).fetchone()
         conn.commit()
         result = dict(state)
         result.update({
@@ -1313,8 +1146,6 @@ def get_memory_extraction_status(
             "pending_messages": pending_turns * 2,
             "batch_turns": max(1, int(batch_turns)),
             "threshold": max(1, int(batch_turns)) * 2,
-            "pending_projection_items": projection["count"],
-            "projection_error": projection["error"] or None,
         })
         return result
     finally:
@@ -1322,13 +1153,11 @@ def get_memory_extraction_status(
 
 
 def list_memory_extraction_users() -> list[int]:
-    """Return users with chat history or unfinished Memory Item projection."""
+    """Return users with chat history."""
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT user_id FROM messages "
-            "UNION SELECT user_id FROM memory_projection_queue "
-            "WHERE status IN ('pending', 'failed') ORDER BY user_id"
+            "SELECT DISTINCT user_id FROM messages ORDER BY user_id"
         ).fetchall()
         return [int(row["user_id"]) for row in rows]
     finally:
@@ -1349,42 +1178,6 @@ def record_memory_extraction_error(user_id: int, error: str) -> None:
         conn.commit()
     finally:
         conn.close()
-
-
-def get_pending_memory_projections(
-    user_id: int, limit: int = 40,
-) -> list[int]:
-    conn = _connect()
-    rows = conn.execute(
-        "SELECT memory_item_id FROM memory_projection_queue "
-        "WHERE user_id = ? AND status IN ('pending', 'failed') "
-        "ORDER BY memory_item_id LIMIT ?",
-        (user_id, max(1, min(int(limit), 100))),
-    ).fetchall()
-    conn.close()
-    return [int(row["memory_item_id"]) for row in rows]
-
-
-def finish_memory_projections(
-    user_id: int,
-    item_ids: list[int],
-    *,
-    error: str = "",
-) -> None:
-    if not item_ids:
-        return
-    now = datetime.now(TZ).isoformat()
-    placeholders = ",".join("?" * len(item_ids))
-    status = "failed" if error else "success"
-    conn = _connect()
-    conn.execute(
-        f"UPDATE memory_projection_queue SET status = ?, last_error = ?, "
-        f"updated_at = ? WHERE user_id = ? "
-        f"AND memory_item_id IN ({placeholders})",
-        [status, str(error)[:1000] if error else "", now, user_id, *item_ids],
-    )
-    conn.commit()
-    conn.close()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1758,7 +1551,6 @@ def _insert_memory_trash_snapshot(
 
 def insert_memory_item(
     user_id: int,
-    category: str,
     content: str,
     importance: int,
     *,
@@ -1780,7 +1572,7 @@ def insert_memory_item(
         "(user_id, category, content, importance, source, created_at, updated_at, "
         "embedding, evidence_message_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            user_id, category, content, importance, source, now, now,
+            user_id, "", content, importance, source, now, now,
             embedding, evidence_json,
         ),
     )
@@ -1857,7 +1649,7 @@ def commit_memory_extraction_batch(
         allowed_evidence = {int(row["id"]) for row in user_rows}
         existing_rows = [
             dict(row) for row in conn.execute(
-                "SELECT id, category, content, source FROM memory_items "
+                "SELECT id, content, source FROM memory_items "
                 "WHERE user_id = ? ORDER BY importance DESC, updated_at DESC",
                 (user_id,),
             ).fetchall()
@@ -1883,7 +1675,6 @@ def commit_memory_extraction_batch(
                 continue
             item_id = insert_memory_item(
                 user_id,
-                category=memory["category"],
                 content=memory["content"],
                 importance=memory["importance"],
                 source="lite_extracted",
@@ -1894,18 +1685,9 @@ def commit_memory_extraction_batch(
             inserted_ids.append(item_id)
             existing_rows.append({
                 "id": item_id,
-                "category": memory["category"],
                 "content": memory["content"],
                 "source": "lite_extracted",
             })
-            conn.execute(
-                "INSERT INTO memory_projection_queue "
-                "(user_id, memory_item_id, status, last_error, created_at, updated_at) "
-                "VALUES (?, ?, 'pending', '', ?, ?) "
-                "ON CONFLICT(user_id, memory_item_id) DO UPDATE SET "
-                "status = 'pending', last_error = '', updated_at = excluded.updated_at",
-                (user_id, item_id, now, now),
-            )
 
         conn.execute(
             "UPDATE memory_extraction_state SET "
@@ -1922,24 +1704,17 @@ def commit_memory_extraction_batch(
         conn.close()
 
 
-def save_memory_item(user_id: int, category: str, content: str,
+def save_memory_item(user_id: int, content: str,
                      importance: int = 1, source: str = "extracted",
                      embedding: bytes | None = None,
-                     append: bool = False,
-                     match_hint: str | None = None,
                      evidence_message_ids: list[int] | tuple[int, ...] | None = None) -> int:
     """Save a memory item with on-insert smart dedup.
 
     Dedup priority:
-      1. match_hint keyword search (action=update from LLM)
-      2. Date-keyed prefix match ([YYYY-MM-DD]...)
-      3. Text similarity (normalized, SequenceMatcher)
-      4. Vector cosine similarity (if embedding provided)
+      1. Exact/text similarity (normalized, SequenceMatcher)
+      2. Vector cosine similarity (if embedding provided)
     If a match is found: UPDATE (keep longer content, bump importance/access).
     Otherwise: INSERT new row.
-
-    append: if True and dated match found, concatenate new content with ' | '.
-    match_hint: keyword to locate old memory to overwrite (status updates).
     """
     from mochi.memory_contract import (
         decode_evidence_message_ids,
@@ -1950,85 +1725,35 @@ def save_memory_item(user_id: int, category: str, content: str,
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     new_evidence = tuple(evidence_message_ids or ())
-
-    def _extract_date(text: str) -> str | None:
-        m = re.search(r"\d{4}-\d{2}-\d{2}", text or "")
-        return m.group(0) if m else None
-
-    # --- Priority 1: match_hint (action=update) ---
-    hint_matched = None
-    if match_hint:
-        hint_rows = conn.execute(
-            "SELECT id, content, access_count, embedding, evidence_message_ids "
-            "FROM memory_items "
-            "WHERE user_id = ? AND category = ? AND content LIKE ? "
-            "ORDER BY updated_at DESC LIMIT 10",
-            (user_id, category, f"%{match_hint}%"),
-        ).fetchall()
-        if hint_rows:
-            hint_matched = hint_rows[0]
-
-    # --- Priority 2-4: standard dedup ---
-    date_match = re.match(r"^\[\d{4}-\d{2}-\d{2}\]", content)
-    content_date = _extract_date(content)
     norm_content = _normalize_text(content)
+    candidates = conn.execute(
+        "SELECT id, content, access_count, embedding, evidence_message_ids "
+        "FROM memory_items WHERE user_id = ? "
+        "ORDER BY updated_at DESC LIMIT 120",
+        (user_id,),
+    ).fetchall()
     existing = None
-
-    # P2: Date-keyed prefix match
-    if date_match:
-        existing = conn.execute(
-            "SELECT id, content, access_count, embedding, evidence_message_ids "
-            "FROM memory_items "
-            "WHERE user_id = ? AND category = ? AND content LIKE ? LIMIT 1",
-            (user_id, category, f"{date_match.group(0)}%"),
-        ).fetchone()
-    else:
-        # Quick prefix check
-        existing = conn.execute(
-            "SELECT id, content, access_count, embedding, evidence_message_ids "
-            "FROM memory_items "
-            "WHERE user_id = ? AND category = ? AND content LIKE ? LIMIT 1",
-            (user_id, category, f"{content[:20]}%"),
-        ).fetchone()
-
-        # P3: Text similarity scan
-        if not existing:
-            candidates = conn.execute(
-                "SELECT id, content, access_count, embedding, evidence_message_ids "
-                "FROM memory_items "
-                "WHERE user_id = ? AND category = ? "
-                "AND content NOT LIKE '[____-__-__]%' "
-                "ORDER BY updated_at DESC LIMIT 120",
-                (user_id, category),
-            ).fetchall()
-
-            for cand in candidates:
-                norm_cand = _normalize_text(cand["content"])
-                if not norm_content or not norm_cand:
-                    continue
-                if norm_content == norm_cand:
-                    existing = cand
-                    break
-                ratio = difflib.SequenceMatcher(None, norm_content, norm_cand).ratio()
-                cand_date = _extract_date(cand["content"])
-                same_day = bool(content_date and cand_date and content_date == cand_date)
-                if (same_day and ratio >= 0.74) or ratio >= 0.92:
-                    existing = cand
-                    break
-
-            # P4: Vector similarity
-            if not existing and embedding:
-                for cand in candidates:
-                    cand_emb = cand["embedding"] if "embedding" in cand.keys() else None
-                    if not cand_emb:
-                        continue
-                    if _cosine_similarity(embedding, cand_emb) >= 0.92:
-                        existing = cand
-                        break
-
-    # hint_matched takes priority if no standard dedup hit
-    if hint_matched and not existing:
-        existing = hint_matched
+    for candidate in candidates:
+        normalized = _normalize_text(candidate["content"])
+        if not norm_content or not normalized:
+            continue
+        if (
+            norm_content == normalized
+            or difflib.SequenceMatcher(
+                None, norm_content, normalized,
+            ).ratio() >= 0.92
+        ):
+            existing = candidate
+            break
+    if not existing and embedding:
+        for candidate in candidates:
+            candidate_embedding = candidate["embedding"]
+            if (
+                candidate_embedding
+                and _cosine_similarity(embedding, candidate_embedding) >= 0.92
+            ):
+                existing = candidate
+                break
 
     if existing:
         merged_evidence = merge_evidence_message_ids(
@@ -2047,23 +1772,16 @@ def save_memory_item(user_id: int, category: str, content: str,
             return existing["id"]
 
         # Decide what to keep
-        if hint_matched and existing["id"] == hint_matched["id"]:
-            keep_content = content
-            keep_emb = embedding
-        elif append and date_match:
-            new_body = content[len(date_match.group(0)):].strip()
-            old_body = existing["content"]
-            if new_body and new_body not in old_body:
-                keep_content = f"{old_body} | {new_body}"
-                keep_emb = None
-            else:
-                conn.close()
-                return existing["id"]
-        else:
-            keep_content = content if len(content) >= len(existing["content"]) else existing["content"]
-            keep_emb = embedding if len(content) >= len(existing["content"]) else (
-                existing["embedding"] if "embedding" in existing.keys() else None
-            )
+        keep_content = (
+            content
+            if len(content) >= len(existing["content"])
+            else existing["content"]
+        )
+        keep_emb = (
+            embedding
+            if len(content) >= len(existing["content"])
+            else existing["embedding"]
+        )
 
         if keep_emb is not None:
             conn.execute(
@@ -2094,7 +1812,7 @@ def save_memory_item(user_id: int, category: str, content: str,
             "source, created_at, updated_at, embedding, evidence_message_ids) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                user_id, category, content, importance, source, now, now,
+                user_id, "", content, importance, source, now, now,
                 embedding, evidence_json,
             ),
         )
@@ -2106,16 +1824,81 @@ def save_memory_item(user_id: int, category: str, content: str,
     return item_id
 
 
-def recall_memory(user_id: int, query: str = "", category: str = "",
-                  limit: int = 20,
-                  exclude_categories: list[str] | None = None,
+def _memory_evidence_dates(
+    conn: sqlite3.Connection,
+    user_id: int,
+    rows: list[sqlite3.Row] | list[dict],
+) -> dict[int, dict[str, str]]:
+    """Return the first and last user-evidence dates for supplied Memory Items."""
+    from mochi.memory_contract import decode_evidence_message_ids
+
+    evidence_by_item: dict[int, tuple[int, ...]] = {}
+    message_ids: list[int] = []
+    for row in rows:
+        try:
+            evidence = decode_evidence_message_ids(row["evidence_message_ids"])
+        except ValueError:
+            evidence = ()
+        evidence_by_item[int(row["id"])] = evidence
+        for message_id in evidence:
+            if message_id not in message_ids:
+                message_ids.append(message_id)
+    if not message_ids:
+        return {}
+
+    placeholders = ",".join("?" * len(message_ids))
+    messages = conn.execute(
+        f"SELECT id, created_at FROM messages WHERE user_id = ? "
+        f"AND role = 'user' AND id IN ({placeholders})",
+        [user_id, *message_ids],
+    ).fetchall()
+    dates_by_message = {
+        int(row["id"]): str(row["created_at"] or "")[:10]
+        for row in messages
+        if row["created_at"]
+    }
+    result: dict[int, dict[str, str]] = {}
+    for item_id, evidence in evidence_by_item.items():
+        dates = sorted({
+            dates_by_message[message_id]
+            for message_id in evidence
+            if message_id in dates_by_message
+        })
+        if dates:
+            result[item_id] = {
+                "evidence_start": dates[0],
+                "evidence_end": dates[-1],
+            }
+    return result
+
+
+def get_memory_evidence_dates(
+    user_id: int,
+    item_ids: list[int],
+) -> dict[int, dict[str, str]]:
+    """Load evidence dates for Memory Items without exposing source messages."""
+    if not item_ids:
+        return {}
+    placeholders = ",".join("?" * len(item_ids))
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            f"SELECT id, evidence_message_ids FROM memory_items "
+            f"WHERE user_id = ? AND id IN ({placeholders})",
+            [user_id, *item_ids],
+        ).fetchall()
+        return _memory_evidence_dates(conn, user_id, rows)
+    finally:
+        conn.close()
+
+
+def recall_memory(user_id: int, query: str = "", limit: int = 20,
                   query_embedding: bytes | None = None,
                   bump_access: bool = True) -> list[dict]:
     """Recall by authoritative text signals with optional vector enhancement."""
     conn = _connect()
     vec_ok = _load_vec_conn(conn) if query_embedding else False
     now = datetime.now(TZ)
-    exclude = set(exclude_categories or [])
     limit = max(1, int(limit))
 
     vec_scores: dict[int, float] = {}
@@ -2176,13 +1959,6 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
     if query:
         conditions = ["user_id = ?"]
         params: list = [user_id]
-        if category:
-            conditions.append("category = ?")
-            params.append(category)
-        if exclude:
-            ph = ",".join("?" * len(exclude))
-            conditions.append(f"category NOT IN ({ph})")
-            params.extend(exclude)
         like_terms = query_tokens[:12] or [query.strip()]
         like_terms = [term for term in like_terms if term]
         if like_terms:
@@ -2204,13 +1980,6 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
     if not query and len(candidate_ids) < limit:
         conditions = ["user_id = ?"]
         params = [user_id]
-        if category:
-            conditions.append("category = ?")
-            params.append(category)
-        if exclude:
-            placeholders = ",".join("?" * len(exclude))
-            conditions.append(f"category NOT IN ({placeholders})")
-            params.extend(exclude)
         params.append(RECALL_FALLBACK_LIMIT)
         rows = conn.execute(
             "SELECT id FROM memory_items WHERE " + " AND ".join(conditions)
@@ -2230,20 +1999,14 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
 
     fetch_conditions = [f"id IN ({id_ph})", "user_id = ?"]
     fetch_params: list = id_list + [user_id]
-    if category:
-        fetch_conditions.append("category = ?")
-        fetch_params.append(category)
-    if exclude:
-        ex_ph = ",".join("?" * len(exclude))
-        fetch_conditions.append(f"category NOT IN ({ex_ph})")
-        fetch_params.extend(exclude)
 
     rows = conn.execute(
-        "SELECT id, category, content, importance, access_count, source, "
-        "last_accessed, embedding, created_at, updated_at "
+        "SELECT id, content, importance, access_count, source, "
+        "last_accessed, embedding, evidence_message_ids, created_at, updated_at "
         f"FROM memory_items WHERE {' AND '.join(fetch_conditions)}",
         fetch_params,
     ).fetchall()
+    evidence_dates = _memory_evidence_dates(conn, user_id, rows)
 
     scored: list[dict] = []
     half_life = RECALL_DECAY_HALF_LIFE_DAYS or 30.0
@@ -2303,12 +2066,15 @@ def recall_memory(user_id: int, query: str = "", category: str = "",
 
         scored.append({
             "id": rid,
-            "category": r["category"],
             "content": r["content"],
             "importance": r["importance"],
             "source": r["source"],
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
+            **evidence_dates.get(rid, {
+                "evidence_start": "",
+                "evidence_end": "",
+            }),
             "score": round(score, 3),
             "vec_sim": round(vec_sim, 3),
             "match_source": match_source,
@@ -2349,7 +2115,7 @@ def get_memory_extraction_references(
     """Return a bounded important/recent duplicate-reference set."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT id, category, content, importance FROM memory_items "
+        "SELECT id, content, importance FROM memory_items "
         "WHERE user_id = ? ORDER BY importance DESC, updated_at DESC LIMIT ?",
         (user_id, max(1, min(int(limit), 120))),
     ).fetchall()
@@ -2366,7 +2132,7 @@ def get_memory_items_by_ids(user_id: int, item_ids: list[int]) -> list[dict]:
     placeholders = ",".join("?" * len(item_ids))
     conn = _connect()
     rows = conn.execute(
-        f"SELECT id, category, content, importance, source, embedding, "
+        f"SELECT id, content, importance, source, embedding, "
         f"evidence_message_ids, created_at, updated_at FROM memory_items "
         f"WHERE user_id = ? AND id IN ({placeholders})",
         [user_id, *item_ids],
@@ -2407,11 +2173,6 @@ def delete_memory_items(ids: list[int], deleted_by: str = "system") -> int:
             )
         _invalidate_memory_kg_indexes(conn, existing_ids)
         _delete_memory_item_indexes(conn, existing_ids)
-        conn.execute(
-            f"DELETE FROM memory_projection_queue "
-            f"WHERE memory_item_id IN ({placeholders})",
-            ids,
-        )
         cursor = conn.execute(
             f"DELETE FROM memory_items WHERE id IN ({placeholders})", ids,
         )
@@ -2469,24 +2230,11 @@ def merge_memory_items(keep_id: int, delete_ids: list[int],
             _invalidate_memory_kg_indexes(conn, existing_ids)
             _delete_memory_item_indexes(conn, existing_ids)
             conn.execute(
-                f"DELETE FROM memory_projection_queue "
-                f"WHERE memory_item_id IN ({placeholders})",
-                delete_ids,
-            )
-            conn.execute(
                 f"DELETE FROM memory_items WHERE id IN ({placeholders})",
                 delete_ids,
             )
         _invalidate_memory_kg_indexes(conn, [keep_id])
         _sync_memory_item_indexes(conn, keep_id, merged_content, None)
-        conn.execute(
-            "INSERT INTO memory_projection_queue "
-            "(user_id, memory_item_id, status, last_error, created_at, updated_at) "
-            "VALUES (?, ?, 'pending', '', ?, ?) "
-            "ON CONFLICT(user_id, memory_item_id) DO UPDATE SET "
-            "status = 'pending', last_error = '', updated_at = excluded.updated_at",
-            (keep_row["user_id"], keep_id, now, now),
-        )
         conn.commit()
     except Exception:
         conn.rollback()
@@ -2495,25 +2243,30 @@ def merge_memory_items(keep_id: int, delete_ids: list[int],
         conn.close()
 
 
-def list_all_memories(user_id: int, category: str = "", limit: int = 50) -> list[dict]:
-    """List all memory items, optionally filtered by category."""
+def list_all_memories(user_id: int, limit: int = 50) -> list[dict]:
+    """List recent Memory Items with their user-evidence dates."""
     conn = _connect()
-    if category:
-        rows = conn.execute(
-            "SELECT id, category, content, importance, source, created_at, updated_at "
-            "FROM memory_items WHERE user_id = ? AND category = ? "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (user_id, category, limit),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT id, category, content, importance, source, created_at, updated_at "
-            "FROM memory_items WHERE user_id = ? "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (user_id, limit),
-        ).fetchall()
+    rows = conn.execute(
+        "SELECT id, content, importance, source, evidence_message_ids, "
+        "created_at, updated_at FROM memory_items WHERE user_id = ? "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (user_id, limit),
+    ).fetchall()
+    evidence_dates = _memory_evidence_dates(conn, user_id, rows)
     conn.close()
-    return [dict(r) for r in rows]
+    return [
+        {
+            **{
+                key: value for key, value in dict(row).items()
+                if key != "evidence_message_ids"
+            },
+            **evidence_dates.get(row["id"], {
+                "evidence_start": "",
+                "evidence_end": "",
+            }),
+        }
+        for row in rows
+    ]
 
 
 def get_memory_stats(user_id: int) -> dict:
@@ -2522,11 +2275,6 @@ def get_memory_stats(user_id: int) -> dict:
     total = conn.execute(
         "SELECT COUNT(*) as cnt FROM memory_items WHERE user_id = ?", (user_id,)
     ).fetchone()["cnt"]
-    by_cat = conn.execute(
-        "SELECT category, COUNT(*) as cnt FROM memory_items "
-        "WHERE user_id = ? GROUP BY category ORDER BY cnt DESC",
-        (user_id,),
-    ).fetchall()
     high_imp = conn.execute(
         "SELECT COUNT(*) as cnt FROM memory_items "
         "WHERE user_id = ? AND importance >= 3", (user_id,)
@@ -2535,7 +2283,6 @@ def get_memory_stats(user_id: int) -> dict:
     return {
         "total": total,
         "high_importance": high_imp,
-        "categories": {r["category"]: r["cnt"] for r in by_cat},
     }
 
 
@@ -2543,7 +2290,7 @@ def list_memory_trash(user_id: int, limit: int = 20) -> list[dict]:
     """List recently deleted memories (trash bin)."""
     conn = _connect()
     rows = conn.execute(
-        "SELECT id, original_id, category, content, importance, deleted_by, deleted_at "
+        "SELECT id, original_id, content, importance, deleted_by, deleted_at "
         "FROM memory_trash WHERE user_id = ? ORDER BY deleted_at DESC LIMIT ?",
         (user_id, limit),
     ).fetchall()
@@ -2558,7 +2305,7 @@ def restore_memory_from_trash(trash_id: int, user_id: int) -> int | None:
     try:
         conn.execute("BEGIN IMMEDIATE")
         item = conn.execute(
-            "SELECT original_id, user_id, category, content, importance, source, "
+            "SELECT original_id, user_id, content, importance, source, "
             "evidence_message_ids, original_created "
             "FROM memory_trash WHERE id = ? AND user_id = ?",
             (trash_id, user_id),
@@ -2572,7 +2319,7 @@ def restore_memory_from_trash(trash_id: int, user_id: int) -> int | None:
             "evidence_message_ids, created_at, updated_at, last_accessed) "
             "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
             (
-                item["user_id"], item["category"], item["content"],
+                item["user_id"], "", item["content"],
                 item["importance"], item["source"],
                 item["evidence_message_ids"], item["original_created"], now, now,
             ),
@@ -2580,12 +2327,6 @@ def restore_memory_from_trash(trash_id: int, user_id: int) -> int | None:
         new_id = cursor.lastrowid
         _sync_memory_item_indexes(conn, new_id, item["content"], None)
         conn.execute("DELETE FROM memory_trash WHERE id = ?", (trash_id,))
-        conn.execute(
-            "INSERT INTO memory_projection_queue "
-            "(user_id, memory_item_id, status, last_error, created_at, updated_at) "
-            "VALUES (?, ?, 'pending', '', ?, ?)",
-            (item["user_id"], new_id, now, now),
-        )
         conn.commit()
         return new_id
     except Exception:
@@ -2600,7 +2341,6 @@ def update_memory_item(
     user_id: int,
     *,
     content: str,
-    category: str,
     importance: int,
     embedding: bytes | None = None,
 ) -> bool:
@@ -2618,10 +2358,10 @@ def update_memory_item(
             conn.rollback()
             return False
         cursor = conn.execute(
-            "UPDATE memory_items SET content = ?, category = ?, importance = ?, "
+            "UPDATE memory_items SET content = ?, importance = ?, "
             "updated_at = ?, embedding = ? WHERE id = ? AND user_id = ?",
             (
-                content, category, importance, now, embedding,
+                content, importance, now, embedding,
                 item_id, user_id,
             ),
         )
@@ -2631,14 +2371,6 @@ def update_memory_item(
         if existing["content"] != content or existing["embedding"] != embedding:
             _invalidate_memory_kg_indexes(conn, [item_id])
         _sync_memory_item_indexes(conn, item_id, content, embedding)
-        conn.execute(
-            "INSERT INTO memory_projection_queue "
-            "(user_id, memory_item_id, status, last_error, created_at, updated_at) "
-            "VALUES (?, ?, 'pending', '', ?, ?) "
-            "ON CONFLICT(user_id, memory_item_id) DO UPDATE SET "
-            "status = 'pending', last_error = '', updated_at = excluded.updated_at",
-            (user_id, item_id, now, now),
-        )
         conn.commit()
         return True
     except Exception:

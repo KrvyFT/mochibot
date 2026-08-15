@@ -19,7 +19,6 @@ from mochi.db import (
     _connect,
     get_last_user_message_time,
     log_heartbeat,
-    save_message,
 )
 from mochi.heartbeat_runtime import (
     begin_delivery,
@@ -28,7 +27,6 @@ from mochi.heartbeat_runtime import (
     claim_run,
     complete_delivery,
     complete_without_delivery,
-    defer_ready_run,
     delivery_wait_seconds,
     ensure_schedules,
     entry_from_claim,
@@ -161,23 +159,14 @@ def should_wake_on_message() -> bool:
     )
 
 
-def check_sleep_entry(last_user_msg_text: str | None = None) -> bool:
-    if _state not in {AWAKE, TRANSITIONING} or not last_user_msg_text:
+def bedtime_tool_available() -> bool:
+    if _state != AWAKE or not bedtime_entry_enabled():
         return False
     hour = datetime.now(TZ).hour
-    if not (hour >= SLEEP_AFTER_HOUR or hour < WAKE_EARLIEST_HOUR):
-        return False
-    text = last_user_msg_text.lower().strip()
-    return any(
-        keyword in text
-        for keyword in _effective("SLEEP_KEYWORDS").split(",")
-        if keyword
+    return (
+        hour >= SLEEP_AFTER_HOUR
+        or hour < WAKE_EARLIEST_HOUR
     )
-
-
-def record_unclaimed_sleep_message(user_id: int, text: str) -> None:
-    if text:
-        save_message(user_id, "user", text)
 
 
 def bedtime_entry_enabled() -> bool:
@@ -426,6 +415,7 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
         return None
     claimed["status"] = "ready"
     claimed["result_json"] = durable.to_json()
+    claimed["last_error"] = ""
     return durable
 
 
@@ -436,15 +426,23 @@ async def _deliver_autonomous(
     if _runtime_delivery_callback is None:
         record_failure(claimed, "Runtime delivery callback is not registered")
         return False
-    wait_seconds = delivery_wait_seconds(
-        now=datetime.now(TZ),
-        max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-        cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
-    )
-    if (durable.text or durable.stickers) and wait_seconds:
-        defer_ready_run(claimed, wait_seconds, "delivery budget/cooldown")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_deferred")
+    if claimed.get("last_error") == "delivery budget/cooldown":
+        complete_without_delivery(claimed, durable, "suppressed")
+        log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
         return False
+    retrying_prepared_delivery = bool(
+        claimed.get("result_json") and claimed.get("last_error")
+    )
+    if not retrying_prepared_delivery:
+        wait_seconds = delivery_wait_seconds(
+            now=datetime.now(TZ),
+            max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+            cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
+        )
+        if (durable.text or durable.stickers) and wait_seconds:
+            complete_without_delivery(claimed, durable, "suppressed")
+            log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
+            return False
     if not begin_delivery(claimed):
         return False
     from mochi.ai_client import ChatResult

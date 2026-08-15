@@ -100,16 +100,10 @@ async def main():
     recover_interrupted_scheduled_runs()
     log.info("Database ready")
 
-    # Migrate all legacy identity and Notes sources before any runtime reads
-    # the canonical file-backed Core.
-    from mochi.core_store import initialize_core, retire_notes_into_core
+    # Prepare the canonical file-backed Core before any runtime reads it.
+    from mochi.core_store import initialize_core
     core_status = initialize_core(OWNER_USER_ID or 0)
     log.info("Core ready (%s)", core_status.get("status", "existing"))
-    notes_status = retire_notes_into_core()
-    if notes_status.get("status") == "failed":
-        log.error("Notes retirement pending: %s", notes_status.get("error", "unknown"))
-    else:
-        log.info("Notes retirement: %s", notes_status.get("status", "not_needed"))
 
     # 0b. Seed model config from .env on first run (DB empty)
     from mochi.admin.admin_db import seed_models_from_env

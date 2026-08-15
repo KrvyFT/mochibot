@@ -87,6 +87,8 @@ def discover() -> list[str]:
         observer_path = entry / "observer.py"
         if not observer_path.exists():
             continue
+        if entry.name in _observers:
+            continue
 
         try:
             module = importlib.import_module(
@@ -139,8 +141,8 @@ def discover() -> list[str]:
                     entry.name, e, exc_info=True,
                 )
 
-    log.info("Observer discovery complete: %d observers registered", len(registered))
-    return registered
+    log.info("Observer discovery complete: %d observers available", len(_observers))
+    return list(_observers)
 
 
 def _find_observer_class(module) -> type | None:

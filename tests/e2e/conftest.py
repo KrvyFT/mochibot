@@ -42,8 +42,6 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "AI_CHAT_MAX_COMPLETION_TOKENS", 1024)
     monkeypatch.setattr(cfg, "TIMEZONE_OFFSET_HOURS", 0)
     monkeypatch.setattr(cfg, "HEARTBEAT_INTERVAL_MINUTES", 20)
-    monkeypatch.setattr(cfg, "AWAKE_HOUR_START", 0)
-    monkeypatch.setattr(cfg, "AWAKE_HOUR_END", 24)
     monkeypatch.setattr(cfg, "MAX_DAILY_PROACTIVE", 10)
     monkeypatch.setattr(cfg, "PROACTIVE_COOLDOWN_SECONDS", 0)
     monkeypatch.setattr(cfg, "ATTENTION_INTERVAL_MINUTES", 60)

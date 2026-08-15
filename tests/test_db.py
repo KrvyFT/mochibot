@@ -106,7 +106,11 @@ def test_todo_lifecycle_respects_user_ownership():
 
 
 def test_deleted_memory_can_be_restored():
-    memory_id = save_memory_item(1, "preference", "Likes jasmine tea")
+    first_event = save_memory_item(1, "[2026-08-15] Started a new project")
+    second_event = save_memory_item(1, "[2026-08-15] Started learning Japanese")
+    assert first_event != second_event
+
+    memory_id = save_memory_item(1, "Likes jasmine tea")
     assert delete_memory_items([memory_id], deleted_by="user") == 1
     assert recall_memory(1, query="jasmine") == []
 

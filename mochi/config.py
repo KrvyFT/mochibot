@@ -19,25 +19,6 @@ def _env_int(key: str, default: int) -> int:
     return int(os.getenv(key, str(default)))
 
 
-def _env_int_with_legacy(
-    key: str,
-    legacy_key: str,
-    default: int,
-    *,
-    legacy_default: int | None = None,
-) -> int:
-    """Prefer a new integer setting while retaining deliberate 0.x overrides."""
-    value = os.getenv(key)
-    if value is not None:
-        return int(value)
-    legacy_value = os.getenv(legacy_key)
-    if legacy_value is not None:
-        parsed = int(legacy_value)
-        if legacy_default is None or parsed != legacy_default:
-            return parsed
-    return default
-
-
 def _env_bool(key: str, default: bool = False) -> bool:
     return os.getenv(key, str(default)).lower() in ("1", "true", "yes")
 
@@ -49,15 +30,11 @@ def _env_float(key: str, default: float) -> float:
 # LLM — Main Model (required)
 # ═══════════════════════════════════════════════════════════════════════════
 # Runtime model configuration lives in the DB registry. MAIN_* only seeds a
-# first installation; CHAT_* remains a read-only 0.x compatibility fallback.
-def _env_with_legacy(key: str, legacy_key: str, default: str = "") -> str:
-    return os.getenv(key, os.getenv(legacy_key, default))
-
-
-MAIN_PROVIDER = _env_with_legacy("MAIN_PROVIDER", "CHAT_PROVIDER", "openai")
-MAIN_API_KEY = _env_with_legacy("MAIN_API_KEY", "CHAT_API_KEY")
-MAIN_MODEL = _env_with_legacy("MAIN_MODEL", "CHAT_MODEL")
-MAIN_BASE_URL = _env_with_legacy("MAIN_BASE_URL", "CHAT_BASE_URL")
+# first installation.
+MAIN_PROVIDER = _env("MAIN_PROVIDER", "openai")
+MAIN_API_KEY = _env("MAIN_API_KEY")
+MAIN_MODEL = _env("MAIN_MODEL")
+MAIN_BASE_URL = _env("MAIN_BASE_URL")
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Embedding (vector memory search)
@@ -149,18 +126,10 @@ LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
 WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
-SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # keyword + silence sleep start
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # bedtime availability + silence checks
 SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
-SLEEP_KEYWORDS = _env("SLEEP_KEYWORDS", "晚安,睡了,去睡了,good night,gn").split(",")
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
-# DEPRECATED — kept for .env backward compat, no longer used by heartbeat
-AWAKE_HOUR_START = _env_int("AWAKE_HOUR_START", 7)       # DEPRECATED
-AWAKE_HOUR_END = _env_int("AWAKE_HOUR_END", 23)          # DEPRECATED
-SLEEP_KEYWORD_HOUR_START = _env_int("SLEEP_KEYWORD_HOUR_START", 21)  # DEPRECATED
-SLEEP_KEYWORD_HOUR_END = _env_int("SLEEP_KEYWORD_HOUR_END", 4)      # DEPRECATED
-SILENCE_SLEEP_AFTER_HOUR = _env_int("SILENCE_SLEEP_AFTER_HOUR", 23)  # DEPRECATED
-SILENCE_SLEEP_THRESHOLD_HOURS = _env_float("SILENCE_SLEEP_THRESHOLD_HOURS", 1.0)  # DEPRECATED
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Conversation Summary (continuous complete-turn digest)
@@ -181,14 +150,7 @@ CONV_SUMMARY_MAX_TOKENS: int = max(
 MEMORY_EXTRACTION_BATCH_TURNS: int = max(
     1, _env_int("MEMORY_EXTRACTION_BATCH_TURNS", 10),
 )
-# CORE_MEMORY_MAX_TOKENS remains a read-only compatibility fallback. Its old
-# documented value was a product default rather than an explicit override.
-CORE_MAX_TOKENS = _env_int_with_legacy(
-    "CORE_MAX_TOKENS",
-    "CORE_MEMORY_MAX_TOKENS",
-    1400,
-    legacy_default=800,
-)
+CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 1400)
 TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -558,26 +520,5 @@ def validate_config() -> str:
             "[WARN] TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED — "
             "No transport configured — bot will not receive messages"
         )
-
-    # Deprecation warnings for removed config keys
-    for old_key, new_key in [
-        ("FORCE_SLEEP_HOUR", "SILENCE_SLEEP_AFTER_HOUR"),
-        ("FORCE_WAKE_HOUR", "FALLBACK_WAKE_HOUR"),
-    ]:
-        if os.getenv(old_key):
-            _log.warning(
-                "[DEPRECATED] %s is no longer used. Use %s instead. "
-                "See .env.example for the new sleep/wake config.",
-                old_key, new_key,
-            )
-
-    for removed_key in ("MORNING_REPORT_HOUR", "EVENING_REPORT_HOUR", "REPORT_MAX_TOKENS"):
-        if os.getenv(removed_key):
-            _log.warning(
-                "[DEPRECATED] %s is no longer used. Morning briefings are now "
-                "generated automatically by Think on the first heartbeat tick. "
-                "You can safely remove this from .env.",
-                removed_key,
-            )
 
     return mode

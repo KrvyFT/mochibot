@@ -63,11 +63,14 @@ entries. **Lite** is explicitly assigned to personality-free classification,
 extraction, and validation. If Lite is not assigned, semantic pre-routing is
 skipped rather than borrowing Main and pretending a cheap tier exists.
 
-Official chat brands are OpenAI/GPT, DeepSeek, Anthropic/Claude, and Gemini.
-DeepSeek and Gemini use their official OpenAI-compatible endpoints through the
-OpenAI adapter; Anthropic uses its own adapter. Embedding is optional and off by
-default. OpenAI, Alibaba Cloud Bailian, and Azure AI Foundry embedding use the same
-OpenAI-compatible embedding adapter.
+Built-in chat presets are OpenAI/GPT, DeepSeek, Anthropic/Claude, and Gemini.
+DeepSeek and Gemini use their OpenAI-compatible endpoints through the OpenAI
+adapter; Anthropic uses its own adapter. A user-supplied HTTPS
+OpenAI-compatible API root may use the same OpenAI adapter as an escape hatch;
+MochiBot does not add gateway-specific compatibility or guarantee tools,
+images, JSON mode, or model parameters beyond what that endpoint implements.
+Embedding is optional and off by default. OpenAI, Alibaba Cloud Bailian, and
+Azure AI Foundry embedding use the same OpenAI-compatible embedding adapter.
 
 ## Tool availability boundary
 
@@ -86,16 +89,16 @@ contracts rather than an abstract risk taxonomy.
 
 ## Bedtime flow
 
-Explicit goodnight messages and heartbeat-detected silence both create a
-`MainRuntimeEntry(kind="bedtime")`. The entry adds a lived sleep-transition
-situation to the normal Main context; it does not run a separate bedtime agent
-or maintenance prompt.
+During night conversations, Main may call the framework-scoped
+`enter_bedtime` tool when it understands that the user is genuinely ending the
+conversation to sleep. Main leaves a natural farewell in the same tool loop,
+then the transport claims and completes the sleep transition. No keyword or
+separate classifier decides what the user meant.
 
-The heartbeat atomically claims the sleep transition so explicit and silent
-triggers cannot produce two goodnights. Main may use the abilities available in
-the turn, then leaves a natural bedtime response. The transport confirms
-delivery before the assistant turn is stored, and the heartbeat completes the
-transition to sleeping even when model or delivery work fails.
+Heartbeat-detected silence still creates a `MainRuntimeEntry(kind="bedtime")`
+with a lived sleep-transition situation. The heartbeat atomically claims the
+transition, Main may use the abilities available in the turn, and the runtime
+completes sleep even when model or delivery work fails.
 
 ## Nightly and Weekly memory flow
 
@@ -111,23 +114,29 @@ ordinary chat tools:
 
 - an exact receipt-backed patch operation for the free-text Core, with snapshots;
 - one atomic curation batch over only the rendered Memory Items and same-user
-  evidence messages.
+  evidence messages;
+- one atomic relationship curation batch over the active user-life graph.
 
 Weekly context contains the previous seven logical days of archived Diary,
 recent conversation context, at most 40 new Memory Items, and at most 40
 text-related older items. Counts and truncation flags are explicit; unseen rows
 are never in scope. Memory edits compare both content and update time, and
 Memory/Trash/FTS/vector/KG invalidation commits as one SQLite transaction.
+The relationship graph is intentionally limited to people, pets, places, and a
+small vocabulary of concrete life relationships. Main may upsert a relationship
+only from an exact visible Memory Item snapshot backed by user-message evidence;
+Core is useful context but is not evidence. Archives use exact active-triple
+snapshots, and the whole relationship batch commits or rolls back together.
 Weekly's final model text is discarded and no synthetic chat history is stored.
 Successful Core patches record a content-hash ISO-week receipt in the canonical
-Core store, so a later failure can retry projection or curation without
-offering the Core mutation again or retaining an extra copy of Core.
+Core store, so a later failure can retry curation without offering the Core
+mutation again or retaining an extra copy of Core.
 
 Memory Items are authoritative facts with bounded user-message provenance.
-Their knowledge-graph relationships are derived by incremental projection after
-item writes; Nightly never scans conversations or asks a model to reinterpret
-memory. A committed Weekly batch records projection state so projection retries
-cannot replay the curation transaction.
+Lite never projects them into the relationship graph. Instead, Weekly Main
+reviews the bounded Memory Item package and active graph, using semantic
+judgment to keep only durable user-life relationships. Deterministic code
+enforces type, predicate, evidence, snapshot, and transaction boundaries.
 
 Conversation context uses a durable per-user rolling summary. Every configured
 batch of complete ordinary user/assistant turns is combined with the previous
@@ -139,8 +148,7 @@ a clean summary epoch and rejects any in-flight result from the old epoch.
 Memory extraction is another independent Lite coordinator. It consumes fixed
 batches of complete eligible normal-chat turns, requires evidence IDs from
 same-user messages in that exact batch, optionally embeds candidates before the
-transaction, then commits Memory Items and its cursor atomically. Derived KG
-projection has separate retry state and cannot roll back authoritative items.
+transaction, then commits Memory Items and its cursor atomically.
 FTS/LIKE is always the text recall path; vectors only add candidates when an
 embedding is available, and recent-only rows are never semantic recall filler.
 
@@ -183,12 +191,13 @@ observer fact without moving the Free Time clock. Sleeping and long-silence
 pause gates run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
-Free Time deliberately excludes Agenda, Diary, summaries, history-derived
-temporal context, recent role messages, auto-recall, and semantic routing.
-Attention receives bounded unresolved facts plus Agenda, Diary, conversation
-summary, temporal context, and role-true recent history. Both start with
-resident tools and may request other tools; neither inherits a sticky routed
-skill.
+Free Time receives only the last two role-true conversation turns and last
+contact age for immediate relationship continuity. It deliberately excludes
+Agenda, Diary, summaries, auto-recall, recent operations, and semantic routing,
+so recent conversation remains background rather than an assigned topic.
+Attention receives bounded unresolved facts plus Diary, conversation summary,
+temporal context, and role-true recent history. Both start with resident tools
+and may request other tools; neither inherits a sticky routed skill.
 
 Observers own factual source state, Main owns meaning/action/expression, and
 the transport owns delivery. A Main skip does not resolve observer facts.

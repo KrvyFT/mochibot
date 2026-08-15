@@ -6,15 +6,13 @@ import pytest
 import mochi.core_store as core_store
 
 
-def test_legacy_identity_and_notes_migrate_once_with_backups():
+def test_legacy_identity_migrates_once_with_backups():
     from mochi.db import _connect
 
     prompts = core_store.DATA_DIR / "prompts" / "system_chat"
     prompts.mkdir(parents=True)
     raw_soul = b"Custom soul\r\n"
     (prompts / "soul.md").write_bytes(raw_soul)
-    notes = core_store.DATA_DIR / "notes.md"
-    notes.write_text("- follow up next week\n", encoding="utf-8")
     conn = _connect()
     conn.execute(
         "CREATE TABLE core_memory "
@@ -31,9 +29,8 @@ def test_legacy_identity_and_notes_migrate_once_with_backups():
 
     assert status["status"] == "migrated"
     assert all(text in content for text in (
-        "Custom soul", "Legacy relationship", "follow up next week",
+        "Custom soul", "Legacy relationship",
     ))
-    assert not notes.exists()
     backup = core_store.DATA_DIR / status["backup"]["directory"]
     manifest = json.loads((backup / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["sources"]["soul_override"]["sha256"] == hashlib.sha256(
@@ -50,9 +47,7 @@ def test_fresh_core_uses_bundled_identity():
     assert "AI \u966a\u4f34\u642d\u5b50" in content
 
 
-def test_exact_patch_conflict_and_snapshot_restore(monkeypatch):
-    import mochi.config as config
-
+def test_exact_patch_conflict_and_internal_snapshot():
     core_store.replace_core("alpha\n\nbeta")
     with pytest.raises(core_store.CoreConflictError):
         core_store.update_core(
@@ -63,9 +58,5 @@ def test_exact_patch_conflict_and_snapshot_restore(monkeypatch):
     core_store.update_core(
         action="edit", old_text="alpha", new_text="gamma",
     )
-    core_store.replace_core("short")
-    snapshot_id = core_store.list_core_snapshots()[0]["id"]
-    monkeypatch.setattr(config, "CORE_MAX_TOKENS", 1)
-    restored = core_store.restore_core_snapshot(snapshot_id)
-    assert restored["changed"] is True
-    assert "gamma" in core_store.read_core()
+    assert core_store.read_core() == "gamma\n\nbeta"
+    assert list((core_store.DATA_DIR / "core_history").glob("*.md"))

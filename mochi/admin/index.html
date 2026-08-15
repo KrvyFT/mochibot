@@ -45,6 +45,28 @@ body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-seri
 .card-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; color:var(--text-soft); margin-bottom:12px; }
 .card-row { display:flex; gap:16px; }
 .card-row > .card { flex:1; }
+/* ── Settings home ─────────────────────── */
+.settings-hero { position:relative; overflow:hidden; display:flex; align-items:center; justify-content:space-between; gap:24px; padding:24px; margin-bottom:16px; border:1px solid #EED7CC; border-radius:16px; background:linear-gradient(135deg,#FFF8F4 0%,#FDF2EE 58%,#F1F7F0 100%); box-shadow:var(--shadow); }
+.settings-hero::after { content:""; position:absolute; width:150px; height:150px; right:-55px; top:-75px; border-radius:50%; background:rgba(232,160,191,.12); pointer-events:none; }
+.settings-hero-main { display:flex; align-items:center; gap:16px; min-width:0; position:relative; z-index:1; }
+.settings-hero-mark { width:56px; height:56px; flex:0 0 56px; display:grid; place-items:center; border-radius:18px; background:rgba(255,255,255,.82); border:1px solid rgba(212,120,92,.18); font-size:30px; box-shadow:0 6px 18px rgba(180,96,74,.10); }
+.settings-hero-title { font-size:20px; font-weight:700; color:var(--text-heading); }
+.settings-hero-copy { margin-top:4px; color:var(--text-soft); font-size:13px; line-height:1.5; }
+.settings-hero-actions { flex:0 0 auto; position:relative; z-index:1; }
+.setup-progress { display:flex; gap:8px; flex-wrap:wrap; margin-top:12px; }
+.setup-progress-item { display:flex; align-items:center; gap:5px; padding:5px 9px; border-radius:14px; background:rgba(255,255,255,.62); color:var(--text-soft); font-size:12px; }
+.setup-progress-item.complete { color:var(--success); }
+.settings-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; margin-bottom:16px; }
+.settings-grid > .card { margin-bottom:0; }
+.settings-section-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:14px; }
+.settings-section-title { font-size:16px; font-weight:700; color:var(--text-heading); }
+.settings-section-copy { margin-top:3px; font-size:12px; color:var(--text-soft); }
+.settings-tier { padding:10px 0; border-bottom:1px solid var(--border); }
+.settings-tier:last-child { border-bottom:0; padding-bottom:0; }
+.settings-tier-label { display:flex; align-items:baseline; justify-content:space-between; gap:10px; margin-bottom:7px; }
+.settings-tier-copy { font-size:11px; color:var(--text-soft); }
+.settings-model-value { padding:9px 12px; border-radius:8px; background:var(--bg); color:var(--text-heading); font-size:13px; font-weight:600; }
+.settings-model-value.empty { color:var(--warning); font-weight:500; }
 /* ── Buttons ──────────────────────────── */
 .btn { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .15s; }
 .btn-primary { background:var(--primary); color:#fff; border-color:var(--primary); }
@@ -123,6 +145,10 @@ select.form-input { cursor:pointer; }
   /* Cards: stack vertically */
   .card-row { flex-direction:column; }
   .card { overflow-x:auto; }
+  .settings-grid { grid-template-columns:1fr; }
+  .settings-hero { align-items:flex-start; flex-direction:column; padding:20px; }
+  .settings-hero-actions { width:100%; }
+  .settings-hero-actions .btn { width:100%; justify-content:center; }
   /* Stat grid: 2 columns */
   .stat-grid { grid-template-columns:1fr 1fr; }
   /* Touch targets */
@@ -163,7 +189,7 @@ select.form-input { cursor:pointer; }
 <main class="content">
 <!-- ═══════ Settings ═══════ -->
 <section id="page-settings" class="page active">
-  <h2 class="page-title">🍡 设置</h2>
+  <h2 class="page-title">设置</h2>
   <div id="settings-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
@@ -195,16 +221,11 @@ select.form-input { cursor:pointer; }
       <input id="mi-q" type="text" placeholder="🔍 关键词搜索…"
         class="form-input" style="flex:1;min-width:180px;border-radius:20px;padding:8px 14px;font-size:13px"
         onkeydown="if(event.key==='Enter')searchMemoryItems(1)" />
-      <select id="mi-cat" class="form-input"
-        style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
-        onchange="searchMemoryItems(1)">
-        <option value="">全部分类</option>
-      </select>
       <select id="mi-sort" class="form-input"
         style="width:auto;border-radius:20px;padding:8px 14px;font-size:13px"
         onchange="searchMemoryItems(1)">
         <option value="importance">按重要性</option>
-        <option value="updated">按更新时间</option>
+        <option value="updated">按整理时间</option>
       </select>
       <button class="btn btn-primary btn-sm" onclick="searchMemoryItems(1)">搜索</button>
     </div>
@@ -236,16 +257,26 @@ select.form-input { cursor:pointer; }
 </main>
 
 <!-- Modal -->
-<div class="modal-overlay" id="model-modal" onclick="if(event.target===this)closeModelModal()">
+<div class="modal-overlay" id="model-modal">
   <div class="modal">
     <h3 id="model-modal-title">添加模型</h3>
     <div class="form-group"><label class="form-label">名称</label><input class="form-input" id="mm-name" placeholder="例如 my-gpt4o"></div>
     <div class="form-group"><label class="form-label">服务商</label>
-      <select class="form-input" id="mm-vendor" onchange="onVendorChange()"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="anthropic">Anthropic</option></select>
+      <select class="form-input" id="mm-vendor" onchange="onVendorChange()"><option value="openai">OpenAI</option><option value="deepseek">DeepSeek</option><option value="gemini">Gemini</option><option value="anthropic">Anthropic</option><option value="compatible">OpenAI-compatible</option></select>
     </div>
     <div class="form-group"><label class="form-label">模型</label><input class="form-input" id="mm-model" placeholder="例如 gpt-4o"></div>
-    <div class="form-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
-    <div class="form-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."></div>
+    <div class="form-group" id="mm-credential-mode-group"><label class="form-label">凭据方式</label>
+      <select class="form-input" id="mm-credential-mode" onchange="onCredentialModeChange()">
+        <option value="new">填写新 API Key</option>
+        <option value="existing" id="mm-existing-mode">复制已有模型凭据</option>
+      </select>
+    </div>
+    <div class="form-group" id="mm-apikey-group"><label class="form-label">API Key</label><input class="form-input" id="mm-apikey" type="password" autocomplete="new-password" placeholder="sk-..."></div>
+    <div class="form-group" id="mm-credential-source-group" style="display:none"><label class="form-label">来源模型</label>
+      <select class="form-input" id="mm-credential-source"></select>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:4px">复制 API Key 和 Base URL；保存后与来源模型互不联动。</div>
+    </div>
+    <div class="form-group" id="mm-baseurl-group"><label class="form-label">Base URL（可选）</label><input class="form-input" id="mm-baseurl" placeholder="https://..."><div id="mm-baseurl-help" style="display:none;font-size:11px;color:var(--text-soft);margin-top:4px"></div></div>
     <div id="mm-test-result" style="font-size:13px;margin-top:8px"></div>
     <div class="modal-footer">
       <button class="btn btn-ghost" onclick="closeModelModal()">取消</button>
@@ -265,9 +296,6 @@ select.form-input { cursor:pointer; }
     <input type="hidden" id="mi-edit-id" />
     <div class="form-group"><label class="form-label">内容</label>
       <textarea class="form-input" id="mi-edit-content" style="min-height:120px;resize:vertical;font-family:inherit"></textarea>
-    </div>
-    <div class="form-group"><label class="form-label">分类</label>
-      <input class="form-input" id="mi-edit-category" type="text" placeholder="如：偏好、事实、事件" />
     </div>
     <div class="form-group"><label class="form-label">重要性</label>
       <select class="form-input" id="mi-edit-importance">
@@ -1296,11 +1324,6 @@ function renderCheckupBody(c) {
   if (mem && !mem.error) {
     h += '<div style="margin-bottom:12px"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:6px">记忆系统</div>';
     h += `<div class="check-row">${statusIcon('ok')}<span>总记忆: ${mem.total} 条</span></div>`;
-    const cats = mem.categories || {};
-    if (Object.keys(cats).length) {
-      const catStr = Object.entries(cats).map(([k,v]) => `${k} ${v}`).join(', ');
-      h += `<div style="font-size:12px;color:var(--text-soft);padding-left:28px">${esc(catStr)}</div>`;
-    }
     h += `<div class="check-row">${statusIcon('ok')}<span>KG: ${mem.kg_entities} 实体, ${mem.kg_active_triples} 三元组</span></div>`;
     h += `<div class="check-row">${statusIcon('ok')}<span>回收站: ${mem.trash_count} 条</span></div>`;
     h += '</div>';
@@ -1368,10 +1391,9 @@ async function loadSettings() {
   const generation = ++_settingsRequestGeneration;
   const el = document.getElementById('settings-content');
   try {
-    const [s, botStatus, models, tiers, prefs] = await Promise.all([
+    const [s, botStatus, tiers, prefs] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
-      api('GET', '/models'),
       api('GET', '/tiers'),
       api('GET', '/preferences'),
     ]);
@@ -1385,67 +1407,74 @@ async function loadSettings() {
       && s.config_status.weixin_bot_token?.set
     ) || _weixinConnected;
     const hasTransport = tgConfigured || wxConfigured;
-    const transportOk = hasTransport && botStatus.running;
     const ownerBound = s.config_status.owner_user_id?.set || false;
     const preferencesConfigured = (
       prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
       && prefs.MAX_DAILY_PROACTIVE?.source === 'user'
     );
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
+    const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
+    const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
+    const mainModel = tiers.main?.assigned_name || '';
     let html = '';
 
-    html += '<div class="card">';
-    html += '<div class="card-title">设置向导</div>';
-    html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成 3 步，然后启动你的 Agent。</p>';
-    html += `<div class="check-row">${hasModel?statusIcon('ok'):statusIcon('warn')}<strong>Step 1 · 配置模型</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${hasModel?'已完成':'为 Main 和 Lite 选择模型'}</span></div>`;
-    html += `<div class="check-row">${hasTransport?statusIcon('ok'):statusIcon('off')}<strong>Step 2 · 连接消息平台</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${hasTransport?'已完成':'选择 Telegram 或微信'}</span></div>`;
-    html += `<div class="check-row">${preferencesConfigured?statusIcon('ok'):statusIcon('off')}<strong>Step 3 · 确认相处偏好</strong><span style="color:var(--text-soft);font-size:12px;margin-left:6px">${preferencesConfigured?'已完成':'保存时区和主动关心设置'}</span></div>`;
-    const agentStatus = transportOk ? '运行中' : (setupComplete ? '已关闭' : '尚未启动');
-    const agentStatusBadge = transportOk ? 'badge-ok' : 'badge-gray';
-    html += `<div style="display:flex;align-items:center;gap:8px;margin-top:14px"><strong style="font-size:13px">Agent 状态</strong><span class="badge ${agentStatusBadge}">${agentStatus}</span>`;
-    if (setupComplete && transportOk) {
-      html += '<button class="btn btn-ghost btn-sm" data-agent-stop-btn onclick="stopAgentAndRefresh()">关闭 Agent</button>';
-    } else if (setupComplete) {
-      html += '<button class="btn btn-primary" data-restart-btn onclick="startBotAndRefresh()">启动 Agent</button>';
-    } else {
-      html += '<button class="btn btn-primary" disabled>完成以上 3 步后启动</button>';
+    const heroTitle = botStatus.running
+      ? 'Mochi 正在运行 (｡•̀ᴗ-)✧'
+      : setupComplete ? 'Mochi 已准备好' : '一起把 Mochi 准备好';
+    const heroCopy = botStatus.running
+      ? `${activeIcon} ${activeTransport || '消息平台'} 已连接${mainModel ? ` · Main 使用 ${esc(mainModel)}` : ''}`
+      : setupComplete
+        ? `配置已经就绪，启动后会通过 ${activeTransport} 联系你。`
+        : '完成下面三项设置，Mochi 就可以开始陪你。';
+    html += `<div class="settings-hero">
+      <div>
+        <div class="settings-hero-main">
+          <div class="settings-hero-mark">🍡</div>
+          <div>
+            <div class="settings-hero-title">${heroTitle}</div>
+            <div class="settings-hero-copy">${heroCopy}</div>
+          </div>
+        </div>`;
+    if (!setupComplete) {
+      html += `<div class="setup-progress">
+        <div class="setup-progress-item${hasModel?' complete':''}">${hasModel?statusIcon('ok'):statusIcon('off')} 模型</div>
+        <div class="setup-progress-item${hasTransport?' complete':''}">${hasTransport?statusIcon('ok'):statusIcon('off')} 消息平台</div>
+        <div class="setup-progress-item${preferencesConfigured?' complete':''}">${preferencesConfigured?statusIcon('ok'):statusIcon('off')} 相处偏好</div>
+      </div>`;
     }
-    html += '</div>';
-    html += '</div>';
+    html += '</div><div class="settings-hero-actions">';
+    if (botStatus.running) {
+      html += '<button class="btn btn-ghost" data-agent-stop-btn onclick="stopAgentAndRefresh()">关闭 Agent</button>';
+    } else if (setupComplete) {
+      html += '<button class="btn btn-primary" data-restart-btn onclick="startBotAndRefresh()">启动 Mochi</button>';
+    }
+    html += '</div></div>';
 
     const tierDescriptions = {
       main: 'Agent 主体',
       lite: '打工模型，不和你直接对话',
     };
     const tierLabels = {main: 'Main', lite: 'Lite'};
-    html += `<div class="card"><div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-      <div class="card-title" style="margin-bottom:0">Step 1 · 模型</div>
-      <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=advanced]').click()">模型配置</button>
-    </div>`;
+    html += `<div class="settings-grid"><div class="card">
+      <div class="settings-section-head">
+        <div><div class="settings-section-title">模型</div><div class="settings-section-copy">Agent 如何思考</div></div>
+        <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=advanced]').click()">管理</button>
+      </div>`;
     for (const tier of ['main', 'lite']) {
       const cfg = tiers[tier] || {};
       const selected = cfg.assigned_name || '';
-      html += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:12px 0;border-bottom:1px solid var(--border)">
-        <div style="min-width:260px;flex:1">
-          <div style="font-weight:600">${tierLabels[tier]}</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">${tierDescriptions[tier]}</div>
-        </div>
-        <select class="form-input" style="width:220px" onchange="assignTier('${tier}',this.value)">
-          <option value="" disabled ${selected?'':'selected'}>请选择模型</option>
-          ${models.map(m=>`<option value="${esc(m.name)}" ${selected===m.name?'selected':''} ${m.supported?'':'disabled'}>${esc(m.name)}${m.supported?'':'（不支持）'}</option>`).join('')}
-        </select>
+      html += `<div class="settings-tier">
+        <div class="settings-tier-label"><strong>${tierLabels[tier]}</strong><span class="settings-tier-copy">${tierDescriptions[tier]}</span></div>
+        <div class="settings-model-value${selected?'':' empty'}">${selected ? esc(selected) : '未配置'}</div>
       </div>`;
     }
     html += '</div>';
 
-    const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
-    const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
     let transportStatus = '';
     if (hasTransport) {
-      let statusBadge = botStatus.running
-        ? '<span class="badge badge-ok">运行中</span>'
-        : '<span class="badge badge-warn">已配置，未运行</span>';
-      if (botStatus.weixin_session_expired) statusBadge += ' <span class="badge badge-err">会话过期</span>';
+      const statusBadge = botStatus.weixin_session_expired
+        ? '<span class="badge badge-err">会话过期</span>'
+        : '';
       transportStatus = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
         <strong>${activeIcon} ${activeTransport}</strong>${statusBadge}
         ${botStatus.running?'<button class="btn btn-ghost btn-sm" data-restart-btn onclick="startBotAndRefresh()">重启</button>':''}
@@ -1458,7 +1487,9 @@ async function loadSettings() {
       }
     }
 
-    html += '<div class="card"><div class="card-title">Step 2 · 消息平台</div>';
+    html += `<div class="card"><div class="settings-section-head">
+      <div><div class="settings-section-title">消息平台</div><div class="settings-section-copy">Mochi 从哪里联系你</div></div>
+    </div>`;
     if (hasTransport) {
       html += transportStatus;
     } else {
@@ -1498,7 +1529,7 @@ async function loadSettings() {
           </div>
         </div>`;
     }
-    html += '</div>';
+    html += '</div></div>';
 
     const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
     const browserTimezone = -(new Date().getTimezoneOffset() / 60);
@@ -1506,7 +1537,9 @@ async function loadSettings() {
     const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
     const proactiveEnabled = Number(proactive.value) > 0;
     const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
-    html += `<div class="card"><div class="card-title">Step 3 · 相处偏好</div>
+    html += `<div class="card"><div class="settings-section-head">
+      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和主动联系</div></div>
+    </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:260px;flex:1">
           <div style="font-size:14px">时区</div>
@@ -1668,10 +1701,11 @@ async function loadSystem() {
 // Page 1: Models
 // ═══════════════════════════════════════════
 const VENDOR_PRESETS = [
-  { vendor: 'openai',    label: 'OpenAI',    provider: 'openai',    baseUrl: '',                                                           placeholder: 'gpt-4o' },
+  { vendor: 'openai',    label: 'OpenAI',    compatibleLabel: 'OpenAI-compatible', provider: 'openai', baseUrl: '',                        placeholder: 'gpt-4o' },
   { vendor: 'deepseek',  label: 'DeepSeek',  provider: 'openai',    baseUrl: 'https://api.deepseek.com/v1',                                placeholder: 'deepseek-chat', fixedBaseUrl: true },
   { vendor: 'gemini',    label: 'Gemini',    provider: 'openai',    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai/',    placeholder: 'gemini-2.5-flash', fixedBaseUrl: true },
   { vendor: 'anthropic', label: 'Anthropic', provider: 'anthropic', baseUrl: '',                                                           placeholder: 'claude-sonnet-4-20250514' },
+  { vendor: 'compatible', label: 'OpenAI-compatible', provider: 'openai', baseUrl: '',                                                      placeholder: '' },
 ];
 
 const EMB_VENDOR_PRESETS = [
@@ -1681,15 +1715,34 @@ const EMB_VENDOR_PRESETS = [
   { vendor: 'none',     label: '禁用',              provider: 'none',         baseUrl: '',                            placeholder: '' },
 ];
 
-function _normalizeUrl(u) { return (u || '').toLowerCase().replace(/\/+$/, '').replace(/\/v\d+$/, ''); }
+function _normalizeUrl(u) {
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol.toLowerCase() + '//' + parsed.host.toLowerCase()
+      + parsed.pathname.replace(/\/+$/, '');
+  } catch (_) {
+    return (u || '').replace(/\/+$/, '');
+  }
+}
+
+function _isAzureOpenAIUrl(baseUrl) {
+  try {
+    const parsed = new URL(baseUrl);
+    const host = parsed.hostname.toLowerCase();
+    return (host.endsWith('.services.ai.azure.com') || host.endsWith('.openai.azure.com'))
+      && parsed.pathname.toLowerCase().includes('/openai');
+  } catch (_) {
+    return false;
+  }
+}
 
 function resolveVendorLabel(provider, baseUrl, presets) {
   presets = presets || VENDOR_PRESETS;
   const url = _normalizeUrl(baseUrl);
-  if (provider === 'openai' && (url.includes('.services.ai.azure.com/openai') || url.includes('.openai.azure.com/openai'))) return 'Azure AI Foundry';
+  if (presets.some(p => p.vendor === 'azure') && provider === 'openai' && _isAzureOpenAIUrl(baseUrl)) return 'Azure AI Foundry';
   for (const p of presets) {
     if (p.provider === provider && p.baseUrl) {
-      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.label;
+      if (url && url === _normalizeUrl(p.baseUrl)) return p.label;
     }
   }
   if (provider === 'anthropic') return 'Anthropic';
@@ -1711,28 +1764,49 @@ function endpointHost(baseUrl) {
 function resolveVendorKey(provider, baseUrl, presets) {
   presets = presets || VENDOR_PRESETS;
   const url = _normalizeUrl(baseUrl);
-  if (provider === 'openai' && (url.includes('.services.ai.azure.com/openai') || url.includes('.openai.azure.com/openai'))) return 'azure';
+  if (presets.some(p => p.vendor === 'azure') && provider === 'openai' && _isAzureOpenAIUrl(baseUrl)) return 'azure';
   for (const p of presets) {
     if (p.provider === provider && p.baseUrl) {
-      if (url && url.startsWith(_normalizeUrl(p.baseUrl))) return p.vendor;
+      if (url && url === _normalizeUrl(p.baseUrl)) return p.vendor;
     }
   }
   if (provider === 'anthropic') return 'anthropic';
   if (provider === 'none') return 'none';
   if (provider === 'openai' && !url) return 'openai';
+  if (provider === 'openai') return 'compatible';
   return 'openai';
 }
 
 let _modelEditName = null;
 let _modelEditGeneration = 0;
 let _modelTargetTier = null;
+let _modelCredentialSources = [];
 let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
+let _lastAutoModel = '';
 
 async function loadAdvanced() {
   const el = document.getElementById('advanced-content');
   try {
-    const [models, embCfg] = await Promise.all([api('GET','/models'), api('GET','/embedding/config')]);
+    const [models, tiers, embCfg] = await Promise.all([
+      api('GET','/models'),
+      api('GET','/tiers'),
+      api('GET','/embedding/config'),
+    ]);
     let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、自定义接口与语义检索。正常使用通常无需调整这里。</p>';
+
+    html += '<div class="card"><div class="card-title">Agent 模型</div>';
+    for (const tier of ['main', 'lite']) {
+      const selected = tiers[tier]?.assigned_name || '';
+      const label = tier === 'main' ? 'Main · Agent 主体' : 'Lite · 后台整理';
+      html += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0${tier==='main'?';border-bottom:1px solid var(--border)':''}">
+        <div style="min-width:180px;flex:1;font-size:13px;font-weight:600">${label}</div>
+        <select class="form-input" style="width:260px" onchange="assignTier('${tier}',this.value)">
+          <option value="" disabled ${selected?'':'selected'}>请选择模型</option>
+          ${models.map(m=>`<option value="${esc(m.name)}" ${selected===m.name?'selected':''} ${m.supported?'':'disabled'}>${esc(m.name)}${m.supported?'':'（不支持）'}</option>`).join('')}
+        </select>
+      </div>`;
+    }
+    html += '</div>';
 
     // Model Registry
     html += '<div class="card"><div class="card-title">模型注册表</div>';
@@ -1836,18 +1910,69 @@ function onVendorChange() {
   const preset = VENDOR_PRESETS.find(v => v.vendor === sel.value);
   if (!preset) return;
   const urlEl = document.getElementById('mm-baseurl');
+  const urlHelp = document.getElementById('mm-baseurl-help');
   const modelEl = document.getElementById('mm-model');
   urlEl.readOnly = !!preset.fixedBaseUrl;
   // Auto-fill base_url only if current value is empty or was auto-filled last time
-  if (preset.fixedBaseUrl || !urlEl.value || urlEl.value === _lastAutoBaseUrl) {
+  if (preset.fixedBaseUrl || preset.vendor === 'openai' || preset.vendor === 'anthropic'
+      || !urlEl.value || urlEl.value === _lastAutoBaseUrl) {
     urlEl.value = preset.baseUrl;
     _lastAutoBaseUrl = preset.baseUrl;
   }
   if (preset.placeholder) {
     modelEl.placeholder = '例如 ' + preset.placeholder;
-    if (!modelEl.value) modelEl.value = preset.placeholder;
+    if (!modelEl.value || modelEl.value === _lastAutoModel) {
+      modelEl.value = preset.placeholder;
+      _lastAutoModel = preset.placeholder;
+    }
   }
-  else modelEl.placeholder = '';
+  else {
+    modelEl.placeholder = '';
+    if (modelEl.value === _lastAutoModel) modelEl.value = '';
+    _lastAutoModel = '';
+  }
+  if (preset.vendor === 'compatible') {
+    urlEl.placeholder = 'https://api.example.com/v1';
+    urlHelp.style.display = 'block';
+    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions。兼容性以实际测试结果为准。';
+  } else {
+    urlEl.placeholder = 'https://...';
+    urlHelp.style.display = 'none';
+    urlHelp.textContent = '';
+  }
+  refreshCredentialSources();
+}
+
+function refreshCredentialSources() {
+  const modeGroup = document.getElementById('mm-credential-mode-group');
+  const mode = document.getElementById('mm-credential-mode');
+  const copyOption = document.getElementById('mm-existing-mode');
+  const sourceSelect = document.getElementById('mm-credential-source');
+  if (_modelEditName) {
+    modeGroup.style.display = 'none';
+    onCredentialModeChange();
+    return;
+  }
+
+  modeGroup.style.display = 'block';
+  const vendor = document.getElementById('mm-vendor').value;
+  const sources = _modelCredentialSources.filter(m =>
+    m.api_key_set && resolveVendorKey(m.provider, m.base_url) === vendor
+  );
+  sourceSelect.replaceChildren(...sources.map(m =>
+    new Option(`${m.name} (${m.model})`, m.name)
+  ));
+  copyOption.disabled = sources.length === 0;
+  if (!sources.length && mode.value === 'existing') mode.value = 'new';
+  onCredentialModeChange();
+}
+
+function onCredentialModeChange() {
+  const copying = !_modelEditName &&
+    document.getElementById('mm-credential-mode').value === 'existing';
+  document.getElementById('mm-apikey-group').style.display = copying ? 'none' : 'block';
+  document.getElementById('mm-credential-source-group').style.display = copying ? 'block' : 'none';
+  document.getElementById('mm-baseurl-group').style.display = copying ? 'none' : 'block';
 }
 
 function openModelModal(name, targetTier) {
@@ -1855,7 +1980,9 @@ function openModelModal(name, targetTier) {
   const requestGeneration = ++_modelEditGeneration;
   _modelEditName = name || null;
   _modelTargetTier = targetTier || null;
+  _modelCredentialSources = [];
   _lastAutoBaseUrl = '';
+  _lastAutoModel = '';
   document.getElementById('model-modal-title').textContent = name ? '编辑模型' : '添加模型';
   document.getElementById('mm-name').value = name || '';
   document.getElementById('mm-name').disabled = !!name;
@@ -1863,14 +1990,17 @@ function openModelModal(name, targetTier) {
   document.getElementById('mm-model').value = '';
   document.getElementById('mm-apikey').value = '';
   document.getElementById('mm-apikey').placeholder = name ? '（不修改）' : 'sk-...';
+  document.getElementById('mm-credential-mode').value = 'new';
   document.getElementById('mm-baseurl').value = '';
   document.getElementById('mm-test-result').innerHTML = '';
   onVendorChange();
-  if (name) {
-    api('GET','/models').then(models => {
-      const modal = document.getElementById('model-modal');
-      if (_modelEditGeneration !== requestGeneration || _modelEditName !== requestedName || !modal.classList.contains('open') ||
-          document.getElementById('mm-name').value !== requestedName) return;
+  document.getElementById('model-modal').classList.add('open');
+  api('GET','/models').then(models => {
+    const modal = document.getElementById('model-modal');
+    if (_modelEditGeneration !== requestGeneration || _modelEditName !== requestedName ||
+        !modal.classList.contains('open')) return;
+    _modelCredentialSources = models;
+    if (name) {
       const m = models.find(x=>x.name===name);
       if (m) {
         const vendor = resolveVendorKey(m.provider, m.base_url);
@@ -1879,12 +2009,14 @@ function openModelModal(name, targetTier) {
         document.getElementById('mm-baseurl').value = m.base_url || '';
         _lastAutoBaseUrl = m.base_url || '';
         onVendorChange();
-        // Restore actual base_url after onVendorChange (in case it differs from preset)
+        // Restore persisted values after preset defaults run.
+        document.getElementById('mm-model').value = m.model;
+        _lastAutoModel = '';
         document.getElementById('mm-baseurl').value = m.base_url || '';
       }
-    });
-  }
-  document.getElementById('model-modal').classList.add('open');
+    }
+    refreshCredentialSources();
+  });
 }
 function closeModelModal() {
   _modelEditName = null;
@@ -1895,16 +2027,34 @@ function closeModelModal() {
 
 async function saveModelFromModal(stayOpen) {
   const name = document.getElementById('mm-name').value.trim();
-  if (!name) return showToast('名称不能为空');
+  if (!name) { showToast('名称不能为空'); return false; }
   const apiKey = document.getElementById('mm-apikey').value;
   const preset = VENDOR_PRESETS.find(v => v.vendor === document.getElementById('mm-vendor').value) || VENDOR_PRESETS[0];
+  const copyingCredentials = !_modelEditName &&
+    document.getElementById('mm-credential-mode').value === 'existing';
+  const credentialSource = copyingCredentials
+    ? document.getElementById('mm-credential-source').value
+    : '';
+  if (copyingCredentials && !credentialSource) {
+    showToast('请选择来源模型');
+    return false;
+  }
+  const sourceModel = credentialSource
+    ? _modelCredentialSources.find(m => m.name === credentialSource)
+    : null;
+  const enteredBaseUrl = document.getElementById('mm-baseurl').value.trim();
+  if (preset.vendor === 'compatible' && !copyingCredentials && !enteredBaseUrl) {
+    showToast('OpenAI-compatible 需要填写 Base URL');
+    return false;
+  }
   const body = {
     name,
     provider: preset.provider,
     model: document.getElementById('mm-model').value.trim(),
-    api_key: (_modelEditName && !apiKey) ? '__KEEP__' : apiKey,
-    base_url: preset.fixedBaseUrl ? preset.baseUrl : document.getElementById('mm-baseurl').value.trim(),
+    api_key: (_modelEditName && !apiKey) ? '__KEEP__' : (copyingCredentials ? '' : apiKey),
+    base_url: sourceModel?.base_url || (preset.fixedBaseUrl ? preset.baseUrl : enteredBaseUrl),
   };
+  if (credentialSource) body.credential_source_model = credentialSource;
   const targetTier = stayOpen ? null : _modelTargetTier;
   try {
     const result = await api('POST','/models', body);
@@ -1942,7 +2092,6 @@ async function deleteModel(name) {
 
 // ═══════ Memory ═══════
 let _coreRequestGeneration = 0;
-let _coreHistoryRequestGeneration = 0;
 let _migrationLoaded = false;
 
 async function loadMemory() {
@@ -1960,25 +2109,14 @@ async function loadMemory() {
     badge.className = 'badge ' + tokClass;
     badge.textContent = '~' + approxTok + ' / ' + maxTok + ' tokens';
     el.innerHTML = `
-      ${data.migration && data.migration.status === 'migrated'
-        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ 已从旧版 Soul / User / SQLite Core 迁移。</div>'
-        : data.migration && data.migration.status === 'migrated_over_budget'
+      ${data.migration && data.migration.status === 'migrated_over_budget'
         ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 旧版内容已完整迁移并备份，但超过新 Core 预算。请精简后保存；系统没有截断任何内容。</div>'
-        : ''}
-      ${data.notes_retirement && data.notes_retirement.status === 'migrated'
-        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ Notes 已原文备份并迁入 Core「正在惦记」。备份：data/' + esc(data.notes_retirement.backup || '') + '</div>'
-        : data.notes_retirement && data.notes_retirement.status === 'migrated_over_budget'
-        ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ Notes 已完整迁入 Core 并备份，但 Core 超过预算。请精简后保存；迁移没有截断任何内容。备份：data/' + esc(data.notes_retirement.backup || '') + '</div>'
-        : data.notes_retirement && data.notes_retirement.status === 'retired_no_entries'
-        ? '<div style="background:var(--primary-bg);padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">✅ 旧 Notes 文件已备份并退休，没有发现需要迁入 Core 的有效条目。</div>'
-        : data.notes_retirement && data.notes_retirement.status === 'failed'
-        ? '<div style="background:#FFEBEE;color:#B71C1C;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">❌ Notes 迁移未完成；旧文件保持原样。请查看日志后重启重试。</div>'
         : ''}
       ${data.hygiene && data.hygiene.needs_cleanup
         ? '<div style="background:#FFF3E0;color:#E65100;padding:10px 12px;border-radius:8px;font-size:12px;margin-bottom:10px">⚠️ 当前 Core 来自忠实恢复或旧版数据，包含完全重复的结构。请在下方一次性整理后保存；系统没有删除任何原文。</div>'
         : ''}
       <p style="font-size:12px;color:var(--text-soft);margin-bottom:8px">
-        每轮常驻的自由文本。推荐用 # 我 / # 用户 / # 我们 组织；持续关注的内容可放在「正在惦记」，保存时不会截断。
+        每轮对话都会读取的自由文本，可按你喜欢的方式组织。
       </p>
       <textarea class="form-input" id="memory-textarea" style="min-height:200px;resize:vertical;font-family:monospace;font-size:13px;line-height:1.6"
         data-max-tokens="${maxTok}" oninput="updateMemoryCount()">${esc(data.content)}</textarea>
@@ -1989,15 +2127,7 @@ async function loadMemory() {
           <button class="btn btn-primary btn-sm" onclick="saveMemory()">💾 保存 Core</button>
         </div>
       </div>
-      <div style="margin-top:18px;border-top:1px solid var(--border);padding-top:12px">
-        <div style="display:flex;justify-content:space-between;align-items:center">
-          <strong style="font-size:13px">最近版本</strong>
-          <button class="btn btn-ghost btn-sm" onclick="loadCoreHistory()">↻ 刷新</button>
-        </div>
-        <div id="core-history" style="margin-top:8px;color:var(--text-soft);font-size:12px">加载中…</div>
-      </div>
     `;
-    loadCoreHistory(generation);
   } catch (e) {
     if (generation !== _coreRequestGeneration) return;
     el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
@@ -2031,38 +2161,9 @@ async function saveMemory() {
   if (!ta) return;
   try {
     await api('POST', '/memory', { content: ta.value });
-    showToast('✅ Core 已更新并保存上一版');
+    showToast('✅ Core 已保存');
     loadMemory();
   } catch (e) { showToast('❌ 保存失败: ' + e.message); }
-}
-
-async function loadCoreHistory(expectedCoreGeneration) {
-  const generation = ++_coreHistoryRequestGeneration;
-  const el = document.getElementById('core-history');
-  if (!el) return;
-  try {
-    const data = await api('GET', '/core/history');
-    if (generation !== _coreHistoryRequestGeneration || (expectedCoreGeneration && expectedCoreGeneration !== _coreRequestGeneration)) return;
-    const rows = data.snapshots || [];
-    if (!rows.length) { el.textContent = '暂无历史版本'; return; }
-    el.innerHTML = rows.map(s => `
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)">
-        <span>${esc((s.created_at || '').replace('T',' ').slice(0,19))} · ${esc(s.source)} · ~${s.tokens} tokens</span>
-        <button class="btn btn-ghost btn-sm" onclick="restoreCore('${esc(s.id)}')">恢复</button>
-      </div>`).join('');
-  } catch(e) {
-    if (generation !== _coreHistoryRequestGeneration || (expectedCoreGeneration && expectedCoreGeneration !== _coreRequestGeneration)) return; el.textContent = '历史加载失败: ' + e.message; }
-}
-
-async function restoreCore(id) {
-  if (!confirm('恢复这个 Core 版本？当前内容会先自动保存为一个快照。')) return;
-  try {
-    const result = await api('POST', '/core/history/' + encodeURIComponent(id) + '/restore', {});
-    showToast(result.needs_cleanup
-      ? '⚠️ Core 已忠实恢复，请按页面提示整理重复内容'
-      : '✅ Core 已恢复');
-    loadMemory();
-  } catch(e) { showToast('❌ 恢复失败: ' + e.message); }
 }
 
 // ── Memory Items ───────────────────────────
@@ -2077,7 +2178,6 @@ const MEMORY_SOURCE_LABELS = {
   main: '历史聊天'
 };
 let _miCurrentPage = 1;
-let _miCatsLoaded = false;
 let _miSearchGeneration = 0;
 
 async function loadMemoryExtractionStatus() {
@@ -2106,28 +2206,13 @@ async function searchMemoryItems(page) {
   const el = document.getElementById('l2memory-content');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> 搜索中...</div>';
   const q = (document.getElementById('mi-q').value || '').trim();
-  const cat = document.getElementById('mi-cat').value;
   const sort = document.getElementById('mi-sort').value;
   const limit = 20;
   try {
     const params = new URLSearchParams({ page, limit, sort });
     if (q) params.set('q', q);
-    if (cat) params.set('category', cat);
     const data = await api('GET', '/memory-items?' + params);
     if (generation !== _miSearchGeneration) return;
-
-    // Populate category dropdown once
-    if (!_miCatsLoaded && data.categories) {
-      const sel = document.getElementById('mi-cat');
-      const cur = sel.value;
-      sel.innerHTML = '<option value="">全部分类</option>' +
-        data.categories.map(c =>
-          '<option value="' + esc(c.name === '(无)' ? '' : c.name) + '"' +
-          (cur === c.name ? ' selected' : '') + '>' +
-          esc(c.name) + ' (' + c.count + ')</option>'
-        ).join('');
-      _miCatsLoaded = true;
-    }
 
     if (!data.items.length) {
       el.innerHTML = '<div class="loading" style="color:var(--text-soft)">没有匹配的记忆条目</div>';
@@ -2137,17 +2222,19 @@ async function searchMemoryItems(page) {
     const rows = data.items.map(function(item) {
       const stars = IMPORTANCE_STARS[item.importance] || item.importance;
       const starsColor = item.importance >= 3 ? 'var(--danger)' : item.importance >= 2 ? 'var(--warning)' : 'var(--text-soft)';
-      const catBadge = item.category ? '<span class="badge badge-gray" style="font-size:10px">' + esc(item.category) + '</span>' : '';
       const sourceLabel = MEMORY_SOURCE_LABELS[item.source] || '其他';
       const srcBadge = '<span class="badge badge-gray" style="font-size:10px">' + esc(sourceLabel) + '</span>';
-      const ts = item.updated_at ? item.updated_at.slice(0, 16).replace('T', ' ') : '';
+      const evidenceDate = item.evidence_start
+        ? (item.evidence_end && item.evidence_end !== item.evidence_start
+          ? item.evidence_start + ' → ' + item.evidence_end
+          : item.evidence_start)
+        : '—';
       return '<tr>' +
         '<td style="max-width:420px;word-break:break-all;white-space:pre-wrap;font-size:13px;line-height:1.5">' + esc(item.content) + '</td>' +
-        '<td style="white-space:nowrap">' + catBadge + '</td>' +
         '<td style="color:' + starsColor + ';white-space:nowrap;font-size:12px">' + stars + '</td>' +
         '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + srcBadge + '</td>' +
         '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + item.access_count + '</td>' +
-        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + ts + '</td>' +
+        '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + esc(evidenceDate) + '</td>' +
         '<td style="white-space:nowrap">' +
           '<button class="btn btn-ghost btn-sm" onclick=\'openMiEdit(' + JSON.stringify(item).replace(/'/g,"&#39;") + ')\' title="编辑">✏️</button> ' +
           '<button class="btn btn-danger btn-sm" onclick="deleteMi(' + item.id + ')" title="删除">🗑</button>' +
@@ -2171,7 +2258,7 @@ async function searchMemoryItems(page) {
     el.innerHTML =
       '<div style="margin-bottom:10px;font-size:13px;color:var(--text-soft)">共 ' + data.total.toLocaleString() + ' 条 · 第 ' + page + '/' + pages + ' 页</div>' +
       '<div style="overflow-x:auto"><table class="tbl"><thead><tr>' +
-      '<th>内容</th><th>分类</th><th>重要性</th><th>来源</th><th>访问</th><th>更新时间</th><th>操作</th>' +
+      '<th>内容</th><th>重要性</th><th>来源</th><th>访问</th><th>证据时间</th><th>操作</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table></div>' +
       '<div style="display:flex;gap:6px;justify-content:center;margin-top:14px;flex-wrap:wrap">' +
         (page > 1 ? '<button class="btn btn-ghost btn-sm" onclick="searchMemoryItems('+(page-1)+')">‹ 上一页</button>' : '') +
@@ -2187,7 +2274,6 @@ async function searchMemoryItems(page) {
 function openMiEdit(item) {
   document.getElementById('mi-edit-id').value = item.id;
   document.getElementById('mi-edit-content').value = item.content;
-  document.getElementById('mi-edit-category').value = item.category || '';
   document.getElementById('mi-edit-importance').value = item.importance;
   document.getElementById('mi-modal-title').textContent = '编辑记忆 #' + item.id;
   document.getElementById('mi-modal').classList.add('open');
@@ -2200,11 +2286,10 @@ function closeMiModal() {
 async function saveMiEdit() {
   const id = document.getElementById('mi-edit-id').value;
   const content = document.getElementById('mi-edit-content').value.trim();
-  const category = document.getElementById('mi-edit-category').value.trim();
   const importance = parseInt(document.getElementById('mi-edit-importance').value);
   if (!content) { showToast('❌ 内容不能为空'); return; }
   try {
-    await api('POST', '/memory-items/' + id, { content, category, importance });
+    await api('POST', '/memory-items/' + id, { content, importance });
     showToast('✅ 记忆已更新');
     closeMiModal();
     searchMemoryItems(_miCurrentPage);
@@ -2253,7 +2338,11 @@ async function testModelInModal() {
   // Save first, then test
   res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
   try {
-    await saveModelFromModal(true);
+    const saved = await saveModelFromModal(true);
+    if (!saved) {
+      res.innerHTML = '<span style="color:var(--danger)">请先完成有效配置</span>';
+      return;
+    }
     const r = await api('POST','/models/'+encodeURIComponent(name)+'/test');
     if (r.ok) {
       res.innerHTML = `<span style="color:var(--success);font-weight:600;font-size:14px">✅ 连接成功！${r.latency_ms?'延迟 '+r.latency_ms+'ms':''}</span>`;
@@ -2273,7 +2362,8 @@ async function assignTier(tier, modelName) {
     showToast(tier + ' 模型已更新');
     loaded.advanced = false;
     loaded.settings = false;
-    loadSettings();
+    if (document.getElementById('page-advanced').classList.contains('active')) loadAdvanced();
+    else loadSettings();
   } catch(e) { showToast('错误: ' + e.message); }
 }
 
@@ -2671,7 +2761,6 @@ function migShowStep4() {
   const itemRows = items.map((item, i) => `
     <tr>
       <td style="width:36px;text-align:center"><input type="checkbox" checked data-mig-item="${i}"></td>
-      <td><input type="text" value="${esc(item.category||'其他')}" class="form-input" style="padding:4px 8px;font-size:12px" data-mig-cat="${i}"></td>
       <td><input type="text" value="${esc(item.content||'')}" class="form-input" style="padding:4px 8px;font-size:12px" data-mig-content="${i}"></td>
       <td style="width:70px">
         <select class="form-input" style="padding:4px;font-size:12px" data-mig-imp="${i}">
@@ -2716,7 +2805,6 @@ function migShowStep4() {
         <table class="tbl" style="width:100%">
           <thead><tr>
             <th style="width:36px"></th>
-            <th style="width:100px">分类</th>
             <th>内容</th>
             <th style="width:70px">重要性</th>
           </tr></thead>
@@ -2778,11 +2866,9 @@ async function migApplyMemories() {
   // Collect selected items
   const items = (_migResult?.memory_items || []).map((_, i) => {
     const cb = document.querySelector(`[data-mig-item="${i}"]`);
-    const cat = document.querySelector(`[data-mig-cat="${i}"]`);
     const content = document.querySelector(`[data-mig-content="${i}"]`);
     const imp = document.querySelector(`[data-mig-imp="${i}"]`);
     return {
-      category: cat?.value || '其他',
       content: content?.value || '',
       importance: parseInt(imp?.value || '1'),
       selected: cb?.checked ?? false,
@@ -2828,7 +2914,6 @@ async function migPollMemJob() {
       if (btn) { btn.disabled = true; btn.textContent = '导入完成'; }
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--success)">✅ 已导入 ${data.result?.memory_items_imported || 0} 条</span>`;
       loaded.memory = false;
-      _miCatsLoaded = false;
       loadMemoryExtractionStatus();
       searchMemoryItems(1);
     } else if (data.status === 'error') {

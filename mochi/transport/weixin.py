@@ -603,40 +603,13 @@ class WeixinTransport(Transport):
         # Call chat via callback
         if _on_message_callback:
             from mochi.heartbeat import (
-                bedtime_entry_enabled,
-                bedtime_entry_timeout,
-                check_sleep_entry,
                 claim_sleep_transition,
                 go_to_sleep,
-                record_unclaimed_sleep_message,
             )
             bedtime_claimed = False
-            if check_sleep_entry(text):
-                bedtime_claimed = claim_sleep_transition("explicit")
-                if not bedtime_claimed:
-                    record_unclaimed_sleep_message(user_id, text)
-                    if typing_ticket:
-                        await self._weixin_send_typing(
-                            from_user, typing_ticket, status=2,
-                        )
-                    return
-                if not bedtime_entry_enabled():
-                    record_unclaimed_sleep_message(user_id, text)
-                    go_to_sleep("explicit_disabled")
-                    if typing_ticket:
-                        await self._weixin_send_typing(
-                            from_user, typing_ticket, status=2,
-                        )
-                    return
-                from mochi.main_runtime import MainRuntimeEntry
-                incoming.runtime_entry = MainRuntimeEntry.bedtime(
-                    trigger="explicit",
-                    user_id=user_id,
-                    channel_id=user_id,
-                    transport="wechat",
-                )
 
             async def _process_main_turn() -> None:
+                nonlocal bedtime_claimed
                 try:
                     result = await _on_message_callback(incoming)
                 except Exception as e:
@@ -649,6 +622,10 @@ class WeixinTransport(Transport):
                         from_user, typing_ticket, status=2)
 
                 if result:
+                    if result.bedtime_requested:
+                        bedtime_claimed = claim_sleep_transition("explicit")
+                        if not bedtime_claimed:
+                            return
                     delivered = await self.send_chat_result(
                         user_id,
                         result,
@@ -658,18 +635,7 @@ class WeixinTransport(Transport):
                         result.confirm_delivered()
 
             try:
-                if bedtime_claimed:
-                    await asyncio.wait_for(
-                        _process_main_turn(),
-                        timeout=bedtime_entry_timeout(),
-                    )
-                else:
-                    await _process_main_turn()
-            except asyncio.TimeoutError:
-                log.warning(
-                    "WeChat: Bedtime entry timed out after %ss",
-                    bedtime_entry_timeout(),
-                )
+                await _process_main_turn()
             finally:
                 if bedtime_claimed:
                     go_to_sleep("explicit")

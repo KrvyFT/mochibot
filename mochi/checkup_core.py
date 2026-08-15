@@ -80,7 +80,7 @@ def _check_database() -> dict:
 
 
 def _check_memory(user_id: int) -> dict:
-    """Check memory system stats: items, categories, KG, trash."""
+    """Check memory system stats: items, KG, and trash."""
     from mochi.db import get_memory_stats, _connect
     from mochi.knowledge_graph import get_kg_stats
 
@@ -100,7 +100,6 @@ def _check_memory(user_id: int) -> dict:
 
     return {
         "total": stats.get("total", 0),
-        "categories": stats.get("categories", {}),
         "kg_entities": kg.get("entities", 0),
         "kg_active_triples": kg.get("active_triples", 0),
         "trash_count": trash_count,

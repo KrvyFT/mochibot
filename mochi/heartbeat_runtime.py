@@ -287,12 +287,14 @@ def get_schedulable_runs(*, now: datetime) -> list[dict]:
     try:
         rows = conn.execute(
             "SELECT * FROM heartbeat_runs WHERE "
+            "(status = 'ready' AND last_error = 'delivery budget/cooldown' AND "
+            "(lease_until IS NULL OR lease_until <= ?)) OR "
             "(status IN ('pending', 'ready') AND "
             "(next_attempt_at IS NULL OR next_attempt_at <= ?) AND "
             "(lease_until IS NULL OR lease_until <= ?)) OR "
             "(status = 'running' AND lease_until <= ?) "
             "ORDER BY created_at, run_key",
-            (now_iso, now_iso, now_iso),
+            (now_iso, now_iso, now_iso, now_iso),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -319,10 +321,14 @@ def claim_run(
         status = item["status"]
         retry_at = _as_utc(item.get("next_attempt_at"))
         lease = _as_utc(item.get("lease_until"))
+        legacy_budget_queue = (
+            status == "ready"
+            and item.get("last_error") == "delivery budget/cooldown"
+        )
         if status not in {"pending", "ready", "running"}:
             conn.rollback()
             return None
-        if retry_at and retry_at > now:
+        if retry_at and retry_at > now and not legacy_budget_queue:
             conn.rollback()
             return None
         if lease and lease > now:
@@ -383,7 +389,7 @@ def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
 def complete_without_delivery(
     claimed: dict, durable: DurableChatResult, outcome: str,
 ) -> bool:
-    if outcome not in {"skip", "tools_only"}:
+    if outcome not in {"skip", "tools_only", "suppressed"}:
         raise ValueError("invalid autonomous Main outcome")
     now_iso = _iso(_utc_now())
     conn = _connect()
@@ -392,7 +398,7 @@ def complete_without_delivery(
             "UPDATE heartbeat_runs SET status = 'delivered', result_json = ?, "
             "outcome = ?, handled_at = ?, claim_token = NULL, lease_until = NULL, "
             "next_attempt_at = NULL, last_error = '' WHERE run_key = ? "
-            "AND status = 'running' AND claim_token = ?",
+            "AND status IN ('running', 'ready') AND claim_token = ?",
             (
                 durable.to_json(), outcome, now_iso,
                 claimed["run_key"], claimed["claim_token"],
@@ -459,25 +465,6 @@ def delivery_wait_seconds(
         if remaining > 0:
             return remaining
     return 0
-
-
-def defer_ready_run(claimed: dict, seconds: int, reason: str) -> bool:
-    retry_at = _iso(_utc_now() + timedelta(seconds=max(1, seconds)))
-    conn = _connect()
-    try:
-        cursor = conn.execute(
-            "UPDATE heartbeat_runs SET status = 'ready', next_attempt_at = ?, "
-            "last_error = ?, claim_token = NULL, lease_until = NULL "
-            "WHERE run_key = ? AND status = 'ready' AND claim_token = ?",
-            (
-                retry_at, reason[:1000],
-                claimed["run_key"], claimed["claim_token"],
-            ),
-        )
-        conn.commit()
-        return cursor.rowcount == 1
-    finally:
-        conn.close()
 
 
 def begin_delivery(

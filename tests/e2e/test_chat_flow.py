@@ -30,6 +30,30 @@ class TestSimpleReply:
         assert len(mock.call_log) == 1
 
     @pytest.mark.asyncio
+    async def test_main_can_request_bedtime(self, mock_llm_factory, monkeypatch):
+        import mochi.heartbeat as heartbeat
+
+        monkeypatch.setattr(heartbeat, "bedtime_tool_available", lambda: True)
+        mock = mock_llm_factory([
+            make_response(tool_calls=[
+                make_tool_call("enter_bedtime", {}),
+            ]),
+            make_response("Good night. I'll get some rest too."),
+        ])
+
+        reply = await chat(_msg("I'm heading to bed"))
+
+        assert reply.bedtime_requested is True
+        assert reply.text == "Good night. I'll get some rest too."
+        assert any(
+            tool["function"]["name"] == "enter_bedtime"
+            for tool in mock.call_log[0]["tools"]
+        )
+        assert "Bedtime will begin after your farewell" in (
+            mock.call_log[1]["messages"][-1]["content"]
+        )
+
+    @pytest.mark.asyncio
     async def test_update_core(self, mock_llm_factory):
         from mochi.core_store import read_core, replace_core
         replace_core("Core anchor")

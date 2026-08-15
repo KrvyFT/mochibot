@@ -17,7 +17,7 @@ cp -r docs/skill_template/ mochi/skills/my_skill/
 #    带有开关、配置项等，无需任何前端代码改动。
 ```
 
-> **Admin Portal 自动集成**：框架启动时会扫描 `mochi/skills/` 下所有包含 `handler.py` + `SKILL.md` 的目录，自动注册。Admin Portal 的 Skills 页面从注册表动态渲染 —— **不需要为新 skill 写任何 UI 代码**。你在 SKILL.md 中声明的元数据（name、description、type、tier、config 等）会直接反映到管理面板中。
+> **Admin Portal 自动集成**：框架启动时会扫描 `mochi/skills/` 下所有包含 `handler.py` + `SKILL.md` 的目录，自动注册。Admin Portal 的 Skills 页面从注册表动态渲染 —— **不需要为新 skill 写任何 UI 代码**。你在 SKILL.md 中声明的元数据（name、description、type、config 等）会直接反映到管理面板中。
 
 ## 目录结构
 
@@ -47,11 +47,8 @@ type: tool                        # tool（默认）| automation | hybrid
 multi_turn: false                 # true 表示 skill 可能需要多轮工具调用
 locked: false                     # true = owner 不能在管理面板中禁用
 
-# 日记集成
+# 日记状态排序
 diary_status_order: 50            # 数字越小在 今日状態 面板中越靠上（默认 50）
-writes:
-  diary: [diary]                  # 此 skill 写入的日记区段
-  db: [my_table]                  # 此 skill 写入的 DB 表
 
 # 配置（需要外部凭据/设置的 skill）
 requires_config: [MY_API_KEY]     # 必需的环境变量或 DB 配置（简写）

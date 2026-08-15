@@ -52,10 +52,6 @@ def _format_markdown(data: dict) -> str:
     if isinstance(mem, dict) and "error" not in mem:
         lines.append("### 记忆系统")
         lines.append(f"总记忆: {mem.get('total', 0)} 条")
-        cats = mem.get("categories", {})
-        if cats:
-            parts = [f"{k} {v}" for k, v in cats.items()]
-            lines.append(f"分类: {', '.join(parts)}")
         lines.append(f"KG: {mem.get('kg_entities', 0)} 实体, {mem.get('kg_active_triples', 0)} 三元组")
         lines.append(f"回收站: {mem.get('trash_count', 0)} 条\n")
     elif isinstance(mem, dict):

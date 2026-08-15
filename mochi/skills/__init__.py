@@ -9,12 +9,10 @@ Usage:
     tools = get_tools()               # get all exposed tool definitions
     result = await dispatch(tool_name, args, user_id)
 
-v2 additions:
+Additional APIs:
     get_capability_context_for_tools() # collect capability facts for active tools
-    get_by_trigger()                  # find skills by trigger config
-    get_cron_skills()                 # return cron-scheduled skills
-    skill_for_tool()                  # tool_name → skill_name lookup
-    get_skill_info_all()              # admin metadata
+    skill_for_tool()                   # tool_name → skill_name lookup
+    get_skill_info_all()               # admin metadata
 """
 
 import importlib
@@ -442,29 +440,6 @@ def get_capability_context_for_tools(
     return "\n\n".join(context_parts) if context_parts else ""
 
 
-def get_by_trigger(trigger_type: str, **conditions) -> list[Skill]:
-    """Find all skills that match a trigger type and optional conditions."""
-    return [
-        s for s in _skills.values()
-        if s.has_trigger(trigger_type, **conditions)
-    ]
-
-
-def get_cron_skills() -> list[tuple[Skill, str]]:
-    """Return cron-scheduled skills with their cron expressions.
-
-    Returns: [(skill, "0 3 * * *"), ...] — only skills with type=cron triggers.
-    """
-    results = []
-    for skill in _skills.values():
-        for t in skill.triggers:
-            if isinstance(t, dict) and t.get("type") == "cron":
-                schedule = t.get("schedule", "")
-                if schedule:
-                    results.append((skill, schedule))
-    return results
-
-
 def get_skill_info_all() -> list[dict]:
     """Return metadata for all registered skills (for admin display)."""
     disabled = _get_disabled_skills()
@@ -500,18 +475,6 @@ def get_skill_info_all() -> list[dict]:
             "exclude_transports": s.exclude_transports,
         })
     return result
-
-
-def list_skills() -> list[dict]:
-    """List all registered skills with metadata (backward compat)."""
-    return [
-        {
-            "name": s.name,
-            "triggers": s.triggers,
-            "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
-        }
-        for s in _skills.values()
-    ]
 
 
 # ---------------------------------------------------------------------------

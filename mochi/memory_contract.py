@@ -7,10 +7,7 @@ import re
 from collections.abc import Sequence
 
 
-VALID_MEMORY_CATEGORIES = frozenset({
-    "偏好", "事实", "事件", "情绪", "目标", "习惯", "关系", "其他",
-})
-MAX_MEMORY_CONTENT_CHARS = 50
+MAX_MEMORY_CONTENT_CHARS = 80
 MAX_EVIDENCE_MESSAGE_IDS = 20
 
 _ATOMIC_SEPARATOR_RE = re.compile(r"[。！？!?；;\n\r]")
@@ -18,12 +15,6 @@ _SUBJECT_PREFIX_RE = re.compile(
     r"^(?:用户|user\b|the user\b)",
     re.IGNORECASE,
 )
-
-
-def validate_memory_category(category: object) -> str:
-    if not isinstance(category, str) or category not in VALID_MEMORY_CATEGORIES:
-        raise ValueError(f"unknown memory category {category!r}")
-    return category
 
 
 def validate_memory_content(content: object) -> str:

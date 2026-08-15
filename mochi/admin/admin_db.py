@@ -6,7 +6,9 @@ preferences; internal values remain registered for typed legacy overrides.
 
 import logging
 import os
+import re
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from mochi.config import (
     TZ,
@@ -20,12 +22,6 @@ log = logging.getLogger(__name__)
 _VALID_TIERS = frozenset({"lite", "main"})
 _TIER_ORDER = ("main", "lite")
 _VALID_PROVIDERS = frozenset({"openai", "anthropic"})
-_OFFICIAL_OPENAI_BASE_URLS = frozenset({
-    "",
-    "https://api.openai.com/v1",
-    "https://api.deepseek.com/v1",
-    "https://generativelanguage.googleapis.com/v1beta/openai",
-})
 
 __KEEP__ = "__KEEP__"
 
@@ -39,7 +35,27 @@ def _is_supported_model(provider: str, base_url: str) -> bool:
     normalized = _normalize_base_url(base_url)
     if provider == "anthropic":
         return not normalized
-    return provider == "openai" and normalized in _OFFICIAL_OPENAI_BASE_URLS
+    if provider != "openai" or not normalized:
+        return provider == "openai"
+    if re.search(r"[\x00-\x1f\x7f]", normalized):
+        return False
+    try:
+        parsed = urlsplit(normalized)
+        hostname = parsed.hostname or ""
+        port = parsed.port
+        return (
+            parsed.scheme == "https"
+            and bool(hostname)
+            and re.fullmatch(r"[A-Za-z0-9.:-]+", hostname) is not None
+            and (port is None or 1 <= port <= 65535)
+            and parsed.username is None
+            and parsed.password is None
+            and not parsed.query
+            and not parsed.fragment
+            and not parsed.path.rstrip("/").lower().endswith("/chat/completions")
+        )
+    except ValueError:
+        return False
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -100,8 +116,9 @@ def upsert_model(name: str, provider: str, model: str,
         raise ValueError(f"Invalid provider: {provider!r}")
     if not _is_supported_model(provider, base_url):
         raise ValueError(
-            "Unsupported provider endpoint. Choose an official OpenAI, "
-            "DeepSeek, Anthropic, or Gemini preset."
+            "Invalid endpoint. OpenAI-compatible Base URL must be an HTTPS API "
+            "root without credentials, query, fragment, or /chat/completions. "
+            "Anthropic uses its official API without a Base URL."
         )
     now = datetime.now(TZ).isoformat()
     conn = _connect()
@@ -301,14 +318,10 @@ _SYSTEM_SKILL_NAME = "_system"
 #   PROACTIVE_COOLDOWN_SECONDS, THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
 #   BEDTIME_ENTRY_ENABLED, BEDTIME_ENTRY_TIMEOUT_S — no dedicated settings page
 #   Autonomous Main Runtime output tuning
-#   AWAKE_HOUR_START, AWAKE_HOUR_END — DEPRECATED
-#   SLEEP_KEYWORD_HOUR_START/END, SILENCE_SLEEP_AFTER_HOUR, SILENCE_SLEEP_THRESHOLD_HOURS — DEPRECATED
 _ENV_ONLY_SYSTEM_KEYS = frozenset({
     "PROACTIVE_COOLDOWN_SECONDS",
     "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
-    "BEDTIME_TIDY_ENABLED",
-    "BEDTIME_TIDY_TIMEOUT_S",
 })
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
@@ -322,7 +335,6 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
     # ── Sleep/Wake ──
-    "SLEEP_KEYWORDS":                 ("str",   "晚安,睡了,去睡了,good night,gn"),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),
@@ -401,14 +413,6 @@ def seed_system_config_from_env() -> None:
     rather than being copied into the database.
     """
     from mochi.admin.admin_env import read_env_file
-
-    existing_before_cleanup = get_system_overrides()
-    for canonical, legacy in (
-        ("BEDTIME_ENTRY_ENABLED", "BEDTIME_TIDY_ENABLED"),
-        ("BEDTIME_ENTRY_TIMEOUT_S", "BEDTIME_TIDY_TIMEOUT_S"),
-    ):
-        if canonical not in existing_before_cleanup and legacy in existing_before_cleanup:
-            set_system_override(canonical, existing_before_cleanup[legacy])
 
     conn = _connect()
     placeholders = ",".join("?" for _ in _ENV_ONLY_SYSTEM_KEYS)

@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 
 from mochi import config
 from mochi.db import (
+    get_memory_items_by_ids,
     get_recent_user_messages_in_window,
 )
 from mochi.core_store import (
@@ -23,16 +24,20 @@ from mochi.memory_curation import (
     WeeklyMemoryCandidatePackage,
     build_weekly_memory_candidate_package,
     curate_memory_items,
-    get_weekly_curation_receipt,
-    set_weekly_projection_state,
+)
+from mochi.knowledge_graph import (
+    ALLOWED_ENTITY_TYPES,
+    ALLOWED_PREDICATES,
+    RelationshipCurationError,
+    curate_relationships,
+    list_active_relationships,
 )
 from mochi.skills.base import SkillResult
 
 
-log = logging.getLogger(__name__)
-
 CORE_TOOL = "update_weekly_core"
 CURATE_TOOL = "curate_weekly_memory"
+RELATIONSHIP_TOOL = "curate_relationships"
 
 _CORE_DEFINITION = {
     "type": "function",
@@ -67,11 +72,11 @@ _CURATE_DEFINITION = {
         "description": (
             "Atomically create, edit, merge, or archive only the visible "
             "Weekly Memory candidates. Each operation must be one of: "
-            "create(op,content,category,importance,evidence_message_ids); "
+            "create(op,content,importance,evidence_message_ids); "
             "edit(op,item_id,expected_content,expected_updated_at,content,"
-            "category,importance,evidence_message_ids); "
+            "importance,evidence_message_ids); "
             "merge(op,keep:{item_id,expected_content,expected_updated_at},"
-            "remove:[same shape],content,category,importance,"
+            "remove:[same shape],content,importance,"
             "evidence_message_ids); archive(op,item_id,expected_content,"
             "expected_updated_at,evidence_message_ids). "
             "Use at most one successful batch."
@@ -91,9 +96,98 @@ _CURATE_DEFINITION = {
     },
 }
 
-
-class WeeklyProjectionError(RuntimeError):
-    """A committed Weekly curation still needs its derived KG projection."""
+_RELATIONSHIP_DEFINITION = {
+    "type": "function",
+    "function": {
+        "name": RELATIONSHIP_TOOL,
+        "description": (
+            "Atomically upsert or archive durable relationships among the user's "
+            "people, pets, and places. Every upsert cites an exact visible Memory "
+            "Item snapshot with user-message evidence; Core is context, not "
+            "evidence. Complete Memory curation first when that tool is available, "
+            "then use its refreshed relationship context. An empty operations "
+            "array records that no change is needed."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "operations": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "enum": ["upsert", "archive"]},
+                            "subject": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "type": {
+                                        "type": "string",
+                                        "enum": sorted(ALLOWED_ENTITY_TYPES),
+                                    },
+                                },
+                                "required": ["name", "type"],
+                                "additionalProperties": False,
+                            },
+                            "predicate": {
+                                "type": "string",
+                                "enum": sorted(ALLOWED_PREDICATES),
+                            },
+                            "object": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "type": {
+                                        "type": "string",
+                                        "enum": sorted(ALLOWED_ENTITY_TYPES),
+                                    },
+                                },
+                                "required": ["name", "type"],
+                                "additionalProperties": False,
+                            },
+                            "source_memory": {
+                                "type": "object",
+                                "properties": {
+                                    "item_id": {"type": "integer"},
+                                    "content": {"type": "string"},
+                                    "updated_at": {"type": "string"},
+                                },
+                                "required": ["item_id", "content", "updated_at"],
+                                "additionalProperties": False,
+                            },
+                            "expected": {
+                                "type": "object",
+                                "properties": {
+                                    "triple_id": {"type": "integer"},
+                                    "subject": {"type": "string"},
+                                    "subject_type": {"type": "string"},
+                                    "predicate": {"type": "string"},
+                                    "object": {"type": "string"},
+                                    "object_type": {"type": "string"},
+                                    "source_memory_id": {
+                                        "type": ["integer", "null"],
+                                    },
+                                    "created_at": {"type": "string"},
+                                },
+                                "required": [
+                                    "triple_id", "subject", "subject_type",
+                                    "predicate", "object", "object_type",
+                                    "source_memory_id", "created_at",
+                                ],
+                                "additionalProperties": False,
+                            },
+                        },
+                        "required": ["op"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["operations"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 
 @dataclass(frozen=True)
@@ -105,6 +199,7 @@ class WeeklyMaintenanceContext:
     diary: DiaryArchiveWindow
     package: WeeklyMemoryCandidatePackage
     recent_user_messages: tuple[dict, ...]
+    active_relationships: tuple[dict, ...]
     allowed_item_ids: frozenset[int]
     allowed_evidence_message_ids: frozenset[int]
     rendered: str
@@ -113,8 +208,7 @@ class WeeklyMaintenanceContext:
 def _render_candidate(item: WeeklyMemoryCandidate) -> str:
     lines = [
         (
-            f"- item_id={item.id} category={item.category} "
-            f"importance={item.importance} source={item.source} "
+            f"- item_id={item.id} importance={item.importance} source={item.source} "
             f"created_at={item.created_at} updated_at={item.updated_at}"
         ),
         f"  content: {item.content}",
@@ -138,6 +232,7 @@ def _render_context(
     diary: DiaryArchiveWindow,
     package: WeeklyMemoryCandidatePackage,
     recent_messages: list[dict],
+    active_relationships: list[dict],
 ) -> str:
     window_items = (
         "\n".join(_render_candidate(item) for item in package.window_items)
@@ -175,8 +270,11 @@ def _render_context(
         f"{related_items}\n\n"
         "### Recent user messages available as additional evidence\n"
         f"{recent}\n\n"
+        "### Active user-life relationships\n"
+        f"{json.dumps(active_relationships, ensure_ascii=False)}\n\n"
         "Only rendered item and evidence IDs are in curation scope. "
-        "Truncated or missing content was not reviewed."
+        "Truncated or missing content was not reviewed. Core can inform judgment "
+        "but cannot support a relationship upsert."
     )
 
 
@@ -198,6 +296,7 @@ def build_weekly_maintenance_context(
     recent_messages = get_recent_user_messages_in_window(
         user_id, window_start, window_end,
     )
+    active_relationships = list_active_relationships(user_id)
     allowed_evidence = frozenset(
         set(package.allowed_evidence_message_ids)
         | {message["id"] for message in recent_messages}
@@ -210,10 +309,12 @@ def build_weekly_maintenance_context(
         diary=diary,
         package=package,
         recent_user_messages=tuple(recent_messages),
+        active_relationships=tuple(active_relationships),
         allowed_item_ids=package.allowed_item_ids,
         allowed_evidence_message_ids=allowed_evidence,
         rendered=_render_context(
             logical_date, diary, package, recent_messages,
+            active_relationships,
         ),
     )
 
@@ -224,6 +325,8 @@ class WeeklyMaintenanceSession:
     context: WeeklyMaintenanceContext
     core_succeeded: bool = False
     curation_succeeded: bool = False
+    relationships_succeeded: bool = False
+    curated_relationship_item_ids: set[int] = field(default_factory=set)
 
     def definitions(self) -> list[dict]:
         definitions = []
@@ -237,64 +340,21 @@ class WeeklyMaintenanceSession:
             )
         ):
             definitions.append(_CURATE_DEFINITION)
+        if not self.relationships_succeeded:
+            definitions.append(_RELATIONSHIP_DEFINITION)
         return definitions
 
     def owns(self, tool_name: str) -> bool:
-        return tool_name in {CORE_TOOL, CURATE_TOOL}
+        return tool_name in {CORE_TOOL, CURATE_TOOL, RELATIONSHIP_TOOL}
 
     async def execute(self, tool_name: str, args: dict) -> SkillResult:
         if tool_name == CORE_TOOL:
             return await self._update_core(args)
         if tool_name == CURATE_TOOL:
             return await self._curate(args)
+        if tool_name == RELATIONSHIP_TOOL:
+            return await self._curate_relationships(args)
         return SkillResult(output=f"Unknown Weekly tool: {tool_name}", success=False)
-
-    async def complete_pending_projection(self) -> bool:
-        """Finish a committed receipt without replaying Main or curation."""
-        receipt = await asyncio.to_thread(
-            get_weekly_curation_receipt,
-            self.user_id,
-            self.context.period_key,
-        )
-        if receipt is None:
-            return False
-        self.curation_succeeded = True
-        if receipt.projection_status == "success":
-            return True
-        projection_ids = list(receipt.result.kg_reprojection_ids)
-        if not projection_ids:
-            await asyncio.to_thread(
-                set_weekly_projection_state,
-                self.user_id,
-                self.context.period_key,
-                status="success",
-            )
-            return True
-        try:
-            from mochi.knowledge_graph import project_memory_items
-            await asyncio.to_thread(
-                project_memory_items,
-                self.user_id,
-                projection_ids,
-            )
-        except Exception as exc:
-            await asyncio.to_thread(
-                set_weekly_projection_state,
-                self.user_id,
-                self.context.period_key,
-                status="failed",
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            raise WeeklyProjectionError(
-                "Weekly KG projection remains incomplete"
-            ) from exc
-        await asyncio.to_thread(
-            set_weekly_projection_state,
-            self.user_id,
-            self.context.period_key,
-            status="success",
-        )
-        return True
 
     async def _update_core(self, args: dict) -> SkillResult:
         if set(args) != {"expected_content", "operations"}:
@@ -363,23 +423,108 @@ class WeeklyMaintenanceSession:
                 success=False,
             )
         self.curation_succeeded = True
-        await self.complete_pending_projection()
         changed_ids = list(dict.fromkeys((
             *result.created_ids,
             *result.changed_ids,
             *result.archived_ids,
         )))
+        current_item_ids = list(dict.fromkeys((
+            *result.created_ids,
+            *result.changed_ids,
+        )))
+        current_items = await asyncio.to_thread(
+            get_memory_items_by_ids,
+            self.user_id,
+            current_item_ids,
+        )
+        self.curated_relationship_item_ids.update(
+            item["id"] for item in current_items
+        )
+        active_relationships = await asyncio.to_thread(
+            list_active_relationships,
+            self.user_id,
+        )
+        receipt_payload = {
+            "status": "replayed" if result.replayed else "committed",
+            "created_ids": list(result.created_ids),
+            "changed_ids": list(result.changed_ids),
+            "archived_ids": list(result.archived_ids),
+            "relationship_context": {
+                "memory_items": [
+                    {
+                        "item_id": item["id"],
+                        "content": item["content"],
+                        "updated_at": item["updated_at"],
+                    }
+                    for item in current_items
+                ],
+                "active_relationships": active_relationships,
+            },
+        }
+        receipt = json.dumps(receipt_payload, ensure_ascii=False)
+        return SkillResult(
+            output=receipt,
+            summary=(
+                "Weekly Memory curation "
+                f"{'replayed safely' if result.replayed else 'committed'}."
+            ),
+            entity_refs=[f"memory:{item_id}" for item_id in changed_ids],
+            state_changed=bool(changed_ids) and not result.replayed,
+        )
+
+    async def _curate_relationships(self, args: dict) -> SkillResult:
+        if set(args) != {"operations"}:
+            return SkillResult(
+                output="Relationship curation accepts only the operations array.",
+                success=False,
+            )
+        if self.relationships_succeeded:
+            return SkillResult(
+                output="Weekly relationship curation already completed.",
+                success=False,
+            )
+        memory_curation_available = bool(
+            self.context.allowed_item_ids
+            or self.context.allowed_evidence_message_ids
+        )
+        if memory_curation_available and not self.curation_succeeded:
+            return SkillResult(
+                output=(
+                    "Weekly relationship curation waits for Memory curation so "
+                    "its evidence and active-relationship snapshots are current."
+                ),
+                success=False,
+            )
+        try:
+            result = await asyncio.to_thread(
+                curate_relationships,
+                self.user_id,
+                (
+                    set(self.context.allowed_item_ids)
+                    | self.curated_relationship_item_ids
+                ),
+                args["operations"],
+            )
+        except (RelationshipCurationError, TypeError, KeyError) as exc:
+            return SkillResult(
+                output=f"Weekly relationship curation rejected: {exc}",
+                success=False,
+            )
+        self.relationships_succeeded = True
         receipt = (
-            f"Weekly curation {'replayed safely' if result.replayed else 'committed'}: "
-            f"created={list(result.created_ids)}, "
-            f"changed={list(result.changed_ids)}, "
+            "Weekly relationship curation committed: "
+            f"upserted={list(result.upserted_ids)}, "
             f"archived={list(result.archived_ids)}."
         )
+        changed_ids = (*result.upserted_ids, *result.archived_ids)
         return SkillResult(
             output=receipt,
             summary=receipt,
-            entity_refs=[f"memory:{item_id}" for item_id in changed_ids],
-            state_changed=bool(changed_ids) and not result.replayed,
+            entity_refs=[
+                f"relationship:{relationship_id}"
+                for relationship_id in changed_ids
+            ],
+            state_changed=bool(changed_ids),
         )
 
 

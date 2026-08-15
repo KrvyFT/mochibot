@@ -1,30 +1,43 @@
-"""Knowledge Graph: entity-relationship triples with temporal validity.
+"""Small user-life relationship graph maintained by Main each week."""
 
-Stores structured facts about entities (people, pets, places, concepts)
-and their relationships as subject-predicate-object triples.
-Temporal validity (valid_from/valid_to) tracks when facts become/cease to be true.
-
-Primary consumers: memory_extraction.py and ai_client.py.
-"""
-
-import logging
-import json
 import re
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from mochi.db import _connect
 from mochi.config import TZ
+from mochi.memory_contract import decode_evidence_message_ids
 
-log = logging.getLogger(__name__)
-
-# Predicates where only one object can be valid at a time per subject.
-# When a new triple is added with a single-valued predicate, any existing
-# active triple with the same (subject, predicate) is auto-invalidated.
-SINGLE_VALUED_PREDICATES = frozenset({
-    "is_a", "has_breed", "has_gender", "has_status",
-    "born_in", "adopted_in", "weighs", "is_neutered",
+ALLOWED_ENTITY_TYPES = frozenset({"person", "pet", "place"})
+ALLOWED_PREDICATES = frozenset({
+    "is_family_of",
+    "is_partner_of",
+    "is_parent_of",
+    "is_child_of",
+    "is_sibling_of",
+    "is_friend_of",
+    "lives_with",
+    "cares_for",
+    "lives_in",
+    "grew_up_in",
+    "works_at",
 })
+MAX_RELATIONSHIP_OPERATIONS = 20
+
+
+class RelationshipCurationError(ValueError):
+    """The requested relationship curation is outside the Weekly scope."""
+
+
+class RelationshipCurationConflict(RelationshipCurationError):
+    """A Memory Item or relationship changed after Main saw its snapshot."""
+
+
+@dataclass(frozen=True)
+class RelationshipCurationResult:
+    upserted_ids: tuple[int, ...]
+    archived_ids: tuple[int, ...]
 
 # Emoji pattern: common animal/object emoji + supplementary plane symbols
 _EMOJI_RE = re.compile(
@@ -45,47 +58,6 @@ def _normalize_name(name: str) -> str:
     return name
 
 
-# ── Entity CRUD ───────────────────────────────────────────────────────
-
-
-def get_or_create_entity(
-    user_id: int, name: str, entity_type: str = "concept",
-    display_name: str | None = None,
-) -> int:
-    """Get or create an entity. Returns entity id.
-
-    Name is normalized (lowercase, emoji-stripped) for canonical matching.
-    UNIQUE(user_id, name) constraint ensures idempotency.
-    """
-    canonical = _normalize_name(name)
-    if not canonical:
-        raise ValueError(f"Empty entity name after normalization: {name!r}")
-    disp = (display_name or name).strip()
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    try:
-        conn.execute(
-            "INSERT OR IGNORE INTO kg_entities "
-            "(user_id, name, display_name, entity_type, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (user_id, canonical, disp, entity_type, now),
-        )
-        row = conn.execute(
-            "SELECT id, display_name FROM kg_entities "
-            "WHERE user_id = ? AND name = ?",
-            (user_id, canonical),
-        ).fetchone()
-        if row and display_name and len(disp) > len(row["display_name"]):
-            conn.execute(
-                "UPDATE kg_entities SET display_name = ? WHERE id = ?",
-                (disp, row["id"]),
-            )
-        conn.commit()
-        return row["id"]
-    finally:
-        conn.close()
-
-
 def get_entity_by_name(user_id: int, name: str) -> dict | None:
     """Lookup entity by normalized name. Returns dict or None."""
     canonical = _normalize_name(name)
@@ -103,203 +75,254 @@ def get_entity_by_name(user_id: int, name: str) -> dict | None:
         conn.close()
 
 
-def list_entities(user_id: int, entity_type: str | None = None) -> list[dict]:
-    """List all entities, optionally filtered by type."""
+def list_active_relationships(user_id: int) -> list[dict]:
+    """Return exact snapshots that Weekly Main may archive."""
     conn = _connect()
     try:
-        if entity_type:
-            rows = conn.execute(
-                "SELECT id, name, display_name, entity_type "
-                "FROM kg_entities WHERE user_id = ? AND entity_type = ? "
-                "ORDER BY name",
-                (user_id, entity_type),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, name, display_name, entity_type "
-                "FROM kg_entities WHERE user_id = ? ORDER BY name",
-                (user_id,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+        rows = conn.execute(
+            "SELECT t.id AS triple_id, s.display_name AS subject, "
+            "s.entity_type AS subject_type, t.predicate, "
+            "o.display_name AS object, o.entity_type AS object_type, "
+            "t.source_memory_id, t.created_at "
+            "FROM kg_triples t "
+            "JOIN kg_entities s ON s.id = t.subject_id "
+            "JOIN kg_entities o ON o.id = t.object_id "
+            "WHERE t.user_id = ? AND t.valid_to IS NULL "
+            "ORDER BY t.id",
+            (user_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
 
-# ── Triple CRUD ───────────────────────────────────────────────────────
-
-
-def add_triple(
-    user_id: int, subject_id: int, predicate: str, object_id: int,
-    valid_from: str | None = None, valid_to: str | None = None,
-    source: str = "chat", confidence: float = 1.0,
-    source_memory_id: int | None = None,
-) -> int:
-    """Add a relationship triple. Returns triple id.
-
-    Idempotent: if an identical active triple exists, returns its id.
-    For single-valued predicates, auto-invalidates existing active triple
-    with same (subject, predicate) if the object differs.
-    """
-    predicate = predicate.strip().lower()
-    now = datetime.now(TZ).isoformat()
-    conn = _connect()
-    try:
-        existing = conn.execute(
-            "SELECT id FROM kg_triples "
-            "WHERE user_id = ? AND subject_id = ? AND predicate = ? "
-            "AND object_id = ? AND source_memory_id IS ? "
-            "AND valid_to IS NULL LIMIT 1",
-            (user_id, subject_id, predicate, object_id, source_memory_id),
-        ).fetchone()
-        if existing:
-            return existing["id"]
-
-        if predicate in SINGLE_VALUED_PREDICATES:
-            if source_memory_id is None:
-                conn.execute(
-                    "UPDATE kg_triples SET valid_to = ? "
-                    "WHERE user_id = ? AND subject_id = ? AND predicate = ? "
-                    "AND source_memory_id IS NULL AND valid_to IS NULL",
-                    (now, user_id, subject_id, predicate),
-                )
-            else:
-                conn.execute(
-                    "UPDATE kg_triples SET valid_to = ? "
-                    "WHERE user_id = ? AND subject_id = ? AND predicate = ? "
-                    "AND source_memory_id = ? AND valid_to IS NULL",
-                    (now, user_id, subject_id, predicate, source_memory_id),
-                )
-
-        cur = conn.execute(
-            "INSERT INTO kg_triples "
-            "(user_id, subject_id, predicate, object_id, "
-            " source_memory_id, valid_from, valid_to, source, confidence, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, subject_id, predicate, object_id,
-             source_memory_id, valid_from, valid_to, source, confidence, now),
+def _parse_entity(raw: object, field: str) -> dict:
+    if not isinstance(raw, dict) or set(raw) != {"name", "type"}:
+        raise RelationshipCurationError(
+            f"{field} must contain exactly name and type"
         )
-        conn.commit()
-        return cur.lastrowid
-    finally:
-        conn.close()
-
-
-def invalidate_memory_relations(
-    source_memory_ids: list[int],
-    ended_date: str | None = None,
-) -> int:
-    """Deactivate active relations derived from supplied Memory Items."""
-    if not source_memory_ids:
-        return 0
-    ended = ended_date or datetime.now(TZ).isoformat()
-    placeholders = ",".join("?" * len(source_memory_ids))
-    conn = _connect()
-    try:
-        cursor = conn.execute(
-            f"UPDATE kg_triples SET valid_to = ? "
-            f"WHERE source_memory_id IN ({placeholders}) AND valid_to IS NULL",
-            [ended, *source_memory_ids],
+    name = raw["name"]
+    entity_type = raw["type"]
+    if not isinstance(name, str) or not _normalize_name(name):
+        raise RelationshipCurationError(f"{field} name is invalid")
+    if entity_type not in ALLOWED_ENTITY_TYPES:
+        raise RelationshipCurationError(
+            f"{field} type must be person, pet, or place"
         )
-        conn.commit()
-        return cursor.rowcount
-    finally:
-        conn.close()
+    return {"name": name.strip(), "type": entity_type}
 
 
-def project_memory_items(user_id: int, memory_item_ids: list[int]) -> dict:
-    """Project a bounded set of authoritative Memory Items into the KG."""
-    from mochi.config import KG_ENABLED
-    from mochi.db import get_memory_items_by_ids, log_usage
-    from mochi.llm import get_client_for_tier, extract_json
-    from mochi.prompt_loader import get_prompt
-
-    if not KG_ENABLED or not memory_item_ids:
-        return {"entities": 0, "triples": 0}
-    items = get_memory_items_by_ids(user_id, memory_item_ids)
-    if not items:
-        return {"entities": 0, "triples": 0}
-    prompt_template = get_prompt("kg_extract")
-    if not prompt_template:
-        raise RuntimeError("kg_extract prompt is unavailable")
-    known = list_entities(user_id)[:50]
-    known_text = ", ".join(
-        f"{entity['display_name']}({entity['entity_type']})"
-        for entity in known
-    ) if known else "(none yet)"
-    prompt = prompt_template.replace("{{known_entities}}", known_text)
-    payload = {
-        "memory_items": [
-            {
-                "id": item["id"],
-                "category": item["category"],
-                "content": item["content"],
-            }
-            for item in items
-        ],
-    }
-    response = get_client_for_tier("lite").chat(
-        messages=[
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-        ],
-        temperature=0.2,
-        max_tokens=600,
-        json_mode=True,
-    )
-    log_usage(
-        response.prompt_tokens,
-        response.completion_tokens,
-        response.total_tokens,
-        model=response.model,
-        purpose="kg_extract",
-        reasoning_tokens=response.reasoning_tokens,
-        cached_prompt_tokens=response.cached_prompt_tokens,
-    )
-    try:
-        parsed = json.loads(extract_json(response.content))
-    except (json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise RuntimeError(f"invalid KG projection response: {exc}") from exc
-    if not isinstance(parsed, dict):
-        raise RuntimeError("invalid KG projection response")
-    allowed_ids = {item["id"] for item in items}
-    entities = parsed.get("entities", [])
-    triples = parsed.get("triples", [])
-    if not isinstance(entities, list) or not isinstance(triples, list):
-        raise RuntimeError("invalid KG projection arrays")
-    for entity in entities:
-        if isinstance(entity, dict) and entity.get("name"):
-            get_or_create_entity(
-                user_id,
-                entity["name"],
-                entity_type=entity.get("type", "concept"),
+def _entity_id(conn, user_id: int, entity: dict, now: str) -> int:
+    canonical = _normalize_name(entity["name"])
+    row = conn.execute(
+        "SELECT id, entity_type FROM kg_entities "
+        "WHERE user_id = ? AND name = ?",
+        (user_id, canonical),
+    ).fetchone()
+    if row:
+        if row["entity_type"] != entity["type"]:
+            raise RelationshipCurationConflict(
+                f"{entity['name']} already exists with a different type"
             )
-    valid_triples = []
-    for triple in triples:
-        if not isinstance(triple, dict):
-            continue
-        memory_id = triple.get("source_memory_id")
-        if (
-            isinstance(memory_id, int)
-            and not isinstance(memory_id, bool)
-            and memory_id in allowed_ids
-            and triple.get("subject")
-            and triple.get("predicate")
-            and triple.get("object")
-        ):
-            valid_triples.append(triple)
-    invalidate_memory_relations(list(allowed_ids))
-    for triple in valid_triples:
-        subject_id = get_or_create_entity(user_id, triple["subject"])
-        object_id = get_or_create_entity(user_id, triple["object"])
-        add_triple(
-            user_id,
-            subject_id,
-            triple["predicate"],
-            object_id,
-            source="memory_item",
-            source_memory_id=triple["source_memory_id"],
+        return int(row["id"])
+    cursor = conn.execute(
+        "INSERT INTO kg_entities "
+        "(user_id, name, display_name, entity_type, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (user_id, canonical, entity["name"], entity["type"], now),
+    )
+    return int(cursor.lastrowid)
+
+
+def _validate_memory_snapshot(
+    conn, user_id: int, allowed_item_ids: set[int], raw: object,
+) -> int:
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != {"item_id", "content", "updated_at"}
+    ):
+        raise RelationshipCurationError(
+            "source_memory must contain exactly item_id, content, and updated_at"
         )
-    return {"entities": len(entities), "triples": len(valid_triples)}
+    item_id = raw["item_id"]
+    if (
+        not isinstance(item_id, int)
+        or isinstance(item_id, bool)
+        or item_id not in allowed_item_ids
+    ):
+        raise RelationshipCurationError(
+            "source_memory must be a Memory Item visible this week"
+        )
+    row = conn.execute(
+        "SELECT content, updated_at, evidence_message_ids "
+        "FROM memory_items WHERE id = ? AND user_id = ?",
+        (item_id, user_id),
+    ).fetchone()
+    if (
+        row is None
+        or raw["content"] != row["content"]
+        or raw["updated_at"] != row["updated_at"]
+    ):
+        raise RelationshipCurationConflict(
+            "source Memory Item changed after Weekly context was built"
+        )
+    evidence_ids = decode_evidence_message_ids(row["evidence_message_ids"])
+    if not evidence_ids:
+        raise RelationshipCurationError(
+            "source Memory Item must have user-message evidence"
+        )
+    placeholders = ",".join("?" * len(evidence_ids))
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM messages WHERE user_id = ? AND role = 'user' "
+        f"AND id IN ({placeholders})",
+        (user_id, *evidence_ids),
+    ).fetchone()[0]
+    if count != len(evidence_ids):
+        raise RelationshipCurationError(
+            "source Memory Item evidence is no longer valid"
+        )
+    return item_id
+
+
+def _parse_archive_snapshot(raw: object) -> dict:
+    fields = {
+        "triple_id", "subject", "subject_type", "predicate", "object",
+        "object_type", "source_memory_id", "created_at",
+    }
+    if not isinstance(raw, dict) or set(raw) != fields:
+        raise RelationshipCurationError(
+            "archive expected must be an exact visible relationship snapshot"
+        )
+    return raw
+
+
+def _cleanup_orphan_entities(conn, user_id: int) -> None:
+    conn.execute(
+        "DELETE FROM kg_entities WHERE user_id = ? "
+        "AND NOT EXISTS ("
+        "SELECT 1 FROM kg_triples t "
+        "WHERE t.subject_id = kg_entities.id OR t.object_id = kg_entities.id"
+        ")",
+        (user_id,),
+    )
+
+
+def curate_relationships(
+    user_id: int,
+    allowed_item_ids: set[int] | frozenset[int],
+    operations: object,
+) -> RelationshipCurationResult:
+    """Apply one exact, evidence-backed Weekly relationship batch atomically."""
+    if not isinstance(operations, list):
+        raise RelationshipCurationError("operations must be an array")
+    if len(operations) > MAX_RELATIONSHIP_OPERATIONS:
+        raise RelationshipCurationError("too many relationship operations")
+
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        now = datetime.now(TZ).isoformat()
+        upserted: list[int] = []
+        archived: list[int] = []
+        for operation in operations:
+            if not isinstance(operation, dict):
+                raise RelationshipCurationError("each operation must be an object")
+            op = operation.get("op")
+            if op == "upsert":
+                if set(operation) != {
+                    "op", "subject", "predicate", "object", "source_memory",
+                }:
+                    raise RelationshipCurationError(
+                        "upsert fields do not match the tool contract"
+                    )
+                subject = _parse_entity(operation["subject"], "subject")
+                object_ = _parse_entity(operation["object"], "object")
+                predicate = operation["predicate"]
+                if predicate not in ALLOWED_PREDICATES:
+                    raise RelationshipCurationError(
+                        "unsupported relationship predicate"
+                    )
+                memory_id = _validate_memory_snapshot(
+                    conn, user_id, set(allowed_item_ids),
+                    operation["source_memory"],
+                )
+                subject_id = _entity_id(conn, user_id, subject, now)
+                object_id = _entity_id(conn, user_id, object_, now)
+                existing = conn.execute(
+                    "SELECT id FROM kg_triples WHERE user_id = ? "
+                    "AND subject_id = ? AND predicate = ? AND object_id = ? "
+                    "AND valid_to IS NULL",
+                    (user_id, subject_id, predicate, object_id),
+                ).fetchone()
+                if existing:
+                    cursor = conn.execute(
+                        "UPDATE kg_triples SET source_memory_id = ?, "
+                        "source = 'weekly_main', confidence = 1.0 "
+                        "WHERE id = ? AND source_memory_id IS NOT ?",
+                        (memory_id, existing["id"], memory_id),
+                    )
+                    if cursor.rowcount:
+                        upserted.append(int(existing["id"]))
+                    continue
+                cursor = conn.execute(
+                    "INSERT INTO kg_triples "
+                    "(user_id, subject_id, predicate, object_id, "
+                    "source_memory_id, source, confidence, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, 'weekly_main', 1.0, ?)",
+                    (
+                        user_id, subject_id, predicate, object_id,
+                        memory_id, now,
+                    ),
+                )
+                upserted.append(int(cursor.lastrowid))
+                continue
+
+            if op == "archive":
+                if set(operation) != {"op", "expected"}:
+                    raise RelationshipCurationError(
+                        "archive fields do not match the tool contract"
+                    )
+                expected = _parse_archive_snapshot(operation["expected"])
+                row = conn.execute(
+                    "SELECT t.id AS triple_id, s.display_name AS subject, "
+                    "s.entity_type AS subject_type, t.predicate, "
+                    "o.display_name AS object, o.entity_type AS object_type, "
+                    "t.source_memory_id, t.created_at "
+                    "FROM kg_triples t "
+                    "JOIN kg_entities s ON s.id = t.subject_id "
+                    "JOIN kg_entities o ON o.id = t.object_id "
+                    "WHERE t.id = ? AND t.user_id = ? AND t.valid_to IS NULL",
+                    (expected["triple_id"], user_id),
+                ).fetchone()
+                if row is None or dict(row) != expected:
+                    raise RelationshipCurationConflict(
+                        "relationship changed after Weekly context was built"
+                    )
+                cursor = conn.execute(
+                    "UPDATE kg_triples SET valid_to = ? "
+                    "WHERE id = ? AND valid_to IS NULL",
+                    (now, expected["triple_id"]),
+                )
+                if cursor.rowcount != 1:
+                    raise RelationshipCurationConflict(
+                        "relationship changed before archive committed"
+                    )
+                archived.append(int(expected["triple_id"]))
+                continue
+
+            raise RelationshipCurationError("op must be upsert or archive")
+
+        _cleanup_orphan_entities(conn, user_id)
+        conn.commit()
+        return RelationshipCurationResult(
+            upserted_ids=tuple(upserted),
+            archived_ids=tuple(archived),
+        )
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 # ── Query ─────────────────────────────────────────────────────────────
@@ -395,8 +418,9 @@ def entity_context_for_prompt(user_id: int, entity_name: str) -> str:
         return ""
 
     _PRED_PRIORITY = [
-        "has_condition", "has_status", "is_a", "has_breed", "has_gender",
-        "weighs", "born_in", "has_personality", "is_neutered", "adopted_in",
+        "is_family_of", "is_partner_of", "is_parent_of", "is_child_of",
+        "is_sibling_of", "lives_with", "cares_for", "lives_in",
+        "grew_up_in", "works_at", "is_friend_of",
     ]
     ordered_preds: list[str] = []
     for p in _PRED_PRIORITY:
@@ -423,7 +447,7 @@ def entity_context_for_prompt(user_id: int, entity_name: str) -> str:
 
 def find_matching_entities(
     user_id: int, text: str,
-    matchable_types: tuple[str, ...] = ("person", "pet"),
+    matchable_types: tuple[str, ...] = ("person", "pet", "place"),
 ) -> list[str]:
     """Find known entity names that appear in text.
 
@@ -439,7 +463,13 @@ def find_matching_entities(
         rows = conn.execute(
             f"SELECT name, display_name FROM kg_entities "
             f"WHERE user_id = ? AND entity_type IN ({placeholders}) "
-            f"AND LENGTH(name) >= ?",
+            f"AND LENGTH(name) >= ? "
+            f"AND EXISTS ("
+            f"SELECT 1 FROM kg_triples t "
+            f"WHERE t.user_id = kg_entities.user_id "
+            f"AND t.valid_to IS NULL "
+            f"AND (t.subject_id = kg_entities.id OR t.object_id = kg_entities.id)"
+            f")",
             (user_id, *matchable_types, min_len),
         ).fetchall()
     finally:
@@ -461,8 +491,14 @@ def get_kg_stats(user_id: int) -> dict:
     conn = _connect()
     try:
         entities = conn.execute(
-            "SELECT COUNT(*) FROM kg_entities WHERE user_id = ?",
-            (user_id,),
+            "SELECT COUNT(DISTINCT entity_id) FROM ("
+            "SELECT subject_id AS entity_id FROM kg_triples "
+            "WHERE user_id = ? AND valid_to IS NULL "
+            "UNION ALL "
+            "SELECT object_id AS entity_id FROM kg_triples "
+            "WHERE user_id = ? AND valid_to IS NULL"
+            ")",
+            (user_id, user_id),
         ).fetchone()[0]
         active_triples = conn.execute(
             "SELECT COUNT(*) FROM kg_triples "
@@ -492,6 +528,12 @@ def cleanup_expired_triples(days: int = 90) -> int:
             (cutoff,),
         )
         count = cur.rowcount
+        conn.execute(
+            "DELETE FROM kg_entities WHERE NOT EXISTS ("
+            "SELECT 1 FROM kg_triples t "
+            "WHERE t.subject_id = kg_entities.id OR t.object_id = kg_entities.id"
+            ")"
+        )
         conn.commit()
         return count
     finally:

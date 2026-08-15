@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v1.0.1
+- 修复模型表单误关闭、模型测试假成功、旧主动消息重启后补发和 Observer 缓存丢失
+- Admin 支持复用已有模型凭据，并允许配置 HTTPS OpenAI-compatible Chat Completions 端点
+- Main 自主判断睡眠切换；Free Time 带入最近完整对话，静默结果不再误吞正常回复
+- 重写 Main 运行契约，明确陪伴关系、环境、工具与事实边界
+- Memory Item 聚焦可长期复用的用户记忆，以用户消息证据提供真实日期并移除 category 运行语义
+- 关系图改由 Weekly Main 谨慎维护，仅保留有 Memory Item 用户证据的人、宠物、地点与生活关系
+- 精简设置首页，并移除旧 Notes 迁移、预留数据表、旧配置兼容、Legacy Skill Parser 和宽泛 Provider fallback
+
 ## v1.0.0
 - 主人格统一接管聊天、睡前整理、每周维护、自主空闲关注和自我提醒
 - Main + Lite 双模型运行时；支持 OpenAI、DeepSeek、Anthropic 和 Gemini

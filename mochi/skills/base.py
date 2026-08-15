@@ -1,10 +1,7 @@
 """Skill base class and SKILL.md parser.
 
-Supports the current SKILL.md format plus two legacy formats:
-  v1 (legacy): ``## Tool: tool_name`` sections, ``expose: true`` front-matter
-  current: ``## Tools`` / ``### tool_name (routed)`` sections
-
-The parser auto-detects which format is in use.
+Tools use ``## Tools`` / ``### tool_name (load)`` sections, where load is
+``resident``, ``routed``, or ``on_demand``.
 
 Every skill directory must have:
   - SKILL.md       (tool definitions + metadata)
@@ -23,7 +20,6 @@ log = logging.getLogger(__name__)
 _VALID_MODEL_TIERS = frozenset({"lite", "main"})
 _LEGACY_MODEL_TIERS = frozenset({"chat", "deep"})
 _WARNED_INVALID_TIERS: set[tuple[str, str]] = set()
-_WARNED_COMPAT_FILES: set[str] = set()
 VALID_TOOL_LOADS = frozenset({"resident", "routed", "on_demand"})
 
 
@@ -108,22 +104,8 @@ class ConfigField:
     internal: bool = False  # hidden from admin UI when True
 
 
-@dataclass
-class NudgeMeta:
-    """Nudge metadata parsed from SKILL.md nudge: block (stored for future use)."""
-    requires_awake: bool = True
-    check_interval_s: float = 0
-
-
-@dataclass
-class WritesMeta:
-    """Data output declaration parsed from SKILL.md writes: block."""
-    diary: list[str] = field(default_factory=list)
-    db: list[str] = field(default_factory=list)
-
-
 # ---------------------------------------------------------------------------
-# SKILL.md Parsing (v1 + v2 dual-format)
+# SKILL.md Parsing
 # ---------------------------------------------------------------------------
 
 def _flush_config_entry(
@@ -151,15 +133,10 @@ def _flush_config_entry(
 
 
 def _parse_skill_md(md_path: str) -> dict:
-    """Parse a SKILL.md file -> {meta, tools, capability_context, type, tier, ...}.
+    """Parse a SKILL.md file into framework metadata and tool definitions.
 
-    Supports legacy ``## Tool: tool_name`` and canonical
-    ``## Tools`` / ``### tool_name (load)`` sections.
-
-    Front-matter supports multi-line blocks (v3):
-      tier, sub_skills, requires, config, nudge, writes, sense
-
-    Auto-detects tool format based on content headers.
+    Front-matter supports multi-line blocks such as sub_skills, requires,
+    config, nudge, writes, and sense.
     """
     result: dict = {
         "meta": {},
@@ -176,10 +153,7 @@ def _parse_skill_md(md_path: str) -> dict:
         "diary_status_order": 50,
         "config_schema": [],
         "sub_skills": {},
-        "nudge_meta": None,
-        "writes_meta": None,
         "exclude_transports": [],
-        "_legacy_fields": set(),
     }
 
     if not os.path.exists(md_path):
@@ -195,8 +169,6 @@ def _parse_skill_md(md_path: str) -> dict:
         _in_sub_skills = False
         _in_requires = False
         _in_config = False
-        _in_nudge = False
-        _in_writes = False
         _in_nested_block = False  # for blocks we skip (sense:, etc.)
         _has_sense = False        # track if sense: block is present
 
@@ -204,9 +176,6 @@ def _parse_skill_md(md_path: str) -> dict:
         _config_key = ""
         _config_props: dict[str, str] = {}
         config_schema: list[ConfigField] = []
-        _nudge_props: dict[str, str] = {}
-        _writes_diary: list[str] = []
-        _writes_db: list[str] = []
         sub_skills: dict[str, str] = {}
         requires_env: list[str] = []
 
@@ -219,36 +188,23 @@ def _parse_skill_md(md_path: str) -> dict:
                 inline = stripped.split(":", 1)[1].strip()
                 if not inline:
                     _in_sub_skills = True
-                    _in_requires = _in_config = _in_nudge = _in_writes = _in_nested_block = False
+                    _in_requires = _in_config = _in_nested_block = False
                     continue
 
             if stripped == "requires:" or (stripped.startswith("requires:") and not stripped.split(":", 1)[1].strip()):
                 _in_requires = True
-                _in_sub_skills = _in_config = _in_nudge = _in_writes = _in_nested_block = False
+                _in_sub_skills = _in_config = _in_nested_block = False
                 continue
 
             if stripped == "sense:" or (stripped.startswith("sense:") and not stripped.split(":", 1)[1].strip()):
                 _in_nested_block = True
                 _has_sense = True
-                _in_sub_skills = _in_requires = _in_config = _in_nudge = _in_writes = False
-                continue
-
-            if stripped == "nudge:" or (stripped.startswith("nudge:") and not stripped.split(":", 1)[1].strip()):
-                _in_nudge = True
-                _in_sub_skills = _in_requires = _in_config = _in_writes = _in_nested_block = False
-                _nudge_props = {}
-                continue
-
-            if stripped == "writes:" or (stripped.startswith("writes:") and not stripped.split(":", 1)[1].strip()):
-                _in_writes = True
-                _in_sub_skills = _in_requires = _in_config = _in_nudge = _in_nested_block = False
-                _writes_diary = []
-                _writes_db = []
+                _in_sub_skills = _in_requires = _in_config = False
                 continue
 
             if stripped == "config:" or (stripped.startswith("config:") and not stripped.split(":", 1)[1].strip()):
                 _in_config = True
-                _in_sub_skills = _in_requires = _in_nudge = _in_writes = _in_nested_block = False
+                _in_sub_skills = _in_requires = _in_nested_block = False
                 _config_key = ""
                 _config_props = {}
                 continue
@@ -278,27 +234,6 @@ def _parse_skill_md(md_path: str) -> dict:
                     continue
                 else:
                     _in_requires = False
-
-            if _in_nudge:
-                if line.startswith("  ") and ":" in stripped:
-                    nk, nv = stripped.split(":", 1)
-                    _nudge_props[nk.strip()] = nv.strip().strip('"').strip("'")
-                    continue
-                else:
-                    _in_nudge = False
-
-            if _in_writes:
-                if line.startswith("  ") and ":" in stripped:
-                    wk, wv = stripped.split(":", 1)
-                    wk = wk.strip()
-                    vals = [v.strip() for v in wv.strip().strip("[]").split(",") if v.strip()]
-                    if wk == "diary":
-                        _writes_diary = vals
-                    elif wk == "db":
-                        _writes_db = vals
-                    continue
-                else:
-                    _in_writes = False
 
             if _in_config:
                 if line.startswith("    ") and ":" in stripped:
@@ -334,10 +269,7 @@ def _parse_skill_md(md_path: str) -> dict:
             key = key.strip()
             val = val.strip()
 
-            if key in ("expose", "expose_as_tool"):
-                result["_legacy_fields"].add(key)
-                result["_legacy_fields"].add(key)
-            elif key == "triggers":
+            if key == "triggers":
                 triggers = re.findall(r"\w+", val)
                 result["triggers"] = triggers if triggers else ["tool_call"]
             elif key == "type":
@@ -346,9 +278,6 @@ def _parse_skill_md(md_path: str) -> dict:
                     result["type"] = stype
                 else:
                     log.warning("Unknown skill type '%s' in %s, defaulting to 'tool'", stype, md_path)
-            elif key == "tier":
-                result["tier"] = _normalize_model_tier(val, md_path)
-                result["_legacy_fields"].add("tier")
             elif key == "multi_turn":
                 result["multi_turn"] = val.lower() in ("true", "yes", "1")
             elif key == "requires_config":
@@ -356,12 +285,6 @@ def _parse_skill_md(md_path: str) -> dict:
                 result["requires_config"] = keys
             elif key == "locked":
                 result["locked"] = val.lower() in ("true", "yes", "1")
-            elif key == "core":
-                result["locked"] = val.lower() in ("true", "yes", "1")
-                result["_legacy_fields"].add("core")
-            elif key == "always_on":
-                result["always_on"] = val.lower() in ("true", "yes", "1")
-                result["_legacy_fields"].add("always_on")
             elif key == "diary":
                 tags = re.findall(r"[a-z_][a-z0-9_]*", val)
                 result["diary"] = tags
@@ -391,15 +314,6 @@ def _parse_skill_md(md_path: str) -> dict:
             result["sub_skills"] = sub_skills
         if config_schema:
             result["config_schema"] = config_schema
-        if _nudge_props or _in_nudge:
-            awake_raw = _nudge_props.get("requires_awake", "true").lower()
-            interval_raw = _nudge_props.get("check_interval", "0")
-            result["nudge_meta"] = NudgeMeta(
-                requires_awake=awake_raw not in ("false", "no", "0"),
-                check_interval_s=float(interval_raw),
-            )
-        if _writes_diary or _writes_db or _in_writes:
-            result["writes_meta"] = WritesMeta(diary=_writes_diary, db=_writes_db)
 
         # Track sense: block presence
         result["has_sense"] = _has_sense
@@ -412,36 +326,20 @@ def _parse_skill_md(md_path: str) -> dict:
     if not result["config_schema"]:
         result["config_schema"] = _parse_config_schema(content)
 
-    # ── Detect format and parse tools ──
+    # ── Parse tools ──
     try:
         if re.search(r"^## Tools\s*$", content, re.MULTILINE):
             result["tools"] = _parse_tools_v2(content)
-        elif re.search(r"^## Tool:\s*", content, re.MULTILINE):
-            result["tools"] = _parse_tools_v1(content)
     except ValueError as exc:
         raise ValueError(f"{exc} in {md_path}") from exc
 
-    _normalize_tool_loads(result, md_path)
+    _validate_tool_loads(result, md_path)
 
     return result
 
 
-def _warn_legacy_metadata(md_path: str, fields: set[str]) -> None:
-    """Warn once per file when compatibility translation is required."""
-    if not fields or md_path in _WARNED_COMPAT_FILES:
-        return
-    _WARNED_COMPAT_FILES.add(md_path)
-    log.warning(
-        "Legacy SKILL.md metadata in %s mapped to locked/load: %s",
-        md_path,
-        ", ".join(sorted(fields)),
-    )
-
-
-def _normalize_tool_loads(parsed: dict, md_path: str) -> None:
-    """Translate legacy tool groups into the single runtime load contract."""
-    legacy_fields = set(parsed.pop("_legacy_fields", set()))
-    always_on = bool(parsed.pop("always_on", False))
+def _validate_tool_loads(parsed: dict, md_path: str) -> None:
+    """Require one explicit current load for every unique tool."""
     seen: set[str] = set()
     for tool in parsed.get("tools", []):
         name = tool.get("function", {}).get("name", "")
@@ -450,16 +348,11 @@ def _normalize_tool_loads(parsed: dict, md_path: str) -> None:
         seen.add(name)
 
         load = tool.get("_load")
-        legacy_extended = bool(tool.pop("_legacy_extended", False))
-        legacy_fields.update(tool.pop("_legacy_annotations", set()))
-        if load is None:
-            load = "on_demand" if legacy_extended else (
-                "resident" if always_on else "routed"
+        if load not in VALID_TOOL_LOADS:
+            raise ValueError(
+                f"Tool '{name}' in {md_path} must declare exactly one load: "
+                "resident, routed, or on_demand"
             )
-            legacy_fields.add("extended" if legacy_extended else "implicit tool load")
-        tool["_load"] = load
-        tool.pop("_group", None)
-    _warn_legacy_metadata(md_path, legacy_fields)
 
 
 def _extract_capability_context(content: str) -> str:
@@ -506,81 +399,15 @@ def _parse_config_schema(content: str) -> list[dict]:
     return schema
 
 
-def _extract_tool_annotations(
-    heading: str,
-) -> tuple[str, str | None, bool, set[str], str]:
-    """Extract skill override and load while accepting legacy annotations."""
-    skill_override = ""
-    load: str | None = None
-    legacy_extended = False
-    legacy_annotations: set[str] = set()
-    paren_match = re.match(r"^(\S+)\s*\(([^)]+)\)", heading)
-    if paren_match:
-        tool_name = paren_match.group(1)
-        annotations = paren_match.group(2)
-        for part in annotations.split(","):
-            part = part.strip()
-            if part in {"L0", "L1", "L2", "L3"}:
-                legacy_annotations.add("L0-L3 risk annotation")
-            elif part.startswith("skill:"):
-                skill_override = part.split(":", 1)[1].strip()
-            elif part == "extended":
-                if load is not None or legacy_extended:
-                    previous = load or "extended"
-                    raise ValueError(
-                        f"Multiple tool loads for '{tool_name}': "
-                        f"'{previous}' and 'extended'"
-                    )
-                legacy_extended = True
-                legacy_annotations.add("extended")
-            elif part in VALID_TOOL_LOADS:
-                if load is not None or legacy_extended:
-                    previous = load or "extended"
-                    raise ValueError(
-                        f"Multiple tool loads for '{tool_name}': "
-                        f"'{previous}' and '{part}'"
-                    )
-                load = part
-            elif part in {"core", "default"}:
-                legacy_annotations.add(part)
-            else:
-                raise ValueError(
-                    f"Invalid tool load '{part}' for '{tool_name}'"
-                )
-    else:
-        tool_name = heading.split()[0] if heading else ""
-    return skill_override, load, legacy_extended, legacy_annotations, tool_name
-
-
-def _parse_tools_v1(content: str) -> list[dict]:
-    """Parse v1 format: ``## Tool: tool_name`` sections."""
-    tools = []
-    tool_blocks = re.split(r"^## Tool:\s*", content, flags=re.MULTILINE)[1:]
-    for block in tool_blocks:
-        lines = block.strip().split("\n")
-        heading = lines[0].strip()
-        # Strip current and legacy annotations from the tool name.
-        try:
-            skill_override, load, legacy_extended, legacy_annotations, tool_name = (
-                _extract_tool_annotations(heading)
-            )
-        except ValueError as exc:
-            raise ValueError(f"{exc} in SKILL.md tool heading '{heading}'") from exc
-
-        desc = ""
-        desc_match = re.search(r"Description[:\s]*(.+?)(?:\n##|\n###|\Z)",
-                               block, re.DOTALL | re.IGNORECASE)
-        if desc_match:
-            desc = desc_match.group(1).strip().split("\n")[0].strip()
-
-        params, required_params = _parse_param_table(block)
-        tool_def = _build_tool_schema(tool_name, desc, params, required_params)
-        tool_def["_skill_override"] = skill_override
-        tool_def["_load"] = load
-        tool_def["_legacy_extended"] = legacy_extended
-        tool_def["_legacy_annotations"] = legacy_annotations
-        tools.append(tool_def)
-    return tools
+def _extract_tool_load(heading: str) -> tuple[str, str | None]:
+    """Extract one current load annotation from a tool heading."""
+    match = re.fullmatch(r"(\S+)\s*\(([^)]+)\)\s*", heading)
+    if not match:
+        return (heading.split()[0] if heading else ""), None
+    tool_name, load = match.group(1), match.group(2).strip()
+    if load not in VALID_TOOL_LOADS:
+        raise ValueError(f"Invalid tool load '{load}' for '{tool_name}'")
+    return tool_name, load
 
 
 def _parse_tools_v2(content: str) -> list[dict]:
@@ -596,11 +423,8 @@ def _parse_tools_v2(content: str) -> list[dict]:
     for block in tool_blocks:
         lines = block.strip().split("\n")
         heading = lines[0].strip()
-        # Strip current and legacy annotations from the tool name.
         try:
-            skill_override, load, legacy_extended, legacy_annotations, tool_name = (
-                _extract_tool_annotations(heading)
-            )
+            tool_name, load = _extract_tool_load(heading)
         except ValueError as exc:
             raise ValueError(f"{exc} in SKILL.md tool heading '{heading}'") from exc
 
@@ -617,10 +441,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
 
         params, required_params = _parse_param_table(block)
         tool_def = _build_tool_schema(tool_name, desc, params, required_params)
-        tool_def["_skill_override"] = skill_override
         tool_def["_load"] = load
-        tool_def["_legacy_extended"] = legacy_extended
-        tool_def["_legacy_annotations"] = legacy_annotations
         tools.append(tool_def)
     return tools
 
@@ -845,23 +666,6 @@ class Skill(ABC):
     def handles(self, tool_name: str) -> bool:
         """Check if this skill handles a specific tool name."""
         return tool_name in self.tool_names()
-
-    def has_trigger(self, trigger_type: str, **kwargs) -> bool:
-        """Check if this skill matches a trigger type and optional conditions.
-
-        For simple triggers (list of strings): checks if trigger_type is in list.
-        For v2 triggers (list of dicts): checks type field + all kwargs match.
-        """
-        for t in self.triggers:
-            if isinstance(t, str):
-                if t == trigger_type:
-                    return True
-            elif isinstance(t, dict):
-                if t.get("type") != trigger_type:
-                    continue
-                if all(t.get(k) == v for k, v in kwargs.items()):
-                    return True
-        return False
 
     def get_config(self, key: str) -> str:
         """Read a config value with priority: DB override > env > schema default.

@@ -14,7 +14,6 @@ from mochi.db import (
     _insert_memory_trash_snapshot,
     _invalidate_memory_kg_indexes,
     _normalize_text,
-    _safe_scheduled_run_error,
     _sync_memory_item_indexes,
     insert_memory_item,
     text_similarity,
@@ -24,7 +23,6 @@ from mochi.memory_contract import (
     encode_evidence_message_ids,
     merge_evidence_message_ids,
     normalize_evidence_message_ids,
-    validate_memory_category,
     validate_memory_content,
     validate_memory_importance,
 )
@@ -59,7 +57,6 @@ class MemoryEvidenceExcerpt:
 class WeeklyMemoryCandidate:
     id: int
     content: str
-    category: str
     importance: int
     source: str
     created_at: str
@@ -88,15 +85,7 @@ class MemoryCurationResult:
     created_ids: tuple[int, ...]
     changed_ids: tuple[int, ...]
     archived_ids: tuple[int, ...]
-    kg_reprojection_ids: tuple[int, ...]
     replayed: bool = False
-
-
-@dataclass(frozen=True)
-class WeeklyCurationReceipt:
-    result: MemoryCurationResult
-    projection_status: str
-    projection_error: str
 
 
 def _relation_score(older: dict, window_rows: list[dict]) -> float | None:
@@ -152,7 +141,7 @@ def build_weekly_memory_candidate_package(
         ).fetchone()[0]
         window_rows = [
             dict(row) for row in conn.execute(
-                "SELECT id, category, content, importance, source, "
+                "SELECT id, content, importance, source, "
                 "evidence_message_ids, created_at, updated_at "
                 "FROM memory_items WHERE user_id = ? "
                 "AND julianday(created_at) >= julianday(?) "
@@ -164,7 +153,7 @@ def build_weekly_memory_candidate_package(
         related_ranked: list[tuple[float, dict]] = []
         if window_rows:
             cursor = conn.execute(
-                "SELECT id, category, content, importance, source, "
+                "SELECT id, content, importance, source, "
                 "evidence_message_ids, created_at, updated_at "
                 "FROM memory_items WHERE user_id = ? "
                 "AND julianday(created_at) < julianday(?) "
@@ -227,7 +216,6 @@ def build_weekly_memory_candidate_package(
             candidates.append(WeeklyMemoryCandidate(
                 id=row["id"],
                 content=row["content"],
-                category=row["category"],
                 importance=row["importance"],
                 source=row["source"],
                 created_at=row["created_at"],
@@ -297,7 +285,6 @@ def _output(operation: Mapping[str, object]) -> dict:
     try:
         return {
             "content": validate_memory_content(operation["content"]),
-            "category": validate_memory_category(operation["category"]),
             "importance": validate_memory_importance(operation["importance"]),
         }
     except ValueError as exc:
@@ -318,7 +305,7 @@ def _parse_operations(operations: object) -> tuple[list[dict], set[int]]:
         if op == "create":
             operation = _exact(
                 raw,
-                {"op", "content", "category", "importance", "evidence_message_ids"},
+                {"op", "content", "importance", "evidence_message_ids"},
                 f"operation {index}",
             )
             parsed.append({
@@ -333,7 +320,7 @@ def _parse_operations(operations: object) -> tuple[list[dict], set[int]]:
                 "evidence_message_ids",
             }
             if op == "edit":
-                keys |= {"content", "category", "importance"}
+                keys |= {"content", "importance"}
             operation = _exact(raw, keys, f"operation {index}")
             expected = _expected(operation)
             parsed_operation = {
@@ -348,7 +335,7 @@ def _parse_operations(operations: object) -> tuple[list[dict], set[int]]:
             operation = _exact(
                 raw,
                 {
-                    "op", "keep", "remove", "content", "category",
+                    "op", "keep", "remove", "content",
                     "importance", "evidence_message_ids",
                 },
                 f"operation {index}",
@@ -396,7 +383,6 @@ def _result_payload(result: MemoryCurationResult) -> dict:
         "created_ids": list(result.created_ids),
         "changed_ids": list(result.changed_ids),
         "archived_ids": list(result.archived_ids),
-        "kg_reprojection_ids": list(result.kg_reprojection_ids),
     }
 
 
@@ -405,58 +391,8 @@ def _result_from_payload(payload: dict) -> MemoryCurationResult:
         created_ids=tuple(payload["created_ids"]),
         changed_ids=tuple(payload["changed_ids"]),
         archived_ids=tuple(payload["archived_ids"]),
-        kg_reprojection_ids=tuple(payload["kg_reprojection_ids"]),
         replayed=True,
     )
-
-
-def get_weekly_curation_receipt(
-    user_id: int,
-    period_key: str,
-) -> WeeklyCurationReceipt | None:
-    conn = _connect()
-    row = conn.execute(
-        "SELECT result_json, projection_status, projection_error "
-        "FROM weekly_curation_batches WHERE user_id = ? AND period_key = ?",
-        (user_id, period_key),
-    ).fetchone()
-    conn.close()
-    if row is None:
-        return None
-    return WeeklyCurationReceipt(
-        result=_result_from_payload(json.loads(row["result_json"])),
-        projection_status=row["projection_status"],
-        projection_error=row["projection_error"],
-    )
-
-
-def set_weekly_projection_state(
-    user_id: int,
-    period_key: str,
-    *,
-    status: str,
-    error: str = "",
-) -> None:
-    if status not in {"pending", "success", "failed"}:
-        raise ValueError("invalid Weekly projection status")
-    conn = _connect()
-    cursor = conn.execute(
-        "UPDATE weekly_curation_batches "
-        "SET projection_status = ?, projection_error = ? "
-        "WHERE user_id = ? AND period_key = ?",
-        (
-            status,
-            _safe_scheduled_run_error(error) if status == "failed" else "",
-            user_id,
-            period_key,
-        ),
-    )
-    if cursor.rowcount != 1:
-        conn.rollback()
-        conn.close()
-        raise RuntimeError("Weekly curation receipt does not exist")
-    conn.commit()
-    conn.close()
 
 
 def curate_memory_items(
@@ -547,7 +483,6 @@ def curate_memory_items(
         created: list[int] = []
         changed: list[int] = []
         archived: list[int] = []
-        reproject: list[int] = []
         for operation in parsed:
             evidence = operation["evidence"]
             if operation["op"] == "create":
@@ -555,7 +490,6 @@ def curate_memory_items(
                     raise MemoryCurationError("create requires evidence")
                 item_id = insert_memory_item(
                     user_id,
-                    operation["category"],
                     operation["content"],
                     operation["importance"],
                     source="weekly_main",
@@ -563,7 +497,6 @@ def curate_memory_items(
                     conn=conn,
                 )
                 created.append(item_id)
-                reproject.append(item_id)
                 continue
 
             if operation["op"] == "edit":
@@ -583,12 +516,12 @@ def curate_memory_items(
                 )
                 embedding = None if content_changed else row["embedding"]
                 conn.execute(
-                    "UPDATE memory_items SET content = ?, category = ?, "
-                    "importance = ?, evidence_message_ids = ?, updated_at = ?, "
+                    "UPDATE memory_items SET content = ?, importance = ?, "
+                    "evidence_message_ids = ?, updated_at = ?, "
                     "embedding = ? WHERE id = ? AND user_id = ?",
                     (
-                        operation["content"], operation["category"],
-                        operation["importance"], evidence_json, now, embedding,
+                        operation["content"], operation["importance"],
+                        evidence_json, now, embedding,
                         item_id, user_id,
                     ),
                 )
@@ -597,7 +530,6 @@ def curate_memory_items(
                     _sync_memory_item_indexes(
                         conn, item_id, operation["content"], None,
                     )
-                    reproject.append(item_id)
                 changed.append(item_id)
                 continue
 
@@ -636,12 +568,12 @@ def curate_memory_items(
                     )
                 )
                 conn.execute(
-                    "UPDATE memory_items SET content = ?, category = ?, "
-                    "importance = ?, evidence_message_ids = ?, updated_at = ?, "
+                    "UPDATE memory_items SET content = ?, importance = ?, "
+                    "evidence_message_ids = ?, updated_at = ?, "
                     "embedding = NULL WHERE id = ? AND user_id = ?",
                     (
-                        operation["content"], operation["category"],
-                        operation["importance"], evidence_json, now,
+                        operation["content"], operation["importance"],
+                        evidence_json, now,
                         keep_id, user_id,
                     ),
                 )
@@ -658,7 +590,6 @@ def curate_memory_items(
                 )
                 changed.append(keep_id)
                 archived.extend(remove_ids)
-                reproject.append(keep_id)
                 continue
 
             item_id = operation["expected"]["item_id"]
@@ -690,17 +621,15 @@ def curate_memory_items(
             created_ids=tuple(created),
             changed_ids=tuple(changed),
             archived_ids=tuple(archived),
-            kg_reprojection_ids=tuple(dict.fromkeys(reproject)),
         )
         conn.execute(
             "INSERT INTO weekly_curation_batches "
-            "(user_id, period_key, result_json, projection_status, "
-            "projection_error, created_at) VALUES (?, ?, ?, ?, '', ?)",
+            "(user_id, period_key, result_json, created_at) "
+            "VALUES (?, ?, ?, ?)",
             (
                 user_id,
                 period_key,
                 json.dumps(_result_payload(result), separators=(",", ":")),
-                "pending" if result.kg_reprojection_ids else "success",
                 now,
             ),
         )

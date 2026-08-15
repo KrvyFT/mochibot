@@ -657,18 +657,39 @@ if HAS_FASTAPI:
         name = body.get("name", "").strip()
         if not name:
             raise HTTPException(400, "name is required")
+        provider = body.get("provider", "openai")
+        base_url = body.get("base_url", "")
+        api_key = body.get("api_key", "")
+        credential_source = body.get("credential_source_model", "").strip()
         from mochi.admin.admin_db import (
             get_model,
             list_tier_assignments,
             upsert_model,
         )
+        if credential_source:
+            if credential_source == name:
+                raise HTTPException(400, "credential source must be another model")
+            source = get_model(credential_source, mask_key=False)
+            if not source:
+                raise HTTPException(400, "credential source model not found")
+            source_url = (source.get("base_url") or "").strip().rstrip("/")
+            requested_url = (base_url or "").strip().rstrip("/")
+            if source["provider"] != provider or source_url != requested_url:
+                raise HTTPException(
+                    400,
+                    "credential source must use the same provider and endpoint",
+                )
+            if not source.get("api_key"):
+                raise HTTPException(400, "credential source has no API key")
+            api_key = source["api_key"]
+            base_url = source["base_url"]
         try:
             upsert_model(
                 name=name,
-                provider=body.get("provider", "openai"),
+                provider=provider,
                 model=body.get("model", ""),
-                api_key=body.get("api_key", ""),
-                base_url=body.get("base_url", ""),
+                api_key=api_key,
+                base_url=base_url,
             )
         except ValueError as e:
             raise HTTPException(400, str(e))
@@ -736,9 +757,6 @@ if HAS_FASTAPI:
         except Exception as e:
             err_str = str(e)
             log.warning("Model test failed for '%s': %s", name, err_str[:300])
-            # o-series models reject max_tokens — treat as connected
-            if "max_tokens" in err_str.lower() or "max_completion_tokens" in err_str.lower():
-                return {"ok": True, "model": entry["model"], "note": "Connected (reasoning model)"}
             return {"ok": False, "error": err_str[:500]}
 
     # ── Tiers ─────────────────────────────────────────────────────────────
@@ -1113,14 +1131,12 @@ if HAS_FASTAPI:
             get_core_hygiene_status,
             get_core_migration_status,
             get_core_stats,
-            get_notes_retirement_status,
             read_core,
         )
         return {
             "content": read_core(),
             **get_core_stats(),
             "migration": get_core_migration_status(),
-            "notes_retirement": get_notes_retirement_status(),
             "hygiene": get_core_hygiene_status(),
         }
 
@@ -1137,30 +1153,14 @@ if HAS_FASTAPI:
         log.info("Admin: updated Core (%d chars)", result["chars"])
         return {"ok": True, **result}
 
-    @app.get("/api/core/history", dependencies=[Depends(_verify_token)])
-    async def api_core_history():
-        from mochi.core_store import list_core_snapshots
-
-        return {"snapshots": list_core_snapshots()}
-
-    @app.post("/api/core/history/{snapshot_id}/restore", dependencies=[Depends(_verify_token)])
-    async def api_restore_core(snapshot_id: str):
-        from mochi.core_store import CoreError, restore_core_snapshot
-
-        try:
-            result = restore_core_snapshot(snapshot_id)
-        except CoreError as exc:
-            raise HTTPException(400, str(exc))
-        return {"ok": True, **result}
-
     @app.get("/api/memory-items", dependencies=[Depends(_verify_token)])
     async def api_get_memory_items(
-        q: str = "", category: str = "", sort: str = "importance",
+        q: str = "", sort: str = "importance",
         page: int = 1, limit: int = 20,
     ):
-        """Browse L2 memory_items with keyword search, category filter, pagination."""
+        """Browse Memory Items with keyword search and pagination."""
         from mochi.config import OWNER_USER_ID
-        from mochi.db import _connect
+        from mochi.db import _connect, get_memory_evidence_dates
 
         uid = OWNER_USER_ID or 0
         page = max(1, page)
@@ -1172,9 +1172,6 @@ if HAS_FASTAPI:
         if q:
             conditions.append("content LIKE ?")
             params.append(f"%{q}%")
-        if category:
-            conditions.append("category = ?")
-            params.append(category)
         where = " AND ".join(conditions)
 
         order = "importance DESC, updated_at DESC" if sort == "importance" else "updated_at DESC"
@@ -1185,35 +1182,35 @@ if HAS_FASTAPI:
 
         offset = (page - 1) * limit
         rows = conn.execute(
-            f"SELECT id, category, content, importance, access_count, source, "
+            f"SELECT id, content, importance, access_count, source, "
             f"created_at, updated_at FROM memory_items "
             f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             params + [limit, offset],
         ).fetchall()
 
-        cat_rows = conn.execute(
-            "SELECT category, COUNT(*) as cnt FROM memory_items "
-            "WHERE user_id = ? GROUP BY category ORDER BY cnt DESC",
-            (uid,),
-        ).fetchall()
         conn.close()
+        evidence_dates = get_memory_evidence_dates(
+            uid, [int(row["id"]) for row in rows],
+        )
 
         return {
             "total": total,
             "page": page,
             "limit": limit,
             "pages": max(1, (total + limit - 1) // limit),
-            "categories": [{"name": r["category"] or "(无)", "count": r["cnt"]} for r in cat_rows],
             "items": [
                 {
                     "id": r["id"],
-                    "category": r["category"],
                     "content": r["content"],
                     "importance": r["importance"],
                     "access_count": r["access_count"],
                     "source": r["source"],
                     "created_at": r["created_at"],
                     "updated_at": r["updated_at"],
+                    **evidence_dates.get(r["id"], {
+                        "evidence_start": "",
+                        "evidence_end": "",
+                    }),
                 }
                 for r in rows
             ],
@@ -1268,18 +1265,16 @@ if HAS_FASTAPI:
         body = await request.json()
         uid = OWNER_USER_ID or 0
         content = body.get("content", "").strip()
-        category = body.get("category", "").strip()
         importance = max(1, min(3, int(body.get("importance", 1))))
 
         if not update_memory_item(
             item_id,
             uid,
             content=content,
-            category=category,
             importance=importance,
         ):
             raise HTTPException(404, f"Memory item {item_id} not found")
-        log.info("Admin: updated memory item #%d cat=%s imp=%d", item_id, category, importance)
+        log.info("Admin: updated memory item #%d imp=%d", item_id, importance)
         return {"ok": True, "id": item_id}
 
     # ═══════════════════════════════════════════════════════════════════════

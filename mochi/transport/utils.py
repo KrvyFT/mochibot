@@ -10,18 +10,16 @@ import re
 
 _IMAGE_FILE_RE = re.compile(r"\[IMAGE_FILE:[^\]]+\]")
 _STICKER_RE = re.compile(r"\[STICKER:[^\]]+\]")
-_SKIP_RE = re.compile(r"\[SKIP\]")
 
 
 def clean_reply_markers(text: str) -> str:
     """Strip side-channel markers from LLM reply text.
 
-    Removes [IMAGE_FILE:...], [STICKER:...], [SKIP] markers
-    that are meant for transport-specific handling, not display.
+    Removes image and sticker markers handled before transport delivery.
+    Runtime silence is resolved before replies reach this layer.
     """
     text = _IMAGE_FILE_RE.sub("", text)
     text = _STICKER_RE.sub("", text)
-    text = _SKIP_RE.sub("", text)
     return text.strip()
 
 

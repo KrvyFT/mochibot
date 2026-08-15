@@ -3,8 +3,6 @@ name: todo
 description: "一次性待办 — 追踪到完成后即结束的事项（如买猫粮、约牙医、查资料），也承载不属于活跃习惯的一次性完成回报。"
 type: tool
 diary_status_order: 20
-writes:
-  db: [todos]
 sense:
   interval: 20
 ---

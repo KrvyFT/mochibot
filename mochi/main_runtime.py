@@ -48,6 +48,8 @@ class ContextPolicy:
     diary_journal: bool = True
     conversation_summary: bool = True
     recent_history: bool = True
+    recent_turns: int | None = None
+    trailing_history: bool = True
     auto_recall: bool = True
     recent_operations: bool = True
     prompt_sections: bool = True
@@ -62,11 +64,13 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             early_runtime_situation=True,
             diary_journal=False,
             conversation_summary=False,
-            recent_history=False,
+            recent_history=True,
+            recent_turns=2,
+            trailing_history=False,
             auto_recall=False,
             recent_operations=False,
             prompt_sections=False,
-            temporal_context=False,
+            temporal_context=True,
         )
     if entry.kind == "attention":
         return ContextPolicy(

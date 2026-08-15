@@ -26,16 +26,37 @@ def test_only_official_chat_providers_are_accepted(monkeypatch):
             llm._make_client(provider, "key", "model", "")
 
 
-def test_admin_rejects_unofficial_chat_endpoint(monkeypatch):
+def test_admin_accepts_https_compatible_endpoint_and_rejects_unsafe_urls(monkeypatch):
     import mochi.admin.admin_db as admin_db
 
     monkeypatch.setattr(admin_db, "encrypt_api_key", lambda value: value)
     admin_db.upsert_model(
         "deepseek", "openai", "model", "key", "https://api.deepseek.com/v1",
     )
-    with pytest.raises(ValueError, match="official"):
+    admin_db.upsert_model(
+        "apiyi", "openai", "claude-model", "key", "https://api.apiyi.com/v1",
+    )
+    admin_db.set_tier_assignment("main", "apiyi")
+    from mochi.db import init_db
+    init_db()
+    assert admin_db.list_tier_assignments()["main"] == "apiyi"
+    for unsafe in (
+        "http://api.example.com/v1",
+        "https://user:pass@api.example.com/v1",
+        "https://api.example.com/v1?token=value",
+        "https://api.example.com/v1#fragment",
+        "https://api.example.com:bad/v1",
+        "https://api.exam\nple.com/v1",
+        "https://api.example.com/v1/chat/completions",
+    ):
+        with pytest.raises(ValueError, match="HTTPS API root"):
+            admin_db.upsert_model(
+                "unsafe", "openai", "model", "key", unsafe,
+            )
+    with pytest.raises(ValueError, match="official API"):
         admin_db.upsert_model(
-            "custom", "openai", "model", "key", "https://example.invalid/v1",
+            "anthropic-proxy", "anthropic", "model", "key",
+            "https://api.example.com/v1",
         )
 
 
@@ -69,7 +90,6 @@ def test_openai_compatible_chat_handles_text_and_tools():
     provider._model = "model"
     provider._base_url = "https://api.deepseek.com/v1"
     provider._use_max_completion_tokens = None
-    provider._use_temperature = None
     provider._client = SimpleNamespace(
         chat=SimpleNamespace(completions=Completions()),
     )

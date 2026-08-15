@@ -60,7 +60,7 @@ Core 是一份每轮常驻的自由文本摘要，不要求固定标题、字段
 - 事件的经过和概括不要同时出现；Core 留稳定摘要，memory_items 只留有价值的补充细节
 
 请只返回 JSON，不要有任何其他文字或 markdown 标记。格式：
-{{"core":"自由文本摘要","memory_items":[{{"category":"偏好","content":"有证据支持的具体偏好","importance":2}}]}}
+{{"core":"自由文本摘要","memory_items":[{{"content":"有证据支持的具体偏好","importance":2}}]}}
 """
 
 _MEMORY_ITEMS_GRANULARITY = {
@@ -69,7 +69,6 @@ _MEMORY_ITEMS_GRANULARITY = {
    最多提取 500 条。优先提取重要性高的和时间近的，不重要的旧记忆可以舍弃。
    按重要性降序排列（importance 3 在前，1 在后），同等重要性的按时间从新到旧。
    每条包含：
-   - category: 分类（如"偏好"、"事实"、"习惯"、"目标"、"关系"、"经历"、"情感"等）
    - content: 具体内容，一句话概括。事件类记忆必须以日期前缀开头，格式"[YYYY-MM-DD] 内容"（日期从对话标题旁获取）。长期偏好/习惯类不需要日期前缀
    - importance: 重要程度 1（低）/ 2（中）/ 3（高）""",
 
@@ -78,7 +77,6 @@ _MEMORY_ITEMS_GRANULARITY = {
    最多提取 500 条。优先提取重要性高的和时间近的，不重要的旧记忆可以舍弃。
    按重要性降序排列（importance 3 在前，1 在后），同等重要性的按时间从新到旧。
    每条包含：
-   - category: 分类（如"偏好"、"事实"、"习惯"、"目标"、"关系"、"经历"、"情感"等）
    - content: 具体内容，一句话概括。事件类记忆必须以日期前缀开头，格式"[YYYY-MM-DD] 内容"（日期从对话标题旁获取）。长期偏好/习惯类不需要日期前缀
    - importance: 重要程度 1（低）/ 2（中）/ 3（高）""",
 
@@ -87,7 +85,6 @@ _MEMORY_ITEMS_GRANULARITY = {
    只提取 importance >= 2 的条目，最多 200 条。
    按重要性降序排列（importance 3 在前，2 在后），同等重要性的按时间从新到旧。
    每条包含：
-   - category: 分类（如"偏好"、"事实"、"习惯"、"目标"、"关系"、"经历"、"情感"等）
    - content: 具体内容，一句话概括。事件类记忆必须以日期前缀开头，格式"[YYYY-MM-DD] 内容"（日期从对话标题旁获取）。长期偏好/习惯类不需要日期前缀
    - importance: 重要程度 2（中）/ 3（高）""",
 }
@@ -269,21 +266,6 @@ def preprocess(conversations: list[dict]) -> PreprocessResult:
         filtered_message_count=len(kept_msgs),
         estimated_tokens=estimated_tokens,
     )
-
-
-# ── Context Window Estimation ──────────────────────────────────────────────
-
-def estimate_context_fit(model_id: str, token_count: int) -> dict:
-    """Check if estimated tokens fit within the model's context window.
-
-    Returns {fits: bool, context_window: int|None, pct: float|None}.
-    """
-    model_lower = model_id.lower()
-    for key, ctx in MODEL_CONTEXT_WINDOWS.items():
-        if key in model_lower:
-            pct = token_count / ctx
-            return {"fits": pct < 0.8, "context_window": ctx, "pct": round(pct, 2)}
-    return {"fits": True, "context_window": None, "pct": None}
 
 
 # ── LLM Extraction (background thread) ────────────────────────────────────
@@ -493,12 +475,10 @@ def _run_apply_memories(job_id: str, items: list[dict]) -> None:
                 continue
             if imported >= _MAX_MEMORY_ITEMS:
                 break
-            category = item.get("category", "其他")
             importance = max(1, min(3, int(item.get("importance", 1))))
             embedding = pool.embed(content)
             db.save_memory_item(
                 uid,
-                category=category,
                 content=content,
                 importance=importance,
                 source="migration",

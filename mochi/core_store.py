@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import os
 import re
 import sqlite3
@@ -27,8 +26,6 @@ CORE_FILENAME = "core.md"
 HISTORY_DIRNAME = "core_history"
 MIGRATION_BACKUP_DIRNAME = "core_migration_backup"
 MIGRATION_STATUS_FILENAME = "core_migration.json"
-NOTES_RETIREMENT_BACKUP_DIRNAME = "notes_retirement_backup"
-NOTES_RETIREMENT_STATUS_FILENAME = "notes_retirement.json"
 WEEKLY_RECEIPTS_DIRNAME = "core_weekly_receipts"
 CORE_LOCK_FILENAME = ".core.lock"
 CORE_LOCK_TIMEOUT_SECONDS = 10.0
@@ -41,7 +38,6 @@ LEGACY_ADD_RETIRED_MESSAGE = (
 )
 
 _lock = threading.RLock()
-log = logging.getLogger(__name__)
 
 
 class CoreError(ValueError):
@@ -78,10 +74,6 @@ def _history_dir() -> Path:
 
 def _migration_status_path() -> Path:
     return DATA_DIR / MIGRATION_STATUS_FILENAME
-
-
-def _notes_retirement_status_path() -> Path:
-    return DATA_DIR / NOTES_RETIREMENT_STATUS_FILENAME
 
 
 def _weekly_receipt_path(user_id: int, period_key: str) -> Path:
@@ -364,35 +356,6 @@ def _snapshot_unlocked(content: str, source: str) -> dict | None:
     }
 
 
-def list_core_snapshots() -> list[dict]:
-    with _transaction():
-        results = []
-        for path in sorted(_history_dir().glob("*.md"), reverse=True):
-            stem = path.stem
-            parts = stem.split("--", 2)
-            if len(parts) != 3:
-                continue
-            timestamp, source, digest = parts
-            try:
-                created = datetime.strptime(
-                    timestamp, "%Y%m%dT%H%M%S%fZ"
-                ).replace(tzinfo=timezone.utc).isoformat()
-            except ValueError:
-                created = timestamp
-            content = path.read_text(encoding="utf-8").rstrip("\n")
-            results.append(
-                {
-                    "id": path.name,
-                    "created_at": created,
-                    "source": source,
-                    "hash": digest,
-                    "chars": len(content),
-                    "tokens": estimate_tokens(content),
-                }
-            )
-        return results[:SNAPSHOT_LIMIT]
-
-
 def read_core() -> str:
     with _transaction():
         _ensure_core_ready_unlocked()
@@ -591,41 +554,6 @@ def update_weekly_core_exact(
         return outcome
 
 
-def restore_core_snapshot(snapshot_id: str, *, source: str = "admin-restore") -> dict:
-    if Path(snapshot_id).name != snapshot_id:
-        raise CoreError("Invalid snapshot id.")
-    with _transaction():
-        _ensure_core_ready_unlocked()
-        history_root = _history_dir().resolve()
-        path = (_history_dir() / snapshot_id).resolve()
-        if path.parent != history_root:
-            raise CoreError("Invalid snapshot id.")
-        if not path.is_file():
-            raise CoreError("Core snapshot not found.")
-        restored = path.read_text(encoding="utf-8").strip()
-        cleanup_issues = list(dict.fromkeys(
-            issue["code"] for issue in _hygiene_issues(restored)
-        ))
-        current = _core_path().read_text(encoding="utf-8").strip()
-        if restored == current:
-            return {
-                "changed": False,
-                "needs_cleanup": bool(cleanup_issues),
-                "cleanup_issues": cleanup_issues,
-                "over_budget": estimate_tokens(restored) > _max_tokens(),
-                **_stats(current),
-            }
-        _snapshot_unlocked(current, source)
-        _atomic_write(_core_path(), restored)
-        return {
-            "changed": True,
-            "needs_cleanup": bool(cleanup_issues),
-            "cleanup_issues": cleanup_issues,
-            "over_budget": estimate_tokens(restored) > _max_tokens(),
-            **_stats(restored),
-        }
-
-
 def _read_optional(path: Path) -> tuple[bool, str, bytes]:
     if not path.is_file():
         return False, "", b""
@@ -776,9 +704,7 @@ def _initialize_core_unlocked(user_id: int | None = None) -> dict:
 
 
 def _ensure_core_ready_unlocked(user_id: int | None = None) -> dict:
-    status = _initialize_core_unlocked(user_id)
-    _retire_notes_unlocked()
-    return status
+    return _initialize_core_unlocked(user_id)
 
 
 def initialize_core(user_id: int | None = None) -> dict:
@@ -799,307 +725,3 @@ def _read_migration_status_unlocked() -> dict:
 def get_core_migration_status() -> dict:
     with _transaction():
         return _read_migration_status_unlocked()
-
-
-def _normalize_note_entry(content: str) -> str:
-    return re.sub(r"\s+", " ", unicodedata.normalize("NFKC", content).strip()).casefold()
-
-
-def _extract_note_entries(content: str) -> list[str]:
-    """Return list items from exact ``## Notes`` sections only."""
-    entries: list[str] = []
-    in_notes = False
-    seen: set[str] = set()
-    for line in content.splitlines():
-        stripped = line.strip()
-        if stripped == "## Notes":
-            in_notes = True
-            continue
-        if re.match(r"^#{1,6}(?:\s|$)", stripped):
-            in_notes = False
-            continue
-        if not in_notes:
-            continue
-        match = re.match(r"^[-*+]\s+(.+?)\s*$", stripped)
-        if not match:
-            continue
-        entry = match.group(1).strip()
-        key = _normalize_note_entry(entry)
-        if key and key not in seen:
-            seen.add(key)
-            entries.append(entry)
-    return entries
-
-
-def _core_entry_keys(content: str) -> set[str]:
-    keys: set[str] = set()
-    for line in content.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        stripped = re.sub(r"^(?:[-*+]|\d+[.)])\s+", "", stripped)
-        key = _normalize_note_entry(stripped)
-        if key:
-            keys.add(key)
-    return keys
-
-
-def _merge_notes_into_core(content: str, entries: list[str]) -> tuple[str, list[str]]:
-    existing = _core_entry_keys(content)
-    additions = [
-        entry for entry in entries
-        if _normalize_note_entry(entry) not in existing
-    ]
-    if not additions:
-        return content, []
-
-    bullets = [f"- {entry}" for entry in additions]
-    prefix = content.rstrip()
-    return f"{prefix}\n\n" + "\n".join(bullets) if prefix else "\n".join(bullets), additions
-
-
-def _read_notes_retirement_status_unlocked() -> dict:
-    path = _notes_retirement_status_path()
-    if not path.is_file():
-        return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-
-
-def _write_notes_retirement_status_unlocked(status: dict) -> None:
-    _atomic_write(
-        _notes_retirement_status_path(),
-        json.dumps(status, ensure_ascii=False, indent=2),
-    )
-
-
-def _notes_retirement_failure(error: Exception) -> dict:
-    status = {
-        "status": "failed",
-        "error": str(error),
-        "over_budget": False,
-    }
-    try:
-        _write_notes_retirement_status_unlocked(status)
-    except Exception:
-        log.exception("Could not persist Notes retirement failure status")
-    log.error("Notes retirement migration failed: %s", error, exc_info=True)
-    return status
-
-
-def _finish_committed_notes_move(
-    notes_path: Path,
-    source_bytes: bytes,
-    core_bytes: bytes,
-    status: dict,
-) -> dict | None:
-    """Finish a move interrupted after the manifest and status were committed."""
-    if status.get("status") not in {
-        "migrated",
-        "migrated_over_budget",
-        "retired_no_entries",
-    }:
-        return None
-    source = status.get("source") or {}
-    target = status.get("target_after") or {}
-    if (
-        source.get("bytes") != len(source_bytes)
-        or source.get("sha256") != _sha256_bytes(source_bytes)
-        or target.get("bytes") != len(core_bytes)
-        or target.get("sha256") != _sha256_bytes(core_bytes)
-    ):
-        return None
-
-    backup_rel = Path(str(status.get("backup") or ""))
-    retired_name = str(status.get("retired_source") or "")
-    backup_name = str(source.get("backup_path") or "")
-    if (
-        not backup_rel.parts
-        or backup_rel.is_absolute()
-        or ".." in backup_rel.parts
-        or not retired_name
-        or Path(retired_name).name != retired_name
-        or not backup_name
-        or Path(backup_name).name != backup_name
-    ):
-        return None
-    backup_dir = DATA_DIR / backup_rel
-    backup_source = backup_dir / backup_name
-    if (
-        not backup_source.is_file()
-        or backup_source.read_bytes() != source_bytes
-    ):
-        return None
-    _atomic_write(
-        backup_dir / "manifest.json",
-        json.dumps(status, ensure_ascii=False, indent=2),
-    )
-    os.replace(notes_path, backup_dir / retired_name)
-    log.info("Completed interrupted Notes source retirement from committed manifest")
-    return status
-
-
-def _retire_notes_unlocked() -> dict:
-    _initialize_core_unlocked()
-    notes_path = DATA_DIR / "notes.md"
-    previous_status = _read_notes_retirement_status_unlocked()
-    if not notes_path.is_file():
-        if previous_status.get("status") in {
-            "migrated",
-            "migrated_over_budget",
-            "retired_no_entries",
-        }:
-            return previous_status
-        status = {
-            "status": "not_needed",
-            "source": "notes.md",
-            "over_budget": False,
-        }
-        _write_notes_retirement_status_unlocked(status)
-        return status
-
-    core_path = _core_path()
-    source_bytes = notes_path.read_bytes()
-    core_before_bytes = core_path.read_bytes()
-    recovered = _finish_committed_notes_move(
-        notes_path,
-        source_bytes,
-        core_before_bytes,
-        previous_status,
-    )
-    if recovered:
-        return recovered
-    source_sha = _sha256_bytes(source_bytes)
-    core_before_sha = _sha256_bytes(core_before_bytes)
-    run_id = f"{source_sha[:12]}--{core_before_sha[:12]}"
-    backup_dir = DATA_DIR / NOTES_RETIREMENT_BACKUP_DIRNAME / run_id
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    notes_backup_path = backup_dir / "notes.md"
-    core_backup_path = backup_dir / "core.before.md"
-    retired_path = backup_dir / "notes.retired.md"
-    manifest_path = backup_dir / "manifest.json"
-
-    _atomic_write_bytes(notes_backup_path, source_bytes)
-    _atomic_write_bytes(core_backup_path, core_before_bytes)
-    manifest = {
-        "status": "pending",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "source": {
-            "path": "notes.md",
-            "backup_path": "notes.md",
-            "bytes": len(source_bytes),
-            "sha256": source_sha,
-        },
-        "target_before": {
-            "path": CORE_FILENAME,
-            "backup_path": "core.before.md",
-            "bytes": len(core_before_bytes),
-            "sha256": core_before_sha,
-        },
-        "over_budget": False,
-    }
-    _atomic_write(
-        manifest_path,
-        json.dumps(manifest, ensure_ascii=False, indent=2),
-    )
-
-    try:
-        source_text = source_bytes.decode("utf-8")
-        core_before = core_before_bytes.decode("utf-8")
-        entries = _extract_note_entries(source_text)
-        updated, migrated_entries = _merge_notes_into_core(core_before, entries)
-        target_bytes = _serialize(updated) if migrated_entries else core_before_bytes
-        stats = _stats(updated)
-        over_budget = stats["tokens"] > stats["max_tokens"]
-        snapshot = None
-        core_changed = target_bytes != core_before_bytes
-        notes_moved = False
-        if core_changed:
-            snapshot = _snapshot_unlocked(core_before, "notes-retirement")
-            _atomic_write(core_path, updated)
-        status_name = (
-            "migrated_over_budget"
-            if migrated_entries and over_budget
-            else "migrated" if migrated_entries
-            else "retired_no_entries"
-        )
-        manifest.update({
-            "status": status_name,
-            "completed_at": datetime.now(timezone.utc).isoformat(),
-            "backup": str(backup_dir.relative_to(DATA_DIR)),
-            "retired_source": "notes.retired.md",
-            "entries_found": len(entries),
-            "entries_migrated": len(migrated_entries),
-            "entries_skipped": len(entries) - len(migrated_entries),
-            "target_after": {
-                "path": CORE_FILENAME,
-                "bytes": len(target_bytes),
-                "sha256": _sha256_bytes(target_bytes),
-            },
-            "snapshot": snapshot,
-            "stats": stats,
-            "over_budget": over_budget,
-        })
-        _write_notes_retirement_status_unlocked(manifest)
-        _atomic_write(
-            manifest_path,
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-        )
-        os.replace(notes_path, retired_path)
-        notes_moved = True
-        return manifest
-    except Exception as exc:
-        rollback_errors: list[str] = []
-        if "notes_moved" in locals() and notes_moved and retired_path.exists():
-            try:
-                os.replace(retired_path, notes_path)
-            except Exception as rollback_exc:
-                rollback_errors.append(f"notes rollback failed: {rollback_exc}")
-        try:
-            if core_path.read_bytes() != core_before_bytes:
-                _atomic_write_bytes(core_path, core_before_bytes)
-        except Exception as rollback_exc:
-            rollback_errors.append(f"Core rollback failed: {rollback_exc}")
-        manifest.update({
-            "status": "failed",
-            "error": str(exc),
-            "rollback_errors": rollback_errors,
-        })
-        try:
-            _atomic_write(
-                manifest_path,
-                json.dumps(manifest, ensure_ascii=False, indent=2),
-            )
-        except Exception:
-            log.exception("Could not update Notes retirement backup manifest")
-        if rollback_errors:
-            raise CoreError(
-                "Notes retirement failed and rollback could not be guaranteed: "
-                + "; ".join(rollback_errors)
-            ) from exc
-        return _notes_retirement_failure(exc)
-
-
-def retire_notes_into_core() -> dict:
-    """Retire legacy Notes into Core without truncation or LLM rewriting."""
-    try:
-        with _transaction():
-            return _retire_notes_unlocked()
-    except CoreLockTimeout as exc:
-        log.error("Notes retirement could not acquire the Core lock: %s", exc)
-        return {
-            "status": "failed",
-            "error": str(exc),
-            "over_budget": False,
-        }
-    except CoreError:
-        raise
-    except Exception as exc:
-        return _notes_retirement_failure(exc)
-
-
-def get_notes_retirement_status() -> dict:
-    with _transaction():
-        return _read_notes_retirement_status_unlocked()

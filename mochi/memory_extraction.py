@@ -13,11 +13,9 @@ from mochi.core_store import read_core
 from mochi.db import (
     _normalize_text,
     commit_memory_extraction_batch,
-    finish_memory_projections,
     get_memory_extraction_batch,
     get_memory_extraction_references,
     get_memory_extraction_status,
-    get_pending_memory_projections,
     list_memory_extraction_users,
     log_usage,
     record_memory_extraction_error,
@@ -26,7 +24,6 @@ from mochi.db import (
 from mochi.llm import get_client_for_tier
 from mochi.memory_contract import (
     normalize_evidence_message_ids,
-    validate_memory_category,
     validate_memory_content,
     validate_memory_importance,
 )
@@ -101,9 +98,7 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
     batch_user_ids = {
         message["id"] for message in batch if message["role"] == "user"
     }
-    required = {
-        "category", "content", "importance", "evidence_message_ids",
-    }
+    required = {"content", "importance", "evidence_message_ids"}
     validated: list[dict] = []
     for index, candidate in enumerate(parsed):
         if not isinstance(candidate, dict) or set(candidate) != required:
@@ -112,7 +107,6 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 f"{', '.join(sorted(required))}"
             )
         try:
-            category = validate_memory_category(candidate["category"])
             content = validate_memory_content(candidate["content"])
             importance = validate_memory_importance(candidate["importance"])
             evidence = normalize_evidence_message_ids(
@@ -131,7 +125,6 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 "user messages from this batch"
             )
         validated.append({
-            "category": category,
             "content": content,
             "importance": importance,
             "evidence_message_ids": list(evidence),
@@ -271,33 +264,10 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
     return inserted
 
 
-def _retry_pending_projection(user_id: int) -> bool:
-    """Retry derived KG work without changing authoritative item state."""
-    while True:
-        item_ids = get_pending_memory_projections(user_id)
-        if not item_ids:
-            return True
-        try:
-            from mochi.knowledge_graph import project_memory_items
-
-            project_memory_items(user_id, item_ids)
-        except Exception as exc:
-            error = f"{type(exc).__name__}: {exc}"
-            finish_memory_projections(user_id, item_ids, error=error)
-            log.warning(
-                "KG projection remains pending for Memory Items %s: %s",
-                item_ids,
-                exc,
-            )
-            return False
-        finish_memory_projections(user_id, item_ids)
-
-
 def drain_memory_extraction(user_id: int = 0) -> int:
     """Drain exact complete-turn batches, stopping safely on extraction failure."""
     uid = user_id or OWNER_USER_ID
     inserted_count = 0
-    projection_available = _retry_pending_projection(uid)
     while True:
         cursor, batch = get_memory_extraction_batch(
             uid, EXTRACTION_BATCH_SIZE,
@@ -317,10 +287,6 @@ def drain_memory_extraction(user_id: int = 0) -> int:
                 uid, f"{type(exc).__name__}: {exc}",
             )
             return inserted_count
-        if inserted and projection_available:
-            projection_available = _retry_pending_projection(uid)
-
-
 def schedule_memory_extraction(user_id: int = 0) -> bool:
     """Start one non-blocking worker per user when work is durable."""
     uid = user_id or OWNER_USER_ID
@@ -331,10 +297,7 @@ def schedule_memory_extraction(user_id: int = 0) -> bool:
     except Exception:
         log.exception("Could not inspect memory extraction state")
         return False
-    if (
-        status["pending_turns"] < EXTRACTION_BATCH_SIZE
-        and status["pending_projection_items"] == 0
-    ):
+    if status["pending_turns"] < EXTRACTION_BATCH_SIZE:
         return False
     try:
         loop = asyncio.get_running_loop()
@@ -372,6 +335,6 @@ def schedule_memory_extraction(user_id: int = 0) -> bool:
 
 
 def resume_memory_extractions() -> None:
-    """Recover extraction and projection work for every known user."""
+    """Recover pending extraction work for every known user."""
     for user_id in list_memory_extraction_users():
         schedule_memory_extraction(user_id)

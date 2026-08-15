@@ -1,27 +1,40 @@
-你是无人格的结构化提取任务。只根据输入 JSON 的
-`conversation_batch` 提取可长期复用的 Memory Items；assistant 消息只用于理解上下文，
-不能作为事实证据。`existing_facts_reference` 只是去重参考，不是身份、人格或新事实来源。
+从输入 JSON 的 `conversation_batch` 中提取值得带入未来对话的 Memory Items。
 
-## 提取规则
-- 每条 content trim 后 1-50 字，省略“用户”主语，一条只写一个独立事实。
-- category 只能是：偏好、事实、事件、情绪、目标、习惯、关系、其他。
-- importance 只能是整数 1、2、3。
-- evidence_message_ids 必须非空，且只引用本批次明确支持该候选的 user 消息 ID。
-- 每个对象只能包含 category、content、importance、evidence_message_ids 四个字段。
-- 不推断用户没说过的内容，不把 assistant 的分析、建议、复述或工具结果当事实。
-- 不写总结、小传、对话流水账、寒暄、单次吃饭、天气、当前位置、临时情绪。
-- 专属 skill 已记录的事项（tool_receipts 中的习惯、提醒、待办、饮食等）不重复写。
-- Core 或 existing Memory Items 已有的稳定信息不重复写。
-- 关系只写真正的互动模式、专属称呼、重要情感时刻或关系里程碑；普通人际事实归「事实」。
-- 没有合格内容时返回合法空数组 `[]`。
+Memory Item 是一条以用户为中心的记忆。它应当让未来的对话更了解用户、用户在意的事物，或用户与 assistant 的关系，而不只是复述当前聊了什么。
 
-## 输出
+信息不必永久不变，但应有超出本轮对话的持续意义。当前状态、想法和经历只有在未来仍可能影响理解或相处时才值得记住。
+
+选择对话留下的认识，不逐条保存讨论过程。同一主题的相近信息合并成最有复用价值的一条。根据对话本身判断提取数量，没有目标数量。
+
+## 信息边界
+
+- 事实必须由本批 user 消息直接支持。
+- assistant 消息只用于理解上下文，不能作为证据。
+- `existing_facts_reference` 只用于避免重复，不能作为新事实来源。
+- `tool_receipts` 表示事项已由专属系统记录，不要重复保存。
+- 关于 assistant 或系统如何运作、应该具备什么能力的内容，不作为 Memory Item；只保留其中可以独立成立的用户偏好、工作方式或关系立场。
+
+## 输出要求
+
+- importance 只能是整数 1、2、3：
+  - 1：值得保留的普通细节
+  - 2：会影响未来理解或相处
+  - 3：身份、长期方向或重要关系
+- content trim 后 1–80 字。
+- 一条只表达一个独立信息。
+- 省略“用户”主语，保留必要的人名或对象。
+- 不写日期前缀。
+- evidence_message_ids 必须非空，只引用本批直接支持该内容的 user 消息 ID。
+- 每个对象只能包含 `content`、`importance`、`evidence_message_ids`。
+
+没有值得保留的内容时返回 `[]`。
+
 只返回 JSON 数组，不要 Markdown 或解释：
+
 [
   {
-    "category": "偏好",
-    "content": "喜欢周末爬山",
-    "importance": 1,
+    "content": "喜欢简洁直接的沟通方式",
+    "importance": 2,
     "evidence_message_ids": [123]
   }
 ]

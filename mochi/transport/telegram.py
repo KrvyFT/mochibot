@@ -467,32 +467,13 @@ class TelegramTransport(Transport):
 
         if _on_message_callback:
             from mochi.heartbeat import (
-                bedtime_entry_enabled,
-                bedtime_entry_timeout,
-                check_sleep_entry,
                 claim_sleep_transition,
                 go_to_sleep,
-                record_unclaimed_sleep_message,
             )
             bedtime_claimed = False
-            if check_sleep_entry(text):
-                bedtime_claimed = claim_sleep_transition("explicit")
-                if not bedtime_claimed:
-                    record_unclaimed_sleep_message(user_id, text)
-                    return
-                if not bedtime_entry_enabled():
-                    record_unclaimed_sleep_message(user_id, text)
-                    go_to_sleep("explicit_disabled")
-                    return
-                from mochi.main_runtime import MainRuntimeEntry
-                msg.runtime_entry = MainRuntimeEntry.bedtime(
-                    trigger="explicit",
-                    user_id=user_id,
-                    channel_id=chat_id,
-                    transport="telegram",
-                )
 
             async def _process_main_turn() -> None:
+                nonlocal bedtime_claimed
                 result = None
                 try:
                     result = await _on_message_callback(msg)
@@ -511,6 +492,23 @@ class TelegramTransport(Transport):
                             pass
 
                 if result:
+                    if result.bedtime_requested:
+                        bedtime_claimed = claim_sleep_transition("explicit")
+                        if not bedtime_claimed:
+                            if TG_STATUS_REACTIONS_ENABLED:
+                                status.reaction_state = ""
+                                await _set_reaction(
+                                    context.bot, chat_id, user_msg_id, None,
+                                )
+                            if status.status_msg_id:
+                                try:
+                                    await context.bot.delete_message(
+                                        chat_id=chat_id,
+                                        message_id=status.status_msg_id,
+                                    )
+                                except Exception:
+                                    pass
+                            return
                     delivered = False
                     if status.status_msg_id and result.text:
                         # Edit status message into final reply, with bubble splitting
@@ -565,18 +563,7 @@ class TelegramTransport(Transport):
                         result.confirm_delivered()
 
             try:
-                if bedtime_claimed:
-                    await asyncio.wait_for(
-                        _process_main_turn(),
-                        timeout=bedtime_entry_timeout(),
-                    )
-                else:
-                    await _process_main_turn()
-            except asyncio.TimeoutError:
-                log.warning(
-                    "Telegram Bedtime entry timed out after %ss",
-                    bedtime_entry_timeout(),
-                )
+                await _process_main_turn()
             except Exception as exc:
                 if not bedtime_claimed:
                     raise

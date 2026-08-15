@@ -4,7 +4,7 @@
 
 **一个有记忆、会主动找你、能催你吃药的 AI 陪伴 bot。**
 
-轻量自托管 · SQLite · 支持 OpenAI / DeepSeek / Anthropic / Gemini
+轻量自托管 · SQLite · 支持 OpenAI / DeepSeek / Anthropic / Gemini / OpenAI-compatible
 
 **零门槛配置**——运行脚本后自动打开管理后台（Web UI），在浏览器里填 API key 和 bot token，点一下就能启动。
 
@@ -133,7 +133,7 @@ cd mochibot
 Anthropic 和 Gemini，具体的 Main 模型需要具备图片理解能力。图片仅用于
 当前一轮对话，不会保存到本地。微信通道目前只处理文字消息。
 
-> **支持四类 API 提供商：**
+> **内置四类 API 预设，并支持 OpenAI-compatible 接口：**
 >
 > | 提供商 | 适配器 | `MAIN_BASE_URL` | `MAIN_MODEL` 示例 |
 > |--------|-----------------|-----------------|-------------------|
@@ -141,6 +141,10 @@ Anthropic 和 Gemini，具体的 Main 模型需要具备图片理解能力。图
 > | DeepSeek | `openai` | `https://api.deepseek.com/v1` | `deepseek-chat` |
 > | Anthropic Claude | `anthropic` | *（不需要）* | `claude-sonnet-4-20250514` |
 > | Google Gemini | `openai` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.5-flash` |
+> | OpenAI-compatible | `openai` | 服务方提供的 HTTPS API 根地址 | 服务方提供的模型 ID |
+>
+> 兼容接口由服务方实现。MochiBot 只按 OpenAI Chat Completions 协议发送请求，
+> 不保证所有中转服务、模型能力或参数均可用；请使用管理后台的「测试」确认。
 
 ---
 
@@ -165,7 +169,8 @@ Anthropic 和 Gemini，具体的 Main 模型需要具备图片理解能力。图
 > | **WeChat** | ✅ | ✅ |
 > | **DeepSeek** | ✅ | ✅ |
 >
-> 如果你用 **Telegram + 国外 AI**，选境外服务器最省心。境内服务器只适合 **WeChat + 国内模型**（如 DeepSeek）的组合。
+> 如果你用 **Telegram + 国外 AI**，选境外服务器最省心。境内服务器可使用
+> **WeChat + 国内模型**，也可以自行配置可访问的 OpenAI-compatible 接口。
 
 ### Docker 部署（推荐）
 
@@ -343,13 +348,13 @@ MochiBot 有两个配置入口：**`.env` 文件**和**管理后台（Admin Port
 | `MAIN_PROVIDER` | `openai` | 适配器：`openai` 或 `anthropic` |
 | `MAIN_API_KEY` | — | Main 模型的 API key |
 | `MAIN_MODEL` | — | Main 模型（必填） |
-| `MAIN_BASE_URL` | — | DeepSeek / Gemini 的官方 OpenAI 兼容端点 |
+| `MAIN_BASE_URL` | — | DeepSeek、Gemini 或其他 OpenAI-compatible API 根地址 |
 | `TELEGRAM_BOT_TOKEN` | — | 从 @BotFather 获取（Telegram 平台） |
 | `WEIXIN_ENABLED` | `false` | 启用 WeChat 平台（与 Telegram 二选一） |
 | `HEARTBEAT_INTERVAL_MINUTES` | `20` | 心跳循环间隔 † |
 | `ATTENTION_INTERVAL_MINUTES` | `60` | Attention 定期检查间隔 † |
 | `FREE_TIME_MIN_MINUTES` / `FREE_TIME_MAX_MINUTES` | `90` / `240` | Free Time 随机间隔范围 † |
-| `AWAKE_HOUR_START` / `END` | `7` / `23` | 心跳在这些时间外休眠 † |
+| `WAKE_EARLIEST_HOUR` / `SLEEP_AFTER_HOUR` | `6` / `21` | 起床与夜间睡眠窗口 |
 | `MAX_DAILY_PROACTIVE` | `10` | 每日主动消息上限 † |
 | `TIMEZONE_OFFSET_HOURS` | `8` | 你的 UTC 偏移 † |
 
@@ -390,7 +395,7 @@ Lite 在管理后台显式分配；它可以和 Main 指向同一个注册模型
 
 ## 路线图
 
-- [x] 官方模型边界（OpenAI / DeepSeek / Anthropic / Gemini）
+- [x] 内置模型预设与 OpenAI-compatible 协议入口
 - [x] Main + Lite 模型角色与 Pre-Router
 - [x] 持久记忆（连续摘要与提取 + Nightly 归档 / Weekly Main 整理）
 - [x] 知识图谱（来源记忆项增量投影 + 对话注入）

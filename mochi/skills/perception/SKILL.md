@@ -2,7 +2,6 @@
 name: perception
 description: "感知最近环境状态 — 只读取 Observer 已有缓存的安全投影，不触发实时采集"
 type: tool
-expose_as_tool: true
 locked: true
 triggers: [tool_call]
 ---
