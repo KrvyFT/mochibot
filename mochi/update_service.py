@@ -71,18 +71,6 @@ def _git_output(*args: str, timeout: int = 60) -> str:
     return output.strip()
 
 
-def _normalized_remote(url: str) -> str:
-    normalized = url.strip().removesuffix("/").removesuffix(".git")
-    for prefix in (
-        "https://github.com/",
-        "ssh://git@github.com/",
-        "git@github.com:",
-    ):
-        if normalized.startswith(prefix):
-            return normalized.removeprefix(prefix).casefold()
-    return normalized.casefold()
-
-
 def _version_tuple(value: str) -> tuple[int, int, int] | None:
     match = _TAG_RE.fullmatch(
         value.strip() if value.startswith("v") else f"v{value.strip()}"
@@ -101,7 +89,7 @@ def validate_installation(
     require_clean: bool = True,
     require_launcher: bool = True,
 ) -> dict:
-    """Return update eligibility, enforcing the supported local-install boundary."""
+    """Return basic update capability for a local Git installation."""
     if _is_container():
         raise UpdateError("容器安装请由 Docker 更新镜像，Mochi 不会在容器内改写自己。")
     if require_launcher and os.getenv("MOCHIBOT_UPDATE_LAUNCHER") != "1":
@@ -111,29 +99,11 @@ def validate_installation(
     if _git_output("rev-parse", "--is-inside-work-tree").casefold() != "true":
         raise UpdateError("当前目录不是有效的 Git 工作区。")
 
-    remote = _git_output("remote", "get-url", "origin")
-    if _normalized_remote(remote) != OFFICIAL_REPOSITORY.casefold():
-        raise UpdateError("origin 不是 MochiBot 官方仓库，已拒绝自动更新。")
-
     branch = _git_output("branch", "--show-current")
-    if branch != "main":
-        raise UpdateError("自动更新只支持官方 main 分支安装。")
-
     dirty = _git_output("status", "--porcelain", "--untracked-files=normal")
-    if require_clean and dirty:
-        changed = ", ".join(
-            line[3:].strip()
-            for line in dirty.splitlines()[:5]
-            if len(line) > 3
-        )
-        detail = f"：{changed}" if changed else ""
-        raise UpdateError(
-            f"检测到本地代码改动{detail}。请先提交、暂存或移走这些文件。"
-        )
 
     return {
         "branch": branch,
-        "remote": remote,
         "commit": _git_output("rev-parse", "--short", "HEAD"),
         "dirty": bool(dirty),
     }
@@ -235,22 +205,17 @@ def apply_pending_update(python_executable: str = sys.executable) -> dict | None
         record_update_result(request, result)
         return result
 
-    pre_hash = ""
     try:
         validate_installation()
-        pre_hash = _git_output("rev-parse", "HEAD")
         _git_output(
             "fetch",
             "--force",
-            "origin",
+            OFFICIAL_REMOTE_URL,
             f"refs/tags/{tag}:refs/tags/{tag}",
             timeout=120,
         )
         target_hash = _git_output("rev-parse", f"refs/tags/{tag}^{{commit}}")
-        if _run_git("merge-base", "--is-ancestor", "HEAD", target_hash)[0] != 0:
-            raise UpdateError("当前代码无法快进到该 Release，未覆盖本地历史。")
-
-        _git_output("merge", "--ff-only", target_hash, timeout=120)
+        _git_output("reset", "--hard", target_hash, timeout=120)
         if read_version() != expected_version:
             raise UpdateError("Release 标签与代码版本不一致，已停止更新。")
 
@@ -266,19 +231,9 @@ def apply_pending_update(python_executable: str = sys.executable) -> dict | None
             "message": f"已经更新到 v{expected_version}，重新上线啦。",
         }
     except Exception as exc:
-        rollback_note = ""
-        if pre_hash:
-            rollback_code, rollback_output = _run_git("reset", "--hard", pre_hash)
-            if rollback_code == 0:
-                rollback_note = " 已回退到更新前版本。"
-                restore_error = _sync_requirements(python_executable)
-                if restore_error:
-                    rollback_note += f" 旧版依赖恢复失败：{restore_error}"
-            else:
-                rollback_note = f" 自动回退失败：{rollback_output[-300:]}"
         result = {
             "ok": False,
-            "message": f"更新失败：{exc}。{rollback_note}".strip(),
+            "message": f"更新失败：{exc}。",
         }
 
     record_update_result(request, result)
