@@ -65,6 +65,8 @@ def _admin_port_available(host: str, port: int) -> bool:
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     sock = socket.socket(family, socket.SOCK_STREAM)
     try:
+        if sys.platform != "win32":
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
         return True
     except OSError:
