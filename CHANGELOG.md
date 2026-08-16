@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## v1.0.4
+- Issue fixes
+- Mochi supports configuring more of its own settings
+
 ## v1.0.3
 - 修复 Heartbeat 重复谈论天气、`[SKIP]` 泄漏和主动消息上下文断裂
 - 让 Free Time 更明确地鼓励好奇、主动探索和自然发起对话
