@@ -1,6 +1,7 @@
 # Changelog
 
 ## Unreleased
+- 明确 Linux 服务器自助更新与 Docker 部署的选择边界
 
 ## v1.0.2
 - 修复主动消息时效与历史时间标签问题，新增 `/cost`，并精简初始 Core、管理后台和 README

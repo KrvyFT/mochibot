@@ -110,6 +110,8 @@ Telegram 和微信均支持以下命令：
 
 如果是官方 Git 仓库的本地安装，可以直接在聊天里让 Mochi 更新，例如「你更新一下」。Mochi 只会在收到这类请求时检查 GitHub，不会每天轮询，也不会把版本信息放进 `look_around`。更新只安装官方正式 Release；Docker、其他 remote、开发分支或存在本地代码改动时会明确拒绝。
 
+> 想让服务器上的 Mochi 也能按主人请求自助更新，请使用官方 Git 仓库安装，并让进程管理器启动 `scripts/start.py`。不要使用 Docker，也不要直接运行 `python -m mochi.main`。
+
 也可以先关闭 MochiBot，再手动更新：
 
 - **Windows**：双击 `update.bat`
@@ -125,6 +127,8 @@ bash setup.sh
 `.env` 和 `data/` 不会被代码更新覆盖，数据库变更会在启动时自动迁移。
 
 ## Docker
+
+Docker 适合由宿主机统一维护镜像的环境，**不支持 Mochi 在聊天中自助更新**。如果无人负责服务器更新，请使用上面的官方 Git 本地安装方式。
 
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git
