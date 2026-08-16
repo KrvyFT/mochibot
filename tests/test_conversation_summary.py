@@ -32,22 +32,7 @@ def summary_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_summary_advances_in_complete_batches(monkeypatch):
-    client = Client(["summary"])
-    monkeypatch.setattr(
-        summary_worker, "get_client_for_tier", lambda _tier: client,
-    )
-    _save_turns(2)
-
-    await summary_worker.schedule_conversation_summary(1)
-
-    status = get_conversation_summary_status(1, 2)
-    assert status["summary"] == "summary"
-    assert status["pending_turns"] == 0
-
-
-@pytest.mark.asyncio
-async def test_summary_failure_retries_same_batch(monkeypatch):
+async def test_summary_retries_same_batch_then_advances(monkeypatch):
     _save_turns(2)
     failed = Client([RuntimeError("offline")])
     monkeypatch.setattr(
@@ -64,3 +49,6 @@ async def test_summary_failure_retries_same_batch(monkeypatch):
     assert recovered.calls[0]["messages"][1]["content"] == (
         failed.calls[0]["messages"][1]["content"]
     )
+    status = get_conversation_summary_status(1, 2)
+    assert status["summary"] == "recovered"
+    assert status["pending_turns"] == 0

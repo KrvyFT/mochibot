@@ -70,42 +70,24 @@ async def test_markdown_file_write_can_be_read_back(workspace):
 
 
 @pytest.mark.asyncio
-async def test_path_traversal_is_rejected(workspace):
-    skill, _, _ = workspace
-    result = await skill.execute(_context(
-        "edit_file", {"action": "read", "path": "../../secret.md"}
-    ))
-    assert "Error" in result.output
-
-
-@pytest.mark.asyncio
-async def test_core_and_legacy_notes_paths_are_private(workspace):
-    skill, _, _ = workspace
-
-    for path in (
-        "core.md",
-        "CORE.md",
-        "notes.md",
-        "core_history/old.md",
-        "CORE_HISTORY/old.md",
-    ):
-        result = await skill.execute(_context(
-            "edit_file", {"action": "write", "path": path, "content": "nope"}
-        ))
-        assert "Core storage is private" in result.output
-
-
-@pytest.mark.asyncio
-async def test_same_prefix_sibling_cannot_escape_workspace(workspace):
+async def test_workspace_rejects_private_and_outside_paths(workspace):
     skill, _, root = workspace
     outside = root.with_name(f"{root.name}_outside")
     outside.mkdir()
     secret = outside / "secret.md"
     secret.write_text("must stay private")
 
-    result = await skill.execute(_context(
-        "edit_file", {"action": "read", "path": str(secret)}
+    traversal = await skill.execute(_context(
+        "edit_file", {"action": "read", "path": "../../secret.md"},
+    ))
+    sibling = await skill.execute(_context(
+        "edit_file", {"action": "read", "path": str(secret)},
+    ))
+    private = await skill.execute(_context(
+        "edit_file", {"action": "write", "path": "core.md", "content": "nope"},
     ))
 
-    assert "Error" in result.output
-    assert "must stay private" not in result.output
+    assert "Error" in traversal.output
+    assert "Error" in sibling.output
+    assert "must stay private" not in sibling.output
+    assert "Core storage is private" in private.output

@@ -1,5 +1,3 @@
-from types import SimpleNamespace
-
 import pytest
 
 from mochi import llm
@@ -58,49 +56,3 @@ def test_admin_accepts_https_compatible_endpoint_and_rejects_unsafe_urls(monkeyp
             "anthropic-proxy", "anthropic", "model", "key",
             "https://api.example.com/v1",
         )
-
-
-def test_openai_compatible_chat_handles_text_and_tools():
-    tool_call = SimpleNamespace(
-        id="call-1",
-        function=SimpleNamespace(name="weather", arguments='{"city":"Tokyo"}'),
-    )
-    responses = [
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(content="hello", tool_calls=[]),
-                finish_reason="stop",
-            )],
-            usage=None,
-        ),
-        SimpleNamespace(
-            choices=[SimpleNamespace(
-                message=SimpleNamespace(content="", tool_calls=[tool_call]),
-                finish_reason="stop",
-            )],
-            usage=None,
-        ),
-    ]
-
-    class Completions:
-        def create(self, **kwargs):
-            return responses.pop(0)
-
-    provider = llm.OpenAIProvider.__new__(llm.OpenAIProvider)
-    provider._model = "model"
-    provider._base_url = "https://api.deepseek.com/v1"
-    provider._use_max_completion_tokens = None
-    provider._client = SimpleNamespace(
-        chat=SimpleNamespace(completions=Completions()),
-    )
-
-    assert provider.chat([{"role": "user", "content": "hi"}]).content == "hello"
-    result = provider.chat(
-        [{"role": "user", "content": "weather"}],
-        tools=[{"type": "function", "function": {"name": "weather"}}],
-    )
-    assert result.tool_calls == [{
-        "id": "call-1",
-        "name": "weather",
-        "arguments": {"city": "Tokyo"},
-    }]

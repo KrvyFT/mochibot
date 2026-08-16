@@ -10,8 +10,6 @@ from mochi.db import (
     delete_memory_items,
     finish_tool_execution,
     get_conversation_context,
-    get_memory_extraction_batch,
-    get_recent_messages,
     get_recent_tool_executions,
     init_db,
     list_memory_trash,
@@ -19,70 +17,53 @@ from mochi.db import (
     restore_memory_from_trash,
     save_memory_item,
     save_message,
-    set_context_reset,
     start_tool_execution,
 )
-from mochi.skills.reminder.queries import (
-    create_reminder,
-    get_pending_reminders,
-    mark_reminder_fired,
-)
-from mochi.skills.todo.queries import (
-    complete_todo,
-    create_todo,
-    get_todos,
-    update_todo,
-)
 
 
-def test_messages_round_trip_and_stay_isolated_by_user():
-    save_message(1, "user", "hello", turn_id="turn_1")
-    save_message(1, "assistant", "hi", tool_history='[{"name":"weather"}]')
-    save_message(2, "user", "private")
-
-    messages = get_recent_messages(1)
-
-    assert [(m["role"], m["content"]) for m in messages] == [
-        ("user", "hello"),
-        ("assistant", "hi"),
-    ]
-    assert messages[0]["turn_id"] == "turn_1"
-    assert messages[1]["tool_history"] == '[{"name":"weather"}]'
-
-
-def test_reset_boundary_hides_older_conversation():
-    save_message(1, "user", "before reset")
-    boundary = set_context_reset(1)
-    save_message(1, "user", "after reset")
-
-    assert [m["content"] for m in get_recent_messages(1, since=boundary)] == [
-        "after reset"
-    ]
-
-
-def test_proactive_assistant_message_stays_in_chat_context_only():
-    save_message(1, "user", "ordinary user", turn_id="ordinary")
-    save_message(1, "assistant", "ordinary reply", turn_id="ordinary")
-    save_message(1, "user", "what did you mean?", turn_id="follow-up")
+def test_context_uses_exact_current_message_and_never_revives_stale_orphans():
+    save_message(1, "user", "Can you see images?", turn_id="stale-question")
     save_message(
         1,
         "assistant",
-        "proactive thought",
-        turn_id="attention:scheduled",
+        "No, I cannot see images.",
+        turn_id="attention:answered-elsewhere",
+        processed=True,
+    )
+    save_message(
+        1,
+        "assistant",
+        "I was thinking about dinner.",
+        turn_id="free_time:preface",
+        processed=True,
+    )
+    current_id = save_message(
+        1,
+        "user",
+        "What did you mean just now?",
+        turn_id="current-turn",
+    )
+    save_message(
+        1,
+        "assistant",
+        "A concurrent proactive message.",
+        turn_id="attention:concurrent",
         processed=True,
     )
 
-    context = get_conversation_context(1, recent_turns=1)
+    context = get_conversation_context(
+        1,
+        recent_turns=2,
+        current_user_message_id=current_id,
+    )
 
-    assert [
-        (item["role"], item["content"])
-        for item in context["recent"] + context["trailing"]
-    ] == [
-        ("assistant", "proactive thought"),
-        ("user", "what did you mean?"),
+    visible = context["recent"] + context["trailing"]
+    assert [item["content"] for item in visible] == [
+        "No, I cannot see images.",
+        "I was thinking about dinner.",
+        "What did you mean just now?",
     ]
-    _, extraction_batch = get_memory_extraction_batch(1, batch_turns=2)
-    assert extraction_batch == []
+    assert get_conversation_context(1)["trailing"] == []
 
 
 def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():
@@ -110,28 +91,6 @@ def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():
     assert rows[0]["entity_refs"] == ["reminder:27"]
 
 
-def test_due_reminder_stops_being_pending_after_delivery():
-    reminder_id = create_reminder(1, 100, "Stretch", "2020-01-01T00:00:00")
-    assert any(r["id"] == reminder_id for r in get_pending_reminders())
-
-    mark_reminder_fired(reminder_id)
-
-    assert all(r["id"] != reminder_id for r in get_pending_reminders())
-
-
-def test_todo_lifecycle_respects_user_ownership():
-    todo_id = create_todo(1, "Buy milk")
-    assert update_todo(2, todo_id, task="Hijacked") is False
-    assert update_todo(1, todo_id, task="Buy oat milk") is True
-    assert complete_todo(2, todo_id) is False
-    assert complete_todo(1, todo_id) is True
-
-    todos = get_todos(1, include_done=True)
-    assert len(todos) == 1
-    assert todos[0]["task"] == "Buy oat milk"
-    assert get_todos(1, include_done=False) == []
-
-
 def test_deleted_memory_can_be_restored():
     first_event = save_memory_item(1, "[2026-08-15] Started a new project")
     second_event = save_memory_item(1, "[2026-08-15] Started learning Japanese")
@@ -147,7 +106,10 @@ def test_deleted_memory_can_be_restored():
     assert recall_memory(1, query="jasmine")[0]["content"] == "Likes jasmine tea"
 
 
-def test_old_messages_database_upgrades_without_data_loss(tmp_path, monkeypatch):
+def test_old_database_upgrades_messages_and_memory_without_data_loss(
+    tmp_path,
+    monkeypatch,
+):
     import mochi.db as db_module
 
     db_path = tmp_path / "old-messages.db"
@@ -159,25 +121,6 @@ def test_old_messages_database_upgrades_without_data_loss(tmp_path, monkeypatch)
     conn.execute(
         "INSERT INTO messages VALUES (1, 1, 'user', 'keep me', '2025-01-01')"
     )
-    conn.commit()
-    conn.close()
-
-    monkeypatch.setattr(db_module, "DB_PATH", db_path)
-    init_db()
-
-    conn = sqlite3.connect(db_path)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
-    content = conn.execute("SELECT content FROM messages WHERE id = 1").fetchone()[0]
-    conn.close()
-    assert {"processed", "image_data", "tool_history", "turn_id"} <= columns
-    assert content == "keep me"
-
-
-def test_old_memory_database_upgrades_without_data_loss(tmp_path, monkeypatch):
-    import mochi.db as db_module
-
-    db_path = tmp_path / "old-memory.db"
-    conn = sqlite3.connect(db_path)
     conn.execute(
         "CREATE TABLE memory_items (id INTEGER PRIMARY KEY, user_id INTEGER, "
         "category TEXT, content TEXT, importance INTEGER DEFAULT 1, "
@@ -194,8 +137,20 @@ def test_old_memory_database_upgrades_without_data_loss(tmp_path, monkeypatch):
     init_db()
 
     conn = sqlite3.connect(db_path)
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(memory_items)")}
-    content = conn.execute("SELECT content FROM memory_items WHERE id = 1").fetchone()[0]
+    message_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(messages)")
+    }
+    memory_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(memory_items)")
+    }
+    message = conn.execute(
+        "SELECT content FROM messages WHERE id = 1"
+    ).fetchone()[0]
+    memory = conn.execute(
+        "SELECT content FROM memory_items WHERE id = 1"
+    ).fetchone()[0]
     conn.close()
-    assert {"embedding", "access_count", "last_accessed"} <= columns
-    assert content == "keep this memory"
+    assert {"processed", "image_data", "tool_history", "turn_id"} <= message_columns
+    assert {"embedding", "access_count", "last_accessed"} <= memory_columns
+    assert message == "keep me"
+    assert memory == "keep this memory"

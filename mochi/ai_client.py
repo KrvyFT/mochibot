@@ -693,8 +693,14 @@ async def chat(
 
     # Keep image bytes ephemeral. History only records a readable placeholder.
     stored_text = f"[图片] {text}" if image else text
+    current_user_message_id = None
     if message is not None:
-        save_message(user_id, "user", stored_text, turn_id=turn_id)
+        current_user_message_id = save_message(
+            user_id,
+            "user",
+            stored_text,
+            turn_id=turn_id,
+        )
 
     # ── Parallel pre-fetch: router classification + DB queries ──
     capability_context = ""
@@ -731,6 +737,7 @@ async def chat(
                 user_id,
                 recent_turns,
                 include_summary=prompt_policy.conversation_summary,
+                current_user_message_id=current_user_message_id,
             )
         except Exception as e:
             log.warning("Conversation context skipped: %s", e)

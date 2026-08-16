@@ -38,44 +38,29 @@ def extraction_state(monkeypatch):
     monkeypatch.setattr(extraction, "get_pool", lambda: type(
         "Pool", (), {"embed_batch": lambda self, texts: [None] * len(texts)},
     )())
-def test_complete_turn_batches_create_evidence_backed_memory(monkeypatch):
+
+
+def test_extraction_retries_same_batch_then_creates_evidence_memory(monkeypatch):
     turns = _save_turns(2)
-    candidate = json.dumps([{
-        "content": "\u559c\u6b22\u5468\u672b\u722c\u5c71",
-        "importance": 2,
-        "evidence_message_ids": [turns[0][0]],
-    }], ensure_ascii=False)
-    client = Client([candidate])
-    monkeypatch.setattr(extraction, "get_client_for_tier", lambda _tier: client)
-
-    assert extraction.drain_memory_extraction(1) == 1
-    row = _connect().execute(
-        "SELECT category, content, evidence_message_ids FROM memory_items"
-    ).fetchone()
-    assert row["category"] == ""
-    assert row["content"] == "\u559c\u6b22\u5468\u672b\u722c\u5c71"
-    assert json.loads(row["evidence_message_ids"]) == [turns[0][0]]
-    status = get_memory_extraction_status(1, 2)
-    assert status["pending_turns"] == 0
-    assert "pending_projection_items" not in status
-    conn = _connect()
-    assert conn.execute(
-        "SELECT 1 FROM sqlite_master "
-        "WHERE type = 'table' AND name = 'memory_projection_queue'"
-    ).fetchone() is None
-    conn.close()
-
-
-def test_failure_retries_same_batch(monkeypatch):
-    _save_turns(2)
     failed = Client([RuntimeError("offline")])
     monkeypatch.setattr(extraction, "get_client_for_tier", lambda _tier: failed)
     assert extraction.drain_memory_extraction(1) == 0
     assert get_memory_extraction_status(1, 2)["pending_turns"] == 2
 
-    recovered = Client(["[]"])
+    candidate = json.dumps([{
+        "content": "\u559c\u6b22\u5468\u672b\u722c\u5c71",
+        "importance": 2,
+        "evidence_message_ids": [turns[0][0]],
+    }], ensure_ascii=False)
+    recovered = Client([candidate])
     monkeypatch.setattr(extraction, "get_client_for_tier", lambda _tier: recovered)
-    assert extraction.drain_memory_extraction(1) == 0
+    assert extraction.drain_memory_extraction(1) == 1
     assert recovered.calls[0]["messages"][1]["content"] == (
         failed.calls[0]["messages"][1]["content"]
     )
+    row = _connect().execute(
+        "SELECT content, evidence_message_ids FROM memory_items"
+    ).fetchone()
+    assert row["content"] == "\u559c\u6b22\u5468\u672b\u722c\u5c71"
+    assert json.loads(row["evidence_message_ids"]) == [turns[0][0]]
+    assert get_memory_extraction_status(1, 2)["pending_turns"] == 0

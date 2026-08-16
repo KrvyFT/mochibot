@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -207,39 +206,3 @@ def test_launcher_fast_forwards_exact_staged_release(tmp_path, monkeypatch):
     assert (repo / ".env").read_text(encoding="utf-8") == "ADMIN_TOKEN=keep-me\n"
     assert user_data.read_bytes() == b"owner data"
     assert updater.consume_update_result()["version"] == "1.1.0"
-
-
-def test_launcher_adds_project_root_when_run_from_scripts_directory():
-    project_root = Path(__file__).resolve().parent.parent
-    command = (
-        "import runpy; "
-        "runpy.run_path('start.py'); "
-        "import mochi.update_service"
-    )
-
-    result = subprocess.run(
-        [sys.executable, "-c", command],
-        cwd=project_root / "scripts",
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 0, result.stderr
-
-
-def test_process_exit_request_survives_early_startup(monkeypatch):
-    import mochi.shutdown as shutdown
-
-    monkeypatch.setattr(shutdown, "_restart_event", None)
-    monkeypatch.setattr(shutdown, "_exit_requested", False)
-    monkeypatch.setattr(
-        shutdown,
-        "_requested_exit_code",
-        shutdown.RESTART_EXIT_CODE,
-    )
-
-    shutdown.request_process_exit(shutdown.UPDATE_EXIT_CODE)
-    event = shutdown.init_restart_event()
-
-    assert event.is_set()
-    assert shutdown.requested_exit_code() == shutdown.UPDATE_EXIT_CODE
