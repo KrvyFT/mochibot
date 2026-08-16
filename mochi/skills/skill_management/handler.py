@@ -7,6 +7,39 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
 
+_AGENT_CONFIG_FIELDS = {
+    "heartbeat_interval_minutes": (
+        "HEARTBEAT_INTERVAL_MINUTES",
+        5,
+        240,
+        "框架检查生活变化与调度任务的间隔；越短反应越及时，但不代表每次都会发消息。",
+    ),
+    "max_daily_proactive": (
+        "MAX_DAILY_PROACTIVE",
+        0,
+        50,
+        "每天最多发送多少次主动消息。",
+    ),
+    "attention_interval_minutes": (
+        "ATTENTION_INTERVAL_MINUTES",
+        15,
+        1440,
+        "即使没有新变化，也重新考虑未解决观察事实的间隔。",
+    ),
+    "free_time_min_minutes": (
+        "FREE_TIME_MIN_MINUTES",
+        30,
+        1440,
+        "两次 Free Time 之间随机等待的最短时间。",
+    ),
+    "free_time_max_minutes": (
+        "FREE_TIME_MAX_MINUTES",
+        30,
+        2880,
+        "两次 Free Time 之间随机等待的最长时间。",
+    ),
+}
+
 
 class SkillManagementSkill(Skill):
 
@@ -25,6 +58,20 @@ class SkillManagementSkill(Skill):
                 args.get("skill_name", ""),
                 args.get("key", ""),
                 args.get("value", ""),
+            )
+        elif tool == "manage_agent_settings":
+            action = args.get("action", "")
+            if action == "view":
+                return self._get_agent_config()
+            if action == "set":
+                return self._set_agent_config(
+                    context,
+                    args.get("key", ""),
+                    args.get("value"),
+                )
+            return SkillResult(
+                output="action 必须是 view 或 set。",
+                success=False,
             )
 
         return SkillResult(output=f"Unknown tool: {tool}", success=False)
@@ -180,4 +227,87 @@ class SkillManagementSkill(Skill):
         refresh_capability_summary()
         return SkillResult(
             output=f"已设置 '{skill_name}.{key}' = {new_val}（已保存到数据库，立即生效）",
+        )
+
+    def _get_agent_config(self) -> SkillResult:
+        from mochi.admin.admin_db import get_system_config
+
+        lines = ["你当前可调整的运行设置："]
+        for key, (system_key, minimum, maximum, description) in (
+            _AGENT_CONFIG_FIELDS.items()
+        ):
+            lines.append(
+                f"• {key} = {get_system_config(system_key)} "
+                f"(范围 {minimum}–{maximum})\n  {description}"
+            )
+        return SkillResult(output="\n\n".join(lines))
+
+    def _set_agent_config(
+        self,
+        context: SkillContext,
+        key: str,
+        value,
+    ) -> SkillResult:
+        from mochi.admin.admin_db import get_system_config, set_system_override
+
+        if context.source != "chat":
+            return SkillResult(
+                output="只有用户当前对话可以授权调整运行设置。",
+                success=False,
+            )
+        field = _AGENT_CONFIG_FIELDS.get(key)
+        if field is None:
+            return SkillResult(
+                output=(
+                    f"未知运行设置 '{key}'。先使用 get_agent_config "
+                    "查看当前可调整项。"
+                ),
+                success=False,
+            )
+        if isinstance(value, bool):
+            return SkillResult(output="设置值必须是整数。", success=False)
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            return SkillResult(output="设置值必须是整数。", success=False)
+        if isinstance(value, float) and not value.is_integer():
+            return SkillResult(output="设置值必须是整数。", success=False)
+
+        system_key, minimum, maximum, _ = field
+        if not minimum <= normalized <= maximum:
+            return SkillResult(
+                output=f"{key} 必须在 {minimum}–{maximum} 之间。",
+                success=False,
+            )
+
+        if key == "free_time_min_minutes":
+            current_max = int(get_system_config("FREE_TIME_MAX_MINUTES"))
+            if normalized > current_max:
+                return SkillResult(
+                    output=(
+                        "free_time_min_minutes 不能大于当前 "
+                        f"free_time_max_minutes ({current_max})。"
+                    ),
+                    success=False,
+                )
+        elif key == "free_time_max_minutes":
+            current_min = int(get_system_config("FREE_TIME_MIN_MINUTES"))
+            if normalized < current_min:
+                return SkillResult(
+                    output=(
+                        "free_time_max_minutes 不能小于当前 "
+                        f"free_time_min_minutes ({current_min})。"
+                    ),
+                    success=False,
+                )
+
+        old_value = get_system_config(system_key)
+        set_system_override(system_key, str(normalized))
+        new_value = get_system_config(system_key)
+        return SkillResult(
+            output=(
+                f"已将 {key} 从 {old_value} 调整为 {new_value}。"
+                "新值会被后续 Heartbeat 循环读取；已经排定的下一次时刻"
+                "不会追溯重算。"
+            ),
         )
