@@ -10,33 +10,59 @@ log = logging.getLogger(__name__)
 _AGENT_CONFIG_FIELDS = {
     "heartbeat_interval_minutes": (
         "HEARTBEAT_INTERVAL_MINUTES",
+        "int",
         5,
         240,
         "框架检查生活变化与调度任务的间隔；越短反应越及时，但不代表每次都会发消息。",
     ),
     "max_daily_proactive": (
         "MAX_DAILY_PROACTIVE",
+        "int",
         0,
         50,
         "每天最多发送多少次主动消息。",
     ),
     "attention_interval_minutes": (
         "ATTENTION_INTERVAL_MINUTES",
+        "int",
         15,
         1440,
         "即使没有新变化，也重新考虑未解决观察事实的间隔。",
     ),
     "free_time_min_minutes": (
         "FREE_TIME_MIN_MINUTES",
+        "int",
         30,
         1440,
         "两次 Free Time 之间随机等待的最短时间。",
     ),
     "free_time_max_minutes": (
         "FREE_TIME_MAX_MINUTES",
+        "int",
         30,
         2880,
         "两次 Free Time 之间随机等待的最长时间。",
+    ),
+    "wake_earliest_hour": (
+        "WAKE_EARLIEST_HOUR",
+        "int",
+        0,
+        23,
+        "每天最早进入清醒时段的本地小时。",
+    ),
+    "sleep_after_hour": (
+        "SLEEP_AFTER_HOUR",
+        "int",
+        1,
+        24,
+        "每天从哪个本地小时起进入休息时段；24 表示午夜。",
+    ),
+    "timezone_offset_hours": (
+        "TIMEZONE_OFFSET_HOURS",
+        "float",
+        -12,
+        14,
+        "当前所在地相对 UTC 的小时偏移，可使用 5.5 这类半小时时区。",
     ),
 }
 
@@ -233,7 +259,7 @@ class SkillManagementSkill(Skill):
         from mochi.admin.admin_db import get_system_config
 
         lines = ["你当前可调整的运行设置："]
-        for key, (system_key, minimum, maximum, description) in (
+        for key, (system_key, _type, minimum, maximum, description) in (
             _AGENT_CONFIG_FIELDS.items()
         ):
             lines.append(
@@ -265,15 +291,19 @@ class SkillManagementSkill(Skill):
                 success=False,
             )
         if isinstance(value, bool):
-            return SkillResult(output="设置值必须是整数。", success=False)
+            return SkillResult(output="设置值必须是数字。", success=False)
         try:
-            normalized = int(value)
+            numeric = float(value)
         except (TypeError, ValueError):
-            return SkillResult(output="设置值必须是整数。", success=False)
-        if isinstance(value, float) and not value.is_integer():
-            return SkillResult(output="设置值必须是整数。", success=False)
+            return SkillResult(output="设置值必须是数字。", success=False)
 
-        system_key, minimum, maximum, _ = field
+        system_key, type_name, minimum, maximum, _ = field
+        if type_name == "int":
+            if not numeric.is_integer():
+                return SkillResult(output=f"{key} 必须是整数。", success=False)
+            normalized: int | float = int(numeric)
+        else:
+            normalized = numeric
         if not minimum <= normalized <= maximum:
             return SkillResult(
                 output=f"{key} 必须在 {minimum}–{maximum} 之间。",
@@ -297,6 +327,26 @@ class SkillManagementSkill(Skill):
                     output=(
                         "free_time_max_minutes 不能小于当前 "
                         f"free_time_min_minutes ({current_min})。"
+                    ),
+                    success=False,
+                )
+        elif key == "wake_earliest_hour":
+            current_sleep = int(get_system_config("SLEEP_AFTER_HOUR"))
+            if normalized >= current_sleep:
+                return SkillResult(
+                    output=(
+                        "wake_earliest_hour 必须早于当前 "
+                        f"sleep_after_hour ({current_sleep})。"
+                    ),
+                    success=False,
+                )
+        elif key == "sleep_after_hour":
+            current_wake = int(get_system_config("WAKE_EARLIEST_HOUR"))
+            if normalized <= current_wake:
+                return SkillResult(
+                    output=(
+                        "sleep_after_hour 必须晚于当前 "
+                        f"wake_earliest_hour ({current_wake})。"
                     ),
                     success=False,
                 )

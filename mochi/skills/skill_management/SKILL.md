@@ -53,4 +53,4 @@ locked: true
 |-----------|------|----------|-------------|
 | action | string (enum: view, set) | yes | 查看或修改 |
 | key | string | no | `view` 返回的设置名；set 时必填 |
-| value | integer | no | 新值；set 时必填 |
+| value | number | no | 新值；set 时必填 |

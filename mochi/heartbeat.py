@@ -10,9 +10,7 @@ from pathlib import Path
 
 from mochi.config import (
     SILENCE_THRESHOLD_HOURS,
-    SLEEP_AFTER_HOUR,
     TZ,
-    WAKE_EARLIEST_HOUR,
     logical_today,
 )
 from mochi.db import (
@@ -57,6 +55,22 @@ def _effective(key: str):
     return get_system_config(key)
 
 
+def _wake_earliest_hour() -> int:
+    return int(_effective("WAKE_EARLIEST_HOUR"))
+
+
+def _sleep_after_hour() -> int:
+    return int(_effective("SLEEP_AFTER_HOUR"))
+
+
+def _is_awake_hour(hour: int) -> bool:
+    return _wake_earliest_hour() <= hour < _sleep_after_hour()
+
+
+def _is_rest_hour(hour: int) -> bool:
+    return not _is_awake_hour(hour)
+
+
 def _persist_state(state: str, changed_at: datetime | None = None) -> None:
     try:
         _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -87,7 +101,7 @@ def _init_state() -> str:
         log.debug("Failed to read persisted heartbeat state: %s", exc)
     return (
         AWAKE
-        if WAKE_EARLIEST_HOUR <= now.hour < SLEEP_AFTER_HOUR
+        if _is_awake_hour(now.hour)
         else SLEEPING
     )
 
@@ -156,18 +170,14 @@ def claim_sleep_transition(trigger: str) -> bool:
 def should_wake_on_message() -> bool:
     return (
         _state == SLEEPING
-        and datetime.now(TZ).hour >= WAKE_EARLIEST_HOUR
+        and datetime.now(TZ).hour >= _wake_earliest_hour()
     )
 
 
 def bedtime_tool_available() -> bool:
     if _state != AWAKE or not bedtime_entry_enabled():
         return False
-    hour = datetime.now(TZ).hour
-    return (
-        hour >= SLEEP_AFTER_HOUR
-        or hour < WAKE_EARLIEST_HOUR
-    )
+    return _is_rest_hour(datetime.now(TZ).hour)
 
 
 def bedtime_entry_enabled() -> bool:
@@ -208,7 +218,7 @@ def check_silence_sleep() -> dict | None:
     if _state != AWAKE:
         return None
     now = datetime.now(TZ)
-    if not (now.hour >= SLEEP_AFTER_HOUR or now.hour < WAKE_EARLIEST_HOUR):
+    if not _is_rest_hour(now.hour):
         return None
     from mochi.config import OWNER_USER_ID as user_id
 
@@ -618,7 +628,7 @@ async def heartbeat_loop() -> None:
                 continue
             if _state == SLEEPING:
                 fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
-                if fallback_hour <= now.hour < SLEEP_AFTER_HOUR:
+                if fallback_hour <= now.hour < _sleep_after_hour():
                     wake_up(f"fallback_{fallback_hour}:00")
                 else:
                     log_heartbeat(_state, "sleeping")
