@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 import httpx
 
-from mochi.observers.base import ObservedFact, Observer
+from mochi.observers.base import Observer
 
 log = logging.getLogger(__name__)
 
@@ -20,6 +20,7 @@ _WTTR_URL = "https://wttr.in"
 class WeatherObserver(Observer):
     """Fetches current weather from wttr.in every 60 minutes."""
 
+    retired_attention_keys = ("current_conditions",)
     _VIEW_FIELDS = (
         "temperature_c",
         "feels_like_c",
@@ -38,26 +39,6 @@ class WeatherObserver(Observer):
     def has_delta(self, prev: dict, curr: dict) -> bool:
         """Weather changes alone don't justify a Think call."""
         return False
-
-    def attention_facts(self, data: dict) -> list[ObservedFact]:
-        if not data.get("summary"):
-            return []
-        return [
-            ObservedFact(
-                stable_key="current_conditions",
-                facts={
-                    key: data[key]
-                    for key in (
-                        "summary",
-                        "temperature_c",
-                        "feels_like_c",
-                        "description",
-                    )
-                    if key in data
-                },
-                freshness_seconds=2 * 3600,
-            )
-        ]
 
     async def observe(self) -> dict:
         # DB config (admin portal) takes priority over .env

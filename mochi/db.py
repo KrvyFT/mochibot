@@ -1351,8 +1351,26 @@ def get_conversation_context(
             conn, user_id, reset_at=reset_at,
         )
         turns = _pair_conversation_turns(messages)
-        recent = turns[-max(1, int(recent_turns)):]
-        recent_ids = {turn["through_message_id"] for turn in recent}
+        timeline = [
+            (
+                turn["through_message_id"],
+                [turn["user"], turn["assistant"]],
+                turn["through_message_id"],
+            )
+            for turn in turns
+        ]
+        timeline.extend(
+            (message["id"], [message], None)
+            for message in messages
+            if message["role"] == "assistant" and bool(message["processed"])
+        )
+        timeline.sort(key=lambda item: item[0])
+        recent_timeline = timeline[-max(1, int(recent_turns)):]
+        recent_ids = {
+            turn_id
+            for _, _, turn_id in recent_timeline
+            if turn_id is not None
+        }
         overflow = (
             [
                 turn for turn in turns
@@ -1364,15 +1382,16 @@ def get_conversation_context(
         )
 
         paired_user_ids = {turn["user"]["id"] for turn in turns}
-        trailing = []
-        if messages:
-            last = messages[-1]
+        unpaired_users = [
+            message
+            for message in messages
             if (
-                last["role"] == "user"
-                and not last["processed"]
-                and last["id"] not in paired_user_ids
-            ):
-                trailing.append(last)
+                message["role"] == "user"
+                and not message["processed"]
+                and message["id"] not in paired_user_ids
+            )
+        ]
+        trailing = unpaired_users[-1:]
 
         def _flatten(selected: list[dict]) -> list[dict]:
             flattened: list[dict] = []
@@ -1380,12 +1399,17 @@ def get_conversation_context(
                 flattened.extend((turn["user"], turn["assistant"]))
             return flattened
 
+        recent = [
+            message
+            for _, item_messages, _ in recent_timeline
+            for message in item_messages
+        ]
         conn.commit()
         return {
             "summary": summary,
             "through_message_id": through_message_id,
             "overflow": _flatten(overflow),
-            "recent": _flatten(recent),
+            "recent": recent,
             "trailing": trailing,
         }
     finally:

@@ -107,6 +107,26 @@ def sync_attention_facts(
         conn.close()
 
 
+def retire_attention_facts(source: str, stable_keys: tuple[str, ...]) -> int:
+    """Resolve attention facts removed from an observer's current contract."""
+    keys = tuple(dict.fromkeys(key for key in stable_keys if key))
+    if not keys:
+        return 0
+    placeholders = ",".join("?" for _ in keys)
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
+            "WHERE source = ? AND status = 'unresolved' "
+            f"AND stable_key IN ({placeholders})",
+            (_iso(_utc_now()), source, *keys),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def get_unresolved_attention_facts(
     *, now: datetime | None = None, limit: int = _MAX_ATTENTION_FACTS,
 ) -> tuple[AttentionFact, ...]:

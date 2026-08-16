@@ -7,8 +7,13 @@ import pytest
 from mochi.ai_client import chat
 from mochi.core_store import replace_core
 from mochi.db import _connect, get_recent_messages, save_message
-from mochi.heartbeat_runtime import set_schedule_due
+from mochi.heartbeat_runtime import (
+    get_unresolved_attention_facts,
+    set_schedule_due,
+    sync_attention_facts,
+)
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
+from mochi.skills.weather.observer import WeatherObserver
 from tests.e2e.mock_llm import make_response
 
 
@@ -25,6 +30,44 @@ def test_observer_rediscovery_preserves_runtime_cache():
     assert len(observers.discover()) == 6
     assert observers.get_observer("time_context") is original
     assert original._last_data == {"date": "cache-marker"}
+
+
+def test_weather_conditions_are_context_not_attention_facts():
+    observer = WeatherObserver()
+
+    assert observer.has_delta(
+        {"temperature_c": 20},
+        {"temperature_c": 35},
+    ) is False
+    assert observer.attention_facts({
+        "summary": "Suzhou: 35 C, Sunny",
+        "temperature_c": 35,
+    }) == []
+
+
+@pytest.mark.asyncio
+async def test_retired_weather_fact_clears_even_when_observer_is_disabled(
+    monkeypatch,
+):
+    import mochi.observers as observers
+
+    observed_at = datetime(2026, 8, 16, 10, 0, tzinfo=timezone.utc)
+    sync_attention_facts(
+        "weather",
+        [{
+            "stable_key": "current_conditions",
+            "facts": {"summary": "Suzhou: 35 C, Sunny"},
+        }],
+        observed_at=observed_at,
+        freshness_seconds=7200,
+    )
+    observer = WeatherObserver()
+    observer.meta.enabled = False
+    monkeypatch.setattr(observers, "_observers", {"weather": observer})
+
+    await observers.collect_attention_facts()
+
+    assert get_unresolved_attention_facts(now=observed_at) == ()
 
 
 @pytest.mark.asyncio
@@ -70,6 +113,28 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     assert [item["content"].split("] ", 1)[-1] for item in history] == [
         "user-1", "assistant-1", "user-2", "assistant-2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_skip_marker_is_removed_when_main_continues(
+    mock_llm_factory,
+):
+    mock_llm_factory([make_response("[SKIP] 等等，我还是想说一句。")])
+    entry = MainRuntimeEntry.free_time(
+        run_key="free_time:continued",
+        wake_reason="periodic",
+        user_id=1,
+        channel_id=100,
+        transport="fake",
+        claim_token="claim",
+        lease_until="2099-01-01T00:00:00+00:00",
+    )
+
+    result = await chat(runtime_entry=entry)
+
+    assert result.disposition == "deliver"
+    assert result.text == "等等，我还是想说一句。"
+    assert result.to_durable().pending_history["content"] == result.text
 
 
 @pytest.mark.asyncio

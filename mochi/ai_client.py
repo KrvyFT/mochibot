@@ -263,6 +263,15 @@ def _clean_model_reply(content: str | None) -> str:
     return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
 
 
+def _parse_runtime_reply(reply: str) -> tuple[str, bool]:
+    """Consume the reserved silence marker without leaking it to the user."""
+    marker = "[SKIP]"
+    if not reply.startswith(marker):
+        return reply, False
+    visible = reply[len(marker):].lstrip()
+    return visible, not visible
+
+
 def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
@@ -1020,9 +1029,7 @@ async def chat(
                 },
             )
         if is_self_reminder or is_autonomous:
-            skipped = reply == "[SKIP]"
-            if skipped:
-                reply = ""
+            reply, skipped = _parse_runtime_reply(reply)
             if skipped and not successful_effects and not pending_stickers:
                 return ChatResult(
                     tool_audit=tool_audit,
@@ -1097,13 +1104,13 @@ async def chat(
     async def _ensure_bedtime_farewell(reply: str) -> str:
         if not (is_bedtime or bedtime_requested):
             return reply
-        if reply == "[SKIP]":
-            reply = ""
+        reply, _ = _parse_runtime_reply(reply)
         if pending_stickers:
             return reply
         if not reply:
             reply = await _finalize_bedtime()
-        return "" if reply == "[SKIP]" else reply
+        reply, _ = _parse_runtime_reply(reply)
+        return reply
 
     for round_num in range(max_tool_rounds):
         round_availability = availability
