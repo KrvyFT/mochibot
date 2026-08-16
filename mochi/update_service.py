@@ -56,7 +56,11 @@ def _run_git(*args: str, timeout: int = 60) -> tuple[int, str]:
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return 1, str(exc)
-    output = ((result.stdout or "") + (result.stderr or "")).strip()
+    output = (
+        result.stdout
+        if result.returncode == 0
+        else (result.stdout or "") + (result.stderr or "")
+    ).strip()
     return result.returncode, output
 
 
@@ -117,7 +121,15 @@ def validate_installation(
 
     dirty = _git_output("status", "--porcelain", "--untracked-files=normal")
     if require_clean and dirty:
-        raise UpdateError("检测到本地代码改动，请先提交、暂存或移走这些文件。")
+        changed = ", ".join(
+            line[3:].strip()
+            for line in dirty.splitlines()[:5]
+            if len(line) > 3
+        )
+        detail = f"：{changed}" if changed else ""
+        raise UpdateError(
+            f"检测到本地代码改动{detail}。请先提交、暂存或移走这些文件。"
+        )
 
     return {
         "branch": branch,
