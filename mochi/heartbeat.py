@@ -48,6 +48,7 @@ SLEEPING = "SLEEPING"
 AWAKE = "AWAKE"
 TRANSITIONING = "TRANSITIONING"
 RESLEEP_WINDOW_HOURS = 6
+FREE_TIME_CHAT_QUIET_MINUTES = 30
 
 
 def _effective(key: str):
@@ -245,6 +246,20 @@ def clear_silent_pause() -> None:
     _silent_pause = False
 
 
+def _free_time_quiet_until(user_id: int, now: datetime) -> datetime | None:
+    raw = get_last_user_message_time(user_id)
+    if not raw:
+        return None
+    try:
+        last = datetime.fromisoformat(raw)
+        if last.tzinfo is None:
+            last = last.replace(tzinfo=TZ)
+    except (TypeError, ValueError):
+        return None
+    quiet_until = last + timedelta(minutes=FREE_TIME_CHAT_QUIET_MINUTES)
+    return quiet_until if quiet_until > now else None
+
+
 def _check_silence_pause() -> None:
     from mochi.config import OWNER_USER_ID as user_id
 
@@ -372,7 +387,12 @@ async def _run_weekly_if_due(
 
 async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
     if claimed.get("result_json"):
-        return DurableChatResult.from_json(claimed["result_json"])
+        durable = DurableChatResult.from_json(claimed["result_json"])
+        if claimed["entry_kind"] == "free_time":
+            complete_without_delivery(claimed, durable, "stale")
+            log_heartbeat(_state, "free_time_stale")
+            return None
+        return durable
     recovered = recover_prior_tool_attempt(claimed)
     if recovered is not None:
         complete_without_delivery(claimed, recovered, "tools_only")
@@ -424,7 +444,19 @@ async def _deliver_autonomous(
     durable: DurableChatResult,
 ) -> bool:
     if _runtime_delivery_callback is None:
-        record_failure(claimed, "Runtime delivery callback is not registered")
+        if claimed["entry_kind"] == "free_time":
+            complete_without_delivery(claimed, durable, "delivery_failed")
+            log_heartbeat(_state, "free_time_delivery_failed")
+        else:
+            record_failure(claimed, "Runtime delivery callback is not registered")
+        return False
+    if (
+        claimed["entry_kind"] == "free_time"
+        and _free_time_quiet_until(claimed["user_id"], datetime.now(TZ))
+        is not None
+    ):
+        complete_without_delivery(claimed, durable, "active_chat")
+        log_heartbeat(_state, "free_time_active_chat")
         return False
     if claimed.get("last_error") == "delivery budget/cooldown":
         complete_without_delivery(claimed, durable, "suppressed")
@@ -463,14 +495,24 @@ async def _deliver_autonomous(
                 claimed["channel_id"], component,
             )
         except Exception as exc:
-            record_failure(claimed, f"transport exception: {exc}")
-            log_heartbeat(
-                _state, f"{claimed['entry_kind']}_delivery_failure", str(exc)[:200],
-            )
+            if claimed["entry_kind"] == "free_time":
+                complete_without_delivery(claimed, durable, "delivery_unknown")
+                log_heartbeat(_state, "free_time_delivery_unknown", str(exc)[:200])
+            else:
+                record_failure(claimed, f"transport exception: {exc}")
+                log_heartbeat(
+                    _state,
+                    f"{claimed['entry_kind']}_delivery_failure",
+                    str(exc)[:200],
+                )
             return False
         if not delivered:
-            record_failure(claimed, "transport reported delivery failure")
-            log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_failure")
+            if claimed["entry_kind"] == "free_time":
+                complete_without_delivery(claimed, durable, "delivery_failed")
+                log_heartbeat(_state, "free_time_delivery_failed")
+            else:
+                record_failure(claimed, "transport reported delivery failure")
+                log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_failure")
             return False
         if kind == "text":
             checkpointed = checkpoint_text_delivery(
@@ -533,6 +575,7 @@ async def run_main_runtime_tick(
         from mochi.heartbeat_runtime import advance_attention
 
         advance_attention(now=now)
+    free_time_not_before = _free_time_quiet_until(user_id, now)
     created = materialize_due_runs(
         user_id=user_id,
         channel_id=user_id,
@@ -541,8 +584,11 @@ async def run_main_runtime_tick(
         attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
+        free_time_not_before=free_time_not_before,
     )
     for row in get_schedulable_runs(now=now):
+        if row["entry_kind"] == "free_time" and free_time_not_before is not None:
+            continue
         claimed = claim_run(row["run_key"], now=now)
         if claimed is not None:
             await _run_claimed_entry(claimed)

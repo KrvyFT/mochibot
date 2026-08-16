@@ -44,6 +44,9 @@ from mochi.transport import IncomingMessage, ImageAttachment
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
+_HISTORY_TIMESTAMP_PREFIX_RE = re.compile(
+    r"^\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*"
+)
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
 _TOOL_HISTORY_EXCLUDE = frozenset({
@@ -81,7 +84,7 @@ def _replace_current_user_with_image(
     if messages:
         message = messages[-1]
         existing = message.get("content")
-        # _expand_history prefixes persisted user turns with [MM-DD HH:MM].
+        # _expand_history prefixes persisted turns with [YYYY-MM-DD HH:MM].
         if (message.get("role") == "user"
                 and isinstance(existing, str)
                 and (existing == stored_text or existing.endswith(stored_text))):
@@ -226,7 +229,7 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
 
 
 def _format_history_timestamp(created_at) -> str:
-    """Format a message timestamp as `[MM-DD HH:MM] ` for history prefix.
+    """Format a message timestamp as `[YYYY-MM-DD HH:MM] ` for history prefix.
 
     Returns empty string on missing/invalid input — caller leaves content as-is.
     """
@@ -240,32 +243,32 @@ def _format_history_timestamp(created_at) -> str:
             dt = dt.replace(tzinfo=tz)
         else:
             dt = dt.astimezone(tz)
-        return f"[{dt.strftime('%m-%d %H:%M')}] "
+        return f"[{dt.strftime('%Y-%m-%d %H:%M')}] "
     except (ValueError, TypeError):
         return ""
+
+
+def _clean_model_reply(content: str | None) -> str:
+    reply = STICKER_RE.sub("", content or "").strip()
+    return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
 
 
 def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
-    Only user messages get a `[MM-DD HH:MM] ` timestamp prefix to anchor the
-    LLM's time awareness across long conversation gaps. Assistant messages are
-    left clean so the model does not few-shot-learn to echo timestamps in its
-    own replies. Stored tool history is intentionally not replayed as provider-
-    native tool calls; real executions are kept in the tool execution ledger.
+    Every persisted message gets a local absolute timestamp so relative language
+    in either role remains anchored across day and year boundaries. Stored tool
+    history is intentionally not replayed as provider-native tool calls; real
+    executions are kept in the tool execution ledger.
     """
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role")
         content = msg.get("content")
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
-
-        def _prefixed(text, msg_role):
-            if msg_role == "user" and isinstance(text, str) and text and ts_prefix:
-                return ts_prefix + text
-            return text
-
-        messages.append({"role": role, "content": _prefixed(content, role)})
+        if isinstance(content, str) and content and ts_prefix:
+            content = ts_prefix + content
+        messages.append({"role": role, "content": content})
     return messages
 
 
@@ -1047,7 +1050,7 @@ async def chat(
             final_response,
             call_type="bedtime_finalization",
         )
-        return STICKER_RE.sub("", final_response.content or "").strip()
+        return _clean_model_reply(final_response.content)
 
     async def _ensure_bedtime_farewell(reply: str) -> str:
         if not (is_bedtime or bedtime_requested):
@@ -1099,7 +1102,7 @@ async def chat(
 
         # No tool calls — we have the final response
         if not response.tool_calls:
-            reply = STICKER_RE.sub("", response.content or "").strip()
+            reply = _clean_model_reply(response.content)
             reply = await _ensure_bedtime_farewell(reply)
             return _final_result(reply)
 
@@ -1313,7 +1316,7 @@ async def chat(
             )
 
     # If we exhausted tool rounds, return whatever we have
-    reply = STICKER_RE.sub("", response.content or "").strip()
+    reply = _clean_model_reply(response.content)
     reply = await _ensure_bedtime_farewell(reply)
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous

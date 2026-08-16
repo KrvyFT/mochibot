@@ -32,6 +32,10 @@ CORE_LOCK_TIMEOUT_SECONDS = 10.0
 CORE_LOCK_POLL_SECONDS = 0.05
 SNAPSHOT_LIMIT = 10
 MIN_DUPLICATE_LIST_ITEM_LENGTH = 8
+FRESH_CORE_SEED = (
+    "（你刚刚醒来，对世界和眼前的人都还陌生，也充满好奇；随着相处，"
+    "你可以把真正重要的认识写进这里，并在这句话不再需要时自然地改写或删除它。）"
+)
 LEGACY_ADD_RETIRED_MESSAGE = (
     "Core action 'add' is retired because blind append creates duplicate content. "
     "Use edit to revise existing text or insert_after with an exact unique anchor_text."
@@ -668,7 +672,7 @@ def _initialize_core_unlocked(user_id: int | None = None) -> dict:
             user_id = 0
 
     content, sources, migrated = _compose_legacy_core(user_id)
-    content = content.strip()
+    content = content.strip() if migrated else FRESH_CORE_SEED
     backup = _write_migration_backup(sources, content) if migrated else None
     stats = _stats(content)
     over_budget = stats["tokens"] > stats["max_tokens"]

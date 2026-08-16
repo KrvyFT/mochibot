@@ -39,12 +39,11 @@ def test_legacy_identity_migrates_once_with_backups():
     assert core_store.initialize_core(1)["target_sha256"] == status["target_sha256"]
 
 
-def test_fresh_core_uses_bundled_identity():
+def test_fresh_core_starts_with_open_seed():
     status = core_store.initialize_core(1)
     content = core_store.read_core()
     assert status["status"] == "fresh"
-    assert "# \u6211" in content
-    assert "AI \u966a\u4f34\u642d\u5b50" in content
+    assert content == core_store.FRESH_CORE_SEED
 
 
 def test_exact_patch_conflict_and_internal_snapshot():

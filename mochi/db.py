@@ -2443,13 +2443,13 @@ def log_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int,
     conn.close()
 
 
-def get_usage_summary(days: int = 30) -> dict:
+def get_usage_summary() -> dict:
     """Return usage summary for /cost command.
 
     Returns:
         {
-            "today": {"by_model": {model: {"prompt": int, "completion": int}, ...}},
-            "month": {"by_model": {model: {"prompt": int, "completion": int}, ...}},
+            "today": {"total": int, "by_model": {...}},
+            "month": {"total": int, "by_model": {...}},
         }
     """
     now = datetime.now(TZ)
@@ -2458,23 +2458,29 @@ def get_usage_summary(days: int = 30) -> dict:
 
     conn = _connect()
 
-    def _by_model(since: str) -> dict:
-        result = {}
+    def _period(since: str) -> dict:
+        by_model = {}
+        total = 0
         for r in conn.execute(
             """SELECT model,
                       COALESCE(SUM(prompt_tokens), 0) as p,
                       COALESCE(SUM(completion_tokens), 0) as c,
+                      COALESCE(SUM(total_tokens), 0) as t,
                       COALESCE(SUM(reasoning_tokens), 0) as r
                FROM usage_log WHERE created_at >= ? GROUP BY model""",
             (since,),
         ).fetchall():
-            result[r["model"] or "unknown"] = {
-                "prompt": r["p"], "completion": r["c"], "reasoning": r["r"],
+            by_model[r["model"] or "unknown"] = {
+                "prompt": r["p"],
+                "completion": r["c"],
+                "total": r["t"],
+                "reasoning": r["r"],
             }
-        return result
+            total += r["t"]
+        return {"total": total, "by_model": by_model}
 
-    today = {"by_model": _by_model(today_start)}
-    month = {"by_model": _by_model(month_start)}
+    today = _period(today_start)
+    month = _period(month_start)
 
     conn.close()
     return {"today": today, "month": month}

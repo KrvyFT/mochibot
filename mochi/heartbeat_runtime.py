@@ -213,11 +213,17 @@ def materialize_due_runs(
     attention_interval_minutes: int,
     free_time_min_minutes: int,
     free_time_max_minutes: int,
+    free_time_not_before: datetime | None = None,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> list[str]:
     """Snapshot all due independent clocks and advance each one atomically."""
     rng = rng or random.SystemRandom()
     now = now.astimezone(UTC)
+    free_time_not_before = (
+        free_time_not_before.astimezone(UTC)
+        if free_time_not_before is not None
+        else None
+    )
     now_iso = _iso(now)
     facts = get_unresolved_attention_facts(now=now)
     facts_json = json.dumps(
@@ -246,6 +252,17 @@ def materialize_due_runs(
         ).fetchall()
         for row in due_rows:
             kind = row["entry_kind"]
+            if (
+                kind == "free_time"
+                and free_time_not_before is not None
+                and free_time_not_before > now
+            ):
+                conn.execute(
+                    "UPDATE heartbeat_schedules SET next_due_at = ?, "
+                    "updated_at = ? WHERE entry_kind = 'free_time'",
+                    (_iso(free_time_not_before), now_iso),
+                )
+                continue
             due_at = row["next_due_at"]
             run_key = f"{kind}:{due_at}"
             payload = facts_json if kind == "attention" else "[]"
@@ -389,7 +406,15 @@ def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
 def complete_without_delivery(
     claimed: dict, durable: DurableChatResult, outcome: str,
 ) -> bool:
-    if outcome not in {"skip", "tools_only", "suppressed"}:
+    if outcome not in {
+        "skip",
+        "tools_only",
+        "suppressed",
+        "active_chat",
+        "stale",
+        "delivery_failed",
+        "delivery_unknown",
+    }:
         raise ValueError("invalid autonomous Main outcome")
     now_iso = _iso(_utc_now())
     conn = _connect()

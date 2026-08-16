@@ -66,13 +66,14 @@ async def test_free_time_keeps_only_immediate_conversation_context(
     assert [item["role"] for item in history] == [
         "user", "assistant", "user", "assistant",
     ]
+    assert all(item["content"].startswith("[20") for item in history)
     assert [item["content"].split("] ", 1)[-1] for item in history] == [
         "user-1", "assistant-1", "user-2", "assistant-2",
     ]
 
 
 @pytest.mark.asyncio
-async def test_failed_proactive_delivery_reuses_prepared_result(
+async def test_failed_free_time_delivery_is_not_retried(
     mock_llm_factory,
     monkeypatch,
 ):
@@ -88,15 +89,13 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
 
     monkeypatch.setattr(observers, "collect_attention_facts", no_observer_change)
     mock = mock_llm_factory([make_response("I was thinking of you.")])
-    deliveries = [False, True]
+    deliveries = [False]
     prepared = 0
     budget_checks = 0
 
     def delivery_wait(**_kwargs):
         nonlocal budget_checks
         budget_checks += 1
-        if budget_checks > 1:
-            pytest.fail("prepared transport retry must bypass proactive budget")
         return 0
 
     async def prepare(entry):
@@ -109,9 +108,23 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
 
     monkeypatch.setattr(heartbeat, "delivery_wait_seconds", delivery_wait)
     heartbeat.set_main_runtime_callbacks(prepare, deliver, "fake")
+    message_id = save_message(
+        1, "user", "active conversation", turn_id="active-chat",
+    )
+    conn = _connect()
+    conn.execute(
+        "UPDATE messages SET created_at = ? WHERE id = ?",
+        (clock["now"].isoformat(), message_id),
+    )
+    conn.commit()
+    conn.close()
     set_schedule_due("free_time", clock["now"])
     await heartbeat.run_main_runtime_tick(1, now=clock["now"])
-    assert get_recent_messages(1) == []
+    assert prepared == 0
+
+    clock["now"] += timedelta(minutes=31)
+    await heartbeat.run_main_runtime_tick(1, now=clock["now"])
+    assert [row["role"] for row in get_recent_messages(1)] == ["user"]
 
     clock["now"] += timedelta(seconds=61)
     await heartbeat.run_main_runtime_tick(1, now=clock["now"])
@@ -119,7 +132,19 @@ async def test_failed_proactive_delivery_reuses_prepared_result(
     assert prepared == 1
     assert budget_checks == 1
     assert len(mock.call_log) == 1
-    assert get_recent_messages(1)[0]["content"] == "I was thinking of you."
+    assert deliveries == []
+    assert [row["role"] for row in get_recent_messages(1)] == ["user"]
+    conn = _connect()
+    run = conn.execute(
+        "SELECT status, outcome, next_attempt_at FROM heartbeat_runs "
+        "WHERE entry_kind = 'free_time' ORDER BY created_at DESC LIMIT 1"
+    ).fetchone()
+    conn.close()
+    assert dict(run) == {
+        "status": "delivered",
+        "outcome": "delivery_failed",
+        "next_attempt_at": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -195,6 +220,6 @@ async def test_proactive_cooldown_suppresses_instead_of_queuing(
     conn.close()
     assert dict(legacy) == {
         "status": "delivered",
-        "outcome": "suppressed",
+        "outcome": "stale",
         "next_attempt_at": None,
     }

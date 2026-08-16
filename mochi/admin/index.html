@@ -1415,7 +1415,7 @@ async function loadSettings() {
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
     const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
-    const mainModel = tiers.main?.assigned_name || '';
+    const mainModel = tiers.main?.model || '';
     let html = '';
 
     const heroTitle = botStatus.running
@@ -1462,7 +1462,7 @@ async function loadSettings() {
       </div>`;
     for (const tier of ['main', 'lite']) {
       const cfg = tiers[tier] || {};
-      const selected = cfg.assigned_name || '';
+      const selected = cfg.model || '';
       html += `<div class="settings-tier">
         <div class="settings-tier-label"><strong>${tierLabels[tier]}</strong><span class="settings-tier-copy">${tierDescriptions[tier]}</span></div>
         <div class="settings-model-value${selected?'':' empty'}">${selected ? esc(selected) : '未配置'}</div>
@@ -1550,10 +1550,7 @@ async function loadSettings() {
       </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
-        <div style="min-width:220px;flex:1">
-          <div style="font-size:14px">主动关心</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">允许 Agent 在有值得说的事情时主动联系你</div>
-        </div>
+        <div style="min-width:220px;flex:1;font-size:14px">主动联系</div>
         <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
         <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
         <span style="font-size:12px;color:var(--text-soft)">次</span>
@@ -1598,7 +1595,7 @@ async function savePreferences() {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
   if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
-    return showToast('主动关心上限必须是 1 到 50 的整数');
+    return showToast('主动联系上限必须是 1 到 50 的整数');
   }
   try {
     await api('PUT', '/preferences', {

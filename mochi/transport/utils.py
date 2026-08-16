@@ -23,6 +23,28 @@ def clean_reply_markers(text: str) -> str:
     return text.strip()
 
 
+# ── System command presentation ─────────────────────────────────────────────
+
+def format_usage_summary(summary: dict) -> str:
+    """Format the shared /cost response for chat transports."""
+    blocks = []
+    for title, period in (("📊 今日", summary["today"]), ("📊 本月", summary["month"])):
+        lines = [f"{title} · 总计 {period['total']:,} tokens"]
+        by_model = period["by_model"]
+        if not by_model:
+            lines.append("  (无记录)")
+        for model, data in sorted(by_model.items()):
+            lines.append(f"  {model}")
+            line = (
+                f"    input {data['prompt']:,}  |  output {data['completion']:,}"
+            )
+            if data.get("reasoning", 0) > 0:
+                line += f"  (其中 reasoning {data['reasoning']:,})"
+            lines.append(line)
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 # ── Text splitting ──────────────────────────────────────────────────────────
 
 def split_text(text: str, limit: int) -> list[str]:

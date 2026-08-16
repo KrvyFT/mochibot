@@ -44,6 +44,7 @@ run_admin.py
 
 # Debug screenshots
 *.png
+!docs/assets/admin-home.png
 
 # Playwright MCP
 .playwright-mcp/

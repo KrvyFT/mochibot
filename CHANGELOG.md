@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v1.0.2
+- 修复主动消息时效与历史时间标签问题，新增 `/cost`，并精简初始 Core、管理后台和 README
+
 ## v1.0.1
 - 修复模型表单误关闭、模型测试假成功、旧主动消息重启后补发和 Observer 缓存丢失
 - Admin 支持复用已有模型凭据，并允许配置 HTTPS OpenAI-compatible Chat Completions 端点

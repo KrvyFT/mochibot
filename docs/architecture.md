@@ -178,17 +178,20 @@ outbox. SQLite claims and leases prevent concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit
 atomically.
 
-Autonomous Free Time/Attention delivery is more conservative: a transport
-timeout is terminally audited as `delivery_unknown` and is not automatically
-retried, because an accepted-but-unacknowledged proactive message is more likely
-to annoy through duplication than to require guaranteed delivery.
+Free Time is ephemeral: its text is generated only when the random clock is
+claimed, and any transport failure, uncertain delivery, active chat, or recovery
+of previously prepared text ends that opportunity without retry. Attention is
+fact-driven and may retain a prepared result across retry so tool effects are not
+repeated.
 
 ## Free Time and Attention flow
 
 Heartbeat keeps two independent clocks. Free Time is randomized, unassigned
-companion time; Attention runs periodically and can be advanced by a changed
-observer fact without moving the Free Time clock. Sleeping and long-silence
-pause gates run before observer or model work.
+companion time; a due Free Time waits until the user's latest message has been
+quiet for 30 minutes. Attention runs periodically and can be advanced by a
+changed observer fact without moving the Free Time clock, so recent chat never
+blocks factual Attention or independent reminder delivery. Sleeping and
+long-silence pause gates run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
 Free Time receives only the last two role-true conversation turns and last
@@ -201,10 +204,10 @@ and may request other tools; neither inherits a sticky routed skill.
 
 Observers own factual source state, Main owns meaning/action/expression, and
 the transport owns delivery. A Main skip does not resolve observer facts.
-Heartbeat stores the prepared result before delivery, so model generation and
-tool effects do not repeat after a transport failure. History and proactive
-delivery logs are written only after successful text delivery. SQLite cannot
-commit atomically with an external transport, so a crash at that boundary can
-still duplicate one component: autonomous delivery is honestly at-least-once.
-Daily limits and cooldowns constrain delivery only; they do not filter topics
-or decide what facts mean.
+Heartbeat stores prepared results before delivery for durable audit. Free Time
+never replays that text on another attempt; Attention can reuse it so tool
+effects do not repeat after a transport failure. History and proactive delivery
+logs are written only after successful text delivery. SQLite cannot commit
+atomically with an external transport, so Attention can still duplicate one
+component after a crash at that boundary. Daily limits and cooldowns constrain
+delivery only; they do not filter topics or decide what facts mean.
