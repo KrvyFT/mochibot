@@ -1713,7 +1713,7 @@ def save_memory_item(user_id: int, content: str,
     Dedup priority:
       1. Exact/text similarity (normalized, SequenceMatcher)
       2. Vector cosine similarity (if embedding provided)
-    If a match is found: UPDATE (keep longer content, bump importance/access).
+    If a match is found: UPDATE (keep longer content and bump importance).
     Otherwise: INSERT new row.
     """
     from mochi.memory_contract import (
@@ -1786,7 +1786,7 @@ def save_memory_item(user_id: int, content: str,
         if keep_emb is not None:
             conn.execute(
                 "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
-                "updated_at = ?, access_count = access_count + 1, embedding = ?, "
+                "updated_at = ?, embedding = ?, "
                 "evidence_message_ids = ? WHERE id = ?",
                 (
                     keep_content, importance, now, keep_emb,
@@ -1796,8 +1796,7 @@ def save_memory_item(user_id: int, content: str,
         else:
             conn.execute(
                 "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
-                "updated_at = ?, access_count = access_count + 1, "
-                "evidence_message_ids = ? WHERE id = ?",
+                "updated_at = ?, evidence_message_ids = ? WHERE id = ?",
                 (keep_content, importance, now, evidence_json, existing["id"]),
             )
         item_id = existing["id"]
@@ -2107,6 +2106,25 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
 
     conn.close()
     return result
+
+
+def mark_memory_items_accessed(user_id: int, item_ids: list[int]) -> int:
+    """Record Memory Items that were actually exposed to Main."""
+    ids = list(dict.fromkeys(int(item_id) for item_id in item_ids))
+    if not ids:
+        return 0
+    placeholders = ",".join("?" * len(ids))
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE memory_items SET access_count = access_count + 1, "
+            f"last_accessed = ? WHERE user_id = ? AND id IN ({placeholders})",
+            [datetime.now(TZ).isoformat(), user_id, *ids],
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
 
 
 def get_memory_extraction_references(
