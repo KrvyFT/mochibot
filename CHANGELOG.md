@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## v1.0.5
+- Fix self-update blockers
+
 ## v1.0.4
 - Issue fixes
 - Mochi supports configuring more of its own settings

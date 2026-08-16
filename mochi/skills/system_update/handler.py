@@ -7,7 +7,6 @@ from mochi.update_service import (
     UpdateError,
     check_for_update,
     stage_update,
-    validate_installation,
 )
 
 
@@ -50,16 +49,12 @@ class SystemUpdateSkill(Skill):
             return SkillResult(
                 output=f"当前已经是最新正式版 v{release.current_version}。"
             )
-        try:
-            validate_installation(require_clean=True)
-            stage_update(
-                release,
-                user_id=context.user_id,
-                channel_id=context.channel_id,
-                transport=context.transport,
-            )
-        except UpdateError as exc:
-            return SkillResult(output=str(exc), success=False)
+        stage_update(
+            release,
+            user_id=context.user_id,
+            channel_id=context.channel_id,
+            transport=context.transport,
+        )
 
         def _after_delivery() -> None:
             from mochi.shutdown import UPDATE_EXIT_CODE, request_process_exit

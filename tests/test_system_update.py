@@ -9,7 +9,7 @@ import pytest
 
 from mochi.ai_client import ChatResult
 from mochi.skills.base import SkillContext
-from mochi.update_service import ReleaseInfo, UpdateError
+from mochi.update_service import ReleaseInfo
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -40,7 +40,7 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "commit", "-m", "initial")
 
 
-def test_validate_installation_accepts_only_clean_official_main(
+def test_validate_installation_allows_local_code_changes(
     tmp_path,
     monkeypatch,
 ):
@@ -57,10 +57,7 @@ def test_validate_installation_accepts_only_clean_official_main(
     assert not status["dirty"]
 
     (repo / "local.py").write_text("mine\n", encoding="utf-8")
-    with pytest.raises(UpdateError, match="本地代码改动"):
-        updater.validate_installation(require_launcher=False)
     assert updater.validate_installation(
-        require_clean=False,
         require_launcher=False,
     )["dirty"]
 
@@ -86,7 +83,6 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
     staged = []
     exits = []
     monkeypatch.setattr(handler, "check_for_update", fake_check)
-    monkeypatch.setattr(handler, "validate_installation", lambda **kwargs: {})
     monkeypatch.setattr(
         handler,
         "stage_update",
@@ -142,7 +138,7 @@ async def test_autonomous_runtime_cannot_install(monkeypatch):
     assert "主人当前对话" in result.output
 
 
-def test_launcher_fast_forwards_exact_staged_release(tmp_path, monkeypatch):
+def test_launcher_replaces_code_with_exact_staged_release(tmp_path, monkeypatch):
     import mochi.update_service as updater
 
     repo = tmp_path / "repo"
@@ -155,7 +151,10 @@ def test_launcher_fast_forwards_exact_staged_release(tmp_path, monkeypatch):
     _git(repo, "tag", "v1.1.0")
     release_hash = _git(repo, "rev-parse", "HEAD")
     _git(repo, "reset", "--hard", first_hash)
-    _git(repo, "remote", "add", "origin", str(repo))
+    (repo / "mochi" / "__init__.py").write_text(
+        '__version__ = "locally changed"\n',
+        encoding="utf-8",
+    )
     (repo / ".env").write_text("ADMIN_TOKEN=keep-me\n", encoding="utf-8")
     data_dir = repo / "data"
     data_dir.mkdir()
@@ -164,6 +163,7 @@ def test_launcher_fast_forwards_exact_staged_release(tmp_path, monkeypatch):
 
     monkeypatch.setattr(updater, "PROJECT_ROOT", repo)
     monkeypatch.setattr(updater, "OFFICIAL_REPOSITORY", str(repo).casefold())
+    monkeypatch.setattr(updater, "OFFICIAL_REMOTE_URL", str(repo))
     monkeypatch.setattr(updater, "UPDATE_REQUEST_PATH", repo / "data" / ".update_request")
     monkeypatch.setattr(updater, "UPDATE_RESULT_PATH", repo / "data" / ".update_result")
     monkeypatch.setattr(updater, "_is_container", lambda: False)
