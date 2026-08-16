@@ -310,4 +310,5 @@ class SkillManagementSkill(Skill):
                 "新值会被后续 Heartbeat 循环读取；已经排定的下一次时刻"
                 "不会追溯重算。"
             ),
+            state_changed=True,
         )
