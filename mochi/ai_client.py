@@ -15,6 +15,7 @@ import platform
 import re
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -300,26 +301,38 @@ class ChatResult:
     bedtime_requested: bool = False
     disposition: str = "deliver"
     _pending_history: dict | None = field(default=None, repr=False)
+    _after_delivery: list[Callable[[], None]] = field(
+        default_factory=list,
+        repr=False,
+    )
     _delivery_confirmed: bool = field(default=False, init=False, repr=False)
 
     def confirm_delivered(self) -> bool:
         """Persist deferred assistant history exactly once after delivery."""
-        if self._delivery_confirmed or not self._pending_history:
+        if self._delivery_confirmed:
             return False
         pending = self._pending_history
-        processed = bool(pending.get("processed", True))
-        inserted = save_message_once(
-            pending["user_id"],
-            "assistant",
-            pending["content"],
-            tool_history=pending["tool_history"],
-            turn_id=pending["turn_id"],
-            processed=processed,
-        )
+        inserted = False
+        processed = True
+        if pending:
+            processed = bool(pending.get("processed", True))
+            inserted = save_message_once(
+                pending["user_id"],
+                "assistant",
+                pending["content"],
+                tool_history=pending["tool_history"],
+                turn_id=pending["turn_id"],
+                processed=processed,
+            )
         self._delivery_confirmed = True
         if inserted and not processed:
             _schedule_continuous_memory(pending["user_id"])
-        return True
+        for callback in self._after_delivery:
+            try:
+                callback()
+            except Exception:
+                log.exception("Post-delivery action failed")
+        return bool(pending or self._after_delivery)
 
     def to_durable(self) -> DurableChatResult:
         return DurableChatResult(
@@ -731,6 +744,14 @@ async def chat(
     from mochi.turn_tool_policy import build_turn_tool_plan
     skill_mode_off = get_skill_mode() == "off"
     turn_plan = build_turn_tool_plan(transport)
+    sticky_skill_names = (
+        await asyncio.to_thread(
+            skill_registry.get_recent_multi_turn_skill_names,
+            user_id,
+        )
+        if message is not None and runtime_entry is None and not skill_mode_off
+        else []
+    )
     escalation_available = (
         is_bedtime
         or is_self_reminder
@@ -814,6 +835,10 @@ async def chat(
             _safe_recalled_memories(),
         )
 
+        skill_names = turn_plan.filter_router_selection([
+            *skill_names,
+            *sticky_skill_names,
+        ])
         routed_skill_names = list(skill_names)
 
         from mochi.model_health import should_warn_user, get_warning_message
@@ -826,8 +851,14 @@ async def chat(
         ) + tools
     else:
         # No explicit Lite assignment means no semantic pre-router. Main still
-        # receives resident tools and request_tools when enabled.
+        # receives resident tools, recent multi-turn tools, and request_tools.
         tools = list(turn_plan.resident_definitions)
+        routed_skill_names = list(sticky_skill_names)
+        tools = skill_registry.get_tools_by_names(
+            routed_skill_names,
+            transport=transport,
+            loads={"routed"},
+        ) + tools
         core_memory, conversation_context, recalled_memories = await asyncio.gather(
             asyncio.to_thread(read_core),
             _safe_conversation_context(),
@@ -937,6 +968,7 @@ async def chat(
     tool_audit: list[dict] = []
     successful_effects = False
     bedtime_requested = False
+    after_delivery_actions: list[Callable[[], None]] = []
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
     bedtime_finalization_attempted = False
@@ -1031,6 +1063,7 @@ async def chat(
             text=reply,
             stickers=pending_stickers,
             bedtime_requested=bedtime_requested,
+            _after_delivery=list(after_delivery_actions),
             _pending_history={
                 "user_id": user_id,
                 "content": reply,
@@ -1249,19 +1282,18 @@ async def chat(
                 if is_weekly_tool
                 else skill_registry.get_tool_skill(tc["name"]) or ""
             )
+            execution_source = (
+                "weekly"
+                if is_weekly_tool
+                else f"runtime:{runtime_entry.kind}"
+                if runtime_entry is not None
+                else "chat"
+            )
             execution_id = start_tool_execution(
                 turn_id=turn_id,
                 tool_call_id=tc["id"],
                 user_id=user_id,
-                source=(
-                    "runtime:self_reminder"
-                    if is_self_reminder
-                    else f"runtime:{runtime_entry.kind}"
-                    if is_autonomous
-                    else "weekly"
-                    if is_weekly_tool
-                    else "chat"
-                ),
+                source=execution_source,
                 skill_name=skill_name,
                 tool_name=tc["name"],
                 action=action_for(tc["name"], tc["arguments"]),
@@ -1278,7 +1310,11 @@ async def chat(
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
+                        source=execution_source,
+                        turn_id=turn_id,
                     )
+                if result.after_delivery:
+                    after_delivery_actions.append(result.after_delivery)
                 outcome = outcome_for(
                     skill_name, tc["name"], tc["arguments"], result,
                 )

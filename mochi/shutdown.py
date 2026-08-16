@@ -9,10 +9,13 @@ log = logging.getLogger(__name__)
 
 RESTART_EXIT_CODE = 42
 ADMIN_RESTART_EXIT_CODE = 43
+UPDATE_EXIT_CODE = 44
 _RESTART_FLAG = Path("data/.restart_requested")
 _AGENT_DISABLED_FLAG = Path("data/.agent_disabled")
 
 _restart_event: asyncio.Event | None = None
+_requested_exit_code = RESTART_EXIT_CODE
+_exit_requested = False
 
 
 def is_agent_enabled() -> bool:
@@ -33,6 +36,8 @@ def init_restart_event() -> asyncio.Event:
     """Create the restart event. Called once from main()."""
     global _restart_event
     _restart_event = asyncio.Event()
+    if _exit_requested:
+        _restart_event.set()
     return _restart_event
 
 
@@ -48,11 +53,23 @@ def request_restart(channel_id: int = 0, *,
     except Exception as e:
         log.warning("Failed to write restart flag: %s", e)
 
+    request_process_exit(RESTART_EXIT_CODE)
+
+
+def request_process_exit(exit_code: int) -> None:
+    """Signal the outer launcher to restart or apply a staged update."""
+    global _exit_requested, _requested_exit_code
+    _exit_requested = True
+    _requested_exit_code = exit_code
     if _restart_event is not None:
-        log.info("Restart requested via /restart command")
+        log.info("Process exit requested with code %d", exit_code)
         _restart_event.set()
     else:
-        log.warning("request_restart called before init_restart_event")
+        log.warning("Process exit requested before init_restart_event")
+
+
+def requested_exit_code() -> int:
+    return _requested_exit_code
 
 
 def consume_restart_flag() -> dict | None:

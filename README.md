@@ -76,6 +76,7 @@ cd mochibot
 | 表情包 | 学习并发送 Telegram Sticker |
 | 图片 | Telegram 单图理解，取决于 Main 模型能力 |
 | 聊天搬家 | 从 ChatGPT 导出记录生成可预览的 Core 和记忆草稿 |
+| 自助更新 | 主人提出更新时，安装 GitHub 官方正式版并自动重启 |
 
 这些能力可以在管理后台单独开关。Mochi 会根据当前对话判断该用什么，不需要你记住固定说法。
 
@@ -107,7 +108,9 @@ Telegram 和微信均支持以下命令：
 
 ## 更新
 
-先关闭 MochiBot，再更新：
+如果是官方 Git 仓库的本地安装，可以直接在聊天里让 Mochi 更新，例如「你更新一下」。Mochi 只会在收到这类请求时检查 GitHub，不会每天轮询，也不会把版本信息放进 `look_around`。更新只安装官方正式 Release；Docker、其他 remote、开发分支或存在本地代码改动时会明确拒绝。
+
+也可以先关闭 MochiBot，再手动更新：
 
 - **Windows**：双击 `update.bat`
 - **macOS / Linux**：

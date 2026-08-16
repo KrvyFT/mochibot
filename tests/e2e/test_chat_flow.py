@@ -4,7 +4,11 @@ import pytest
 
 from mochi.transport import IncomingMessage
 from mochi.ai_client import chat
-from mochi.db import get_recent_tool_executions
+from mochi.db import (
+    finish_tool_execution,
+    get_recent_tool_executions,
+    start_tool_execution,
+)
 from mochi.skills.todo.queries import get_todos
 from tests.e2e.mock_llm import make_response, make_tool_call
 
@@ -73,6 +77,38 @@ class TestSimpleReply:
 
         assert "remember" in reply.text.lower()
         assert "jasmine tea" in read_core()
+
+    @pytest.mark.asyncio
+    async def test_recent_multi_turn_skill_stays_available_for_followup(
+        self,
+        mock_llm_factory,
+    ):
+        execution_id = start_tool_execution(
+            turn_id="previous-meal-turn",
+            tool_call_id="call_log_meal",
+            user_id=1,
+            source="chat",
+            skill_name="meal",
+            tool_name="log_meal",
+            action="create",
+            arguments_json="{}",
+        )
+        finish_tool_execution(
+            execution_id,
+            status="success",
+            result_summary="Recorded breakfast.",
+            state_changed=True,
+        )
+        mock = mock_llm_factory([make_response("I'll record lunch.")])
+
+        await chat(_msg("Lunch is beef rice and steamed egg"))
+
+        tool_names = {
+            tool["function"]["name"]
+            for tool in mock.call_log[0]["tools"]
+        }
+        assert "log_meal" in tool_names
+        assert "query_meals" in tool_names
 
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""

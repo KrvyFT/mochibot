@@ -13,6 +13,7 @@ import os
 import re
 import logging
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -70,6 +71,8 @@ class SkillContext:
     channel_id: int = 0
     transport: str = ""     # "telegram" | "wechat" — from IncomingMessage
     actor: str = ""          # "main" only when invoked by a Main tool loop
+    source: str = ""         # "chat" | "runtime:..." | "weekly"
+    turn_id: str = ""
     tool_name: str = ""     # only set for trigger="tool_call"
     args: dict = field(default_factory=dict)
     observation: dict | None = None  # only set for trigger="heartbeat"
@@ -92,6 +95,10 @@ class SkillResult:
     summary: str = ""
     entity_refs: list[str] = field(default_factory=list)
     state_changed: bool = False
+    after_delivery: Callable[[], None] | None = field(
+        default=None,
+        repr=False,
+    )
 
 
 @dataclass
