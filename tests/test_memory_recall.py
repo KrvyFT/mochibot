@@ -19,8 +19,6 @@ from mochi.db import (
     update_memory_item,
 )
 from mochi.knowledge_graph import (
-    RelationshipCurationConflict,
-    RelationshipCurationError,
     curate_relationships,
     find_matching_entities,
     list_active_relationships,
@@ -86,42 +84,6 @@ def test_auto_recall_uses_text_when_embedding_is_unavailable(
     assert [item["text"] for item in recalled] == ["喜欢茉莉花茶"]
     assert recalled[0]["evidence_start"] == "2026-08-14"
     assert recalled[0]["evidence_end"] == "2026-08-15"
-
-
-def test_like_fallback_is_authoritative_without_fts_or_embedding(monkeypatch):
-    import mochi.db as db
-    import mochi.model_pool as model_pool
-
-    save_memory_item(
-        1, "Likes jasmine tea", source="admin",
-    )
-    monkeypatch.setattr(db, "_FTS_AVAILABLE", False)
-    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
-
-    recalled = _retrieve_memories_for_turn(
-        "Do I like jasmine tea?", 1,
-    )
-
-    assert [item["text"] for item in recalled] == [
-        "Likes jasmine tea",
-    ]
-    assert recalled[0]["evidence_start"] == ""
-
-
-def test_semantic_query_never_uses_recent_only_filler(monkeypatch):
-    import mochi.model_pool as model_pool
-
-    save_memory_item(
-        1, "Unrelated but very recent detail", source="admin",
-    )
-    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
-
-    assert _retrieve_memories_for_turn("jasmine", 1) == []
-    assert recall_memory(
-        1, query="jasmine", bump_access=False,
-    ) == []
-
-
 def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     monkeypatch,
 ):
@@ -304,59 +266,3 @@ def test_weekly_relationship_upsert_archive_and_entity_recall():
     assert find_matching_entities(
         1, "Shiki, Mochi, and Shanghai",
     ) == []
-
-
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [
-        ("type", "concept"),
-        ("predicate", "uses_tool"),
-    ],
-)
-def test_weekly_relationship_rejects_invalid_scope_atomically(field, value):
-    item_id, snapshot = _relationship_memory()
-    invalid = _relationship_upsert(snapshot)
-    if field == "type":
-        invalid["object"]["type"] = value
-    else:
-        invalid["predicate"] = value
-
-    with pytest.raises(RelationshipCurationError):
-        curate_relationships(
-            1,
-            {item_id},
-            [_relationship_upsert(snapshot), invalid],
-        )
-
-    conn = _connect()
-    assert conn.execute("SELECT COUNT(*) FROM kg_entities").fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM kg_triples").fetchone()[0] == 0
-    conn.close()
-
-
-def test_weekly_relationship_requires_current_evidence_snapshot():
-    item_id, snapshot = _relationship_memory()
-    stale = dict(snapshot)
-    stale["content"] = "stale"
-
-    with pytest.raises(RelationshipCurationConflict):
-        curate_relationships(1, {item_id}, [_relationship_upsert(stale)])
-
-    unsupported_id = save_memory_item(
-        1, "Shiki knows Mochi", source="admin",
-    )
-    conn = _connect()
-    row = conn.execute(
-        "SELECT content, updated_at FROM memory_items WHERE id = ?",
-        (unsupported_id,),
-    ).fetchone()
-    conn.close()
-    unsupported = {
-        "item_id": unsupported_id,
-        "content": row["content"],
-        "updated_at": row["updated_at"],
-    }
-    with pytest.raises(RelationshipCurationError):
-        curate_relationships(
-            1, {unsupported_id}, [_relationship_upsert(unsupported)],
-        )

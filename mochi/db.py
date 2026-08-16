@@ -1007,12 +1007,16 @@ def _eligible_conversation_messages(
     *,
     after_message_id: int = 0,
     reset_at: str | None = None,
+    through_message_id: int | None = None,
 ) -> list[dict]:
     conditions = ["user_id = ?", "id > ?"]
     params: list = [user_id, after_message_id]
     if reset_at is not None:
         conditions.append("created_at > ?")
         params.append(reset_at)
+    if through_message_id is not None:
+        conditions.append("id <= ?")
+        params.append(through_message_id)
     rows = conn.execute(
         "SELECT id, role, content, created_at, tool_history, turn_id, processed "
         "FROM messages WHERE " + " AND ".join(conditions) + " ORDER BY id",
@@ -1333,8 +1337,9 @@ def get_conversation_context(
     recent_turns: int = 10,
     *,
     include_summary: bool = True,
+    current_user_message_id: int | None = None,
 ) -> dict:
-    """Return role-true recent context plus every not-yet-summarized turn."""
+    """Return a history snapshot anchored to the exact current user message."""
     conn = _connect()
     try:
         if include_summary:
@@ -1348,7 +1353,10 @@ def get_conversation_context(
             through_message_id = 0
 
         messages = _eligible_conversation_messages(
-            conn, user_id, reset_at=reset_at,
+            conn,
+            user_id,
+            reset_at=reset_at,
+            through_message_id=current_user_message_id,
         )
         turns = _pair_conversation_turns(messages)
         timeline = [
@@ -1382,16 +1390,17 @@ def get_conversation_context(
         )
 
         paired_user_ids = {turn["user"]["id"] for turn in turns}
-        unpaired_users = [
+        trailing = [
             message
             for message in messages
             if (
-                message["role"] == "user"
+                current_user_message_id is not None
+                and message["id"] == current_user_message_id
+                and message["role"] == "user"
                 and not message["processed"]
                 and message["id"] not in paired_user_ids
             )
         ]
-        trailing = unpaired_users[-1:]
 
         def _flatten(selected: list[dict]) -> list[dict]:
             flattened: list[dict] = []
