@@ -78,6 +78,13 @@ Each provider round receives one immutable tool-availability snapshot. The
 provider schema and dispatch allowlist are derived from that same snapshot, so
 a tool cannot execute merely because it exists in the global registry.
 
+Ordinary chat can carry forward up to two recently executed skills marked
+`multi_turn`, keeping their routed tools reachable for short natural
+follow-ups even when the next message is terse. This only preserves
+availability: Main still decides whether to act, and conversation reset,
+expiry, disabled/configured state, and the per-turn allowlist remain hard
+boundaries. Autonomous runtime entries do not inherit this continuity.
+
 Tool metadata uses `resident`, `routed`, or `on_demand`. Resident tools enter
 the turn directly; the Lite pre-router sees only routed skills; and
 `request_tools` may add enabled, configured, transport-compatible routed or
@@ -86,6 +93,22 @@ the same provider response and never mutates the global registry. `locked`
 controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
+
+## Self-update flow
+
+Self-update is an owner-requested system skill, not an Observer. Mochi checks
+GitHub only when the owner asks to check or update, so heartbeat and
+`look_around` do not create background release traffic. Automatic installation
+accepts only the latest formal Release from the official repository and only
+for a clean local `main` branch; containers, forks, development branches, and
+local code changes stay outside this boundary.
+
+The running process never replaces its own code. The update skill prepares an
+exact Release only during an ordinary owner chat, and signals the outer
+launcher only after the reply is delivered. The launcher then stops Mochi,
+fast-forwards to that tag,
+syncs dependencies, rolls code back if installation fails, and starts Mochi
+again. The restarted transport reports the durable result to the owner.
 
 ## Bedtime flow
 

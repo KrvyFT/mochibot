@@ -43,8 +43,8 @@ from mochi.shutdown import (
     consume_restart_flag,
     init_restart_event,
     is_agent_enabled,
+    requested_exit_code,
     set_agent_enabled,
-    RESTART_EXIT_CODE,
 )
 
 configure_safe_logging(
@@ -194,6 +194,25 @@ async def main():
                      restart_info["channel_id"])
         except Exception as e:
             log.warning("Failed to send restart-complete notification: %s", e)
+
+    update_info = None
+    if transport:
+        from mochi.update_service import consume_update_result
+        update_info = consume_update_result()
+    if update_info and transport:
+        weixin_id = update_info.get("weixin_id")
+        if weixin_id and hasattr(transport, "restore_owner_id"):
+            transport.restore_owner_id(weixin_id, source="update result")
+        channel_id = int(update_info.get("channel_id") or 0)
+        if channel_id or weixin_id:
+            try:
+                await transport.send_message(
+                    channel_id,
+                    str(update_info.get("message") or "更新流程已结束。"),
+                )
+                log.info("Sent update result to channel %s", channel_id)
+            except Exception as exc:
+                log.warning("Failed to send update result: %s", exc)
 
     # 4. Heartbeat — wire up send callback to transport
     if transport:
@@ -356,10 +375,13 @@ async def main():
             for t in pending:
                 t.cancel()
             if restart_event.is_set():
-                log.info("Restart requested — shutting down (exit code %d)",
-                         RESTART_EXIT_CODE)
+                exit_code = requested_exit_code()
+                log.info(
+                    "Process exit requested — shutting down (exit code %d)",
+                    exit_code,
+                )
                 await stop_runtime()
-                sys.exit(RESTART_EXIT_CODE)
+                sys.exit(exit_code)
     except KeyboardInterrupt:
         log.info("Shutting down...")
         await stop_runtime()

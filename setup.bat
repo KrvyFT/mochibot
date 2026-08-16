@@ -79,16 +79,7 @@ echo       Then open http://localhost:8080?token=YOUR_TOKEN
 echo    2. Phone setup: only fill transport token, start bot, send /admin
 echo.
 
-set ADMIN_ARGS=
-:admin_restart
-.venv\Scripts\python.exe -m mochi.admin %ADMIN_ARGS%
-if %errorlevel% equ 43 (
-    echo.
-    echo  [INFO] Admin server restarting...
-    echo.
-    set ADMIN_ARGS=--no-browser
-    goto admin_restart
-)
+.venv\Scripts\python.exe scripts\start.py --open-browser
 echo.
-echo  [INFO] Admin server stopped (exit code %errorlevel%).
+echo  [INFO] MochiBot stopped (exit code %errorlevel%).
 pause

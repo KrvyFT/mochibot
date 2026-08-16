@@ -52,6 +52,8 @@ _SKILLS_DIR = Path(__file__).parent
 _skills: dict[str, Skill] = {}           # name → skill instance
 _tool_map: dict[str, str] = {}           # tool_name → skill_name
 _prompt_hooks: dict[str, Skill] = {}     # skill_name → skill (has prompt_section)
+_MULTI_TURN_STICKY_HOURS = 2
+_MULTI_TURN_STICKY_LIMIT = 2
 
 
 def init_all_skill_schemas() -> None:
@@ -312,9 +314,37 @@ def get_tool_skill(tool_name: str) -> str | None:
 skill_for_tool = get_tool_skill
 
 
+def get_recent_multi_turn_skill_names(user_id: int) -> list[str]:
+    """Keep recent ordinary-chat skills reachable for natural follow-ups."""
+    from mochi.db import get_context_reset, get_recent_tool_executions
+
+    reset_at = get_context_reset(user_id)
+    executions = get_recent_tool_executions(
+        user_id,
+        hours=_MULTI_TURN_STICKY_HOURS,
+        limit=20,
+        state_changes_only=False,
+    )
+    names: list[str] = []
+    for execution in executions:
+        if execution.get("source") != "chat":
+            continue
+        if reset_at and str(execution.get("started_at") or "") <= reset_at:
+            continue
+        name = str(execution.get("skill_name") or "")
+        skill = _skills.get(name)
+        if not skill or not skill.multi_turn or name in names:
+            continue
+        names.append(name)
+        if len(names) >= _MULTI_TURN_STICKY_LIMIT:
+            break
+    return names
+
+
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
                    channel_id: int = 0, transport: str = "",
-                   actor: str = "") -> SkillResult:
+                   actor: str = "", source: str = "",
+                   turn_id: str = "") -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
@@ -342,6 +372,8 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
         channel_id=channel_id,
         transport=transport,
         actor=actor,
+        source=source,
+        turn_id=turn_id,
         tool_name=tool_name,
         args=args,
     )

@@ -153,7 +153,9 @@ MochiBot 运行在你的电脑上。电脑关机、合盖、断网，bot 就不�
 
 MochiBot 会不定期发布新版本。你的数据（聊天记录、配置、API key）不会被更新覆盖。
 
-**更新方法：** 先关掉正在运行的 bot，然后双击 `update.bat`（在 mochibot 文件夹里，和 setup.bat 挨着）。脚本会自动拉取最新代码、安装新依赖、启动 bot。
+**最省事的方法：** 直接对 Mochi 说「你更新一下」。如果当前是官方 Git 仓库的干净 `main` 分支安装，Mochi 会检查 GitHub 最新正式 Release，先回复你，然后短暂离线完成更新和重启。她不会每天主动查询版本，也不会在 `look_around` 中混入更新信息。
+
+**手动方法：** 先关掉正在运行的 bot，然后双击 `update.bat`（在 mochibot 文件夹里，和 setup.bat 挨着）。脚本会自动拉取最新代码、安装新依赖、启动 bot。
 
 > 如果你是通过 Download ZIP 安装的（没有用 Git），update.bat 会提示你需要先安装 Git。按提示去 [git-scm.com](https://git-scm.com/downloads/win) 下载安装即可，之后 update.bat 就能正常工作了。
 

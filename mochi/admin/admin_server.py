@@ -8,8 +8,6 @@ import asyncio
 import hmac
 import logging
 import os
-import subprocess
-import sys
 import time
 from pathlib import Path
 
@@ -43,55 +41,6 @@ def register_runtime_controls(status_provider) -> None:
 def _get_app_version() -> str:
     from mochi._version import read_version
     return read_version()
-
-
-def _update_sync_failure(
-    python_executable: str,
-    pre_hash: str,
-    *,
-    project_root: Path = _PROJECT_ROOT,
-    timeout: int = 300,
-) -> dict | None:
-    """Install requirements with the same environment contract as setup."""
-    sync_command = [
-        python_executable,
-        "-m",
-        "pip",
-        "install",
-        "-r",
-        "requirements.txt",
-    ]
-    try:
-        result = subprocess.run(
-            sync_command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(project_root),
-            encoding="utf-8",
-            errors="replace",
-        )
-    except subprocess.TimeoutExpired:
-        detail = f"依赖安装超过 {timeout} 秒，已停止等待。"
-    except OSError as exc:
-        detail = f"无法启动依赖安装：{exc}"
-    else:
-        if result.returncode == 0:
-            return None
-        detail = (
-            f"依赖安装失败："
-            f"{((result.stdout or '') + (result.stderr or '')).strip()[:500]}"
-        )
-    return {
-        "ok": False,
-        "error": detail,
-        "pre_hash": pre_hash,
-        "hint": (
-            "代码已更新但依赖未完成。请先重新运行 setup.bat 或 bash setup.sh；"
-            f"如需回退，请确认本地改动已备份后再执行 git reset --hard {pre_hash}"
-        ),
-        "code_updated": True,
-    }
 
 
 def _format_embedding_test_error(exc: Exception) -> dict:
@@ -491,155 +440,74 @@ if HAS_FASTAPI:
             raise HTTPException(status_code=429, detail="请等待 60 秒后再试")
         _update_timestamps.append(now)
 
-    def _run_git(*args: str, timeout: int = 30) -> tuple[int, str]:
-        """Run a git command with fixed args (no shell). Returns (returncode, output)."""
-        result = subprocess.run(
-            ["git"] + list(args),
-            capture_output=True, text=True, timeout=timeout,
-            cwd=str(_PROJECT_ROOT), encoding="utf-8", errors="replace",
-        )
-        return result.returncode, ((result.stdout or "") + (result.stderr or "")).strip()
-
-    def _is_git_worktree() -> bool:
-        rc, output = _run_git("rev-parse", "--is-inside-work-tree")
-        return rc == 0 and output.strip().lower() == "true"
-
     @app.post("/api/system/update-check", dependencies=[Depends(_verify_token)])
     async def api_system_update_check():
         _check_update_rate()
-        if not await asyncio.to_thread(_is_git_worktree):
-            return {"ok": False, "error": "当前安装不是 Git 仓库，无法通过此方式更新。请使用命令行手动更新。"}
-
-        # Fetch latest from remote
-        rc, out = await asyncio.to_thread(
-            _run_git, "fetch", "origin", "main", timeout=30
+        from mochi.update_service import (
+            UpdateError,
+            check_for_update,
+            validate_installation,
         )
-        if rc != 0:
-            return {"ok": False, "error": f"无法连接远程仓库：{out}"}
 
-        # Count commits behind
-        rc, count_str = await asyncio.to_thread(
-            _run_git, "rev-list", "--count", "HEAD..origin/main"
-        )
-        if rc != 0:
-            return {"ok": False, "error": f"无法对比版本：{count_str}"}
-        commits_behind = int(count_str) if count_str.isdigit() else 0
-
-        # Current version + commit
-        current_version = _get_app_version()
-        rc, current_hash = await asyncio.to_thread(
-            _run_git, "rev-parse", "--short", "HEAD"
-        )
-        current_hash = current_hash if rc == 0 else ""
-
-        # Remote version: read __init__.py from origin/main
-        remote_version = current_version
-        if commits_behind > 0:
-            rc, remote_init = await asyncio.to_thread(
-                _run_git, "show", "origin/main:mochi/__init__.py"
+        try:
+            release = await check_for_update()
+            installation = await asyncio.to_thread(
+                validate_installation,
+                require_clean=False,
             )
-            if rc == 0:
-                import re
-                m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', remote_init)
-                if m:
-                    remote_version = m.group(1)
-
-        # Changelog diff
-        changelog_diff = ""
-        if commits_behind > 0:
-            rc, diff_out = await asyncio.to_thread(
-                _run_git, "diff", "HEAD..origin/main", "--", "CHANGELOG.md"
-            )
-            if rc == 0 and diff_out:
-                # Extract only added lines (new changelog entries)
-                added = [ln[1:] for ln in diff_out.split("\n") if ln.startswith("+") and not ln.startswith("+++")]
-                changelog_diff = "\n".join(added).strip()
-
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
         return {
             "ok": True,
-            "available": commits_behind > 0,
-            "current_version": current_version,
-            "current_hash": current_hash,
-            "remote_version": remote_version,
-            "commits_behind": commits_behind,
-            "changelog_diff": changelog_diff,
+            "available": release.available,
+            "current_version": release.current_version,
+            "current_hash": installation["commit"],
+            "remote_version": release.version,
+            "release_tag": release.tag,
+            "changelog_diff": release.notes,
+            "dirty": installation["dirty"],
         }
 
     @app.post("/api/system/update-apply", dependencies=[Depends(_verify_token)])
     async def api_system_update_apply():
         _check_update_rate()
-        if not await asyncio.to_thread(_is_git_worktree):
-            return {"ok": False, "error": "当前安装不是 Git 仓库。"}
-
-        # Check for dirty working tree (ignore untracked files)
-        rc, status_out = await asyncio.to_thread(
-            _run_git, "status", "--porcelain"
+        from mochi.shutdown import UPDATE_EXIT_CODE, request_process_exit
+        from mochi.update_service import (
+            UpdateError,
+            check_for_update,
+            stage_update,
+            validate_installation,
         )
-        if rc != 0:
-            return {"ok": False, "error": f"无法检查工作区状态：{status_out}"}
-        dirty_lines = [l for l in status_out.splitlines() if not l.startswith("??")]
-        if dirty_lines:
-            return {
-                "ok": False,
-                "error": "检测到本地代码改动，请先处理后再更新。",
-                "dirty_files": "\n".join(dirty_lines),
-                "hint": "在终端执行 git stash（暂存改动）或 git checkout .（放弃改动），然后再试。",
-            }
 
-        # Record pre-update hash for rollback reference
-        rc, pre_hash = await asyncio.to_thread(
-            _run_git, "rev-parse", "--short", "HEAD"
+        try:
+            release = await check_for_update()
+            await asyncio.to_thread(validate_installation, require_clean=True)
+            if not release.available:
+                return {
+                    "ok": True,
+                    "message": "当前已经是最新正式版。",
+                    "restarting": False,
+                    "new_version": release.current_version,
+                }
+            stage_update(
+                release,
+                user_id=0,
+                channel_id=0,
+                transport="admin",
+            )
+        except UpdateError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        asyncio.get_running_loop().call_later(
+            3,
+            request_process_exit,
+            UPDATE_EXIT_CODE,
         )
-        pre_hash = pre_hash if rc == 0 else "unknown"
-
-        import shutil
-
-        # Pull
-        rc, pull_out = await asyncio.to_thread(
-            _run_git, "pull", "origin", "main", timeout=60
-        )
-        if rc != 0:
-            return {"ok": False, "error": f"拉取代码失败：{pull_out}", "pre_hash": pre_hash}
-
-        # Clean stale __pycache__ so restart loads new bytecode, not cached old .pyc
-        def _clean_pycache() -> None:
-            for pycache in (_PROJECT_ROOT / "mochi").rglob("__pycache__"):
-                shutil.rmtree(pycache, ignore_errors=True)
-
-        await asyncio.to_thread(_clean_pycache)
-
-        # Install dependencies
-        sync_failure = await asyncio.to_thread(
-            _update_sync_failure, sys.executable, pre_hash
-        )
-        if sync_failure:
-            return sync_failure
-
-        # Get new version
-        rc, new_init = await asyncio.to_thread(
-            _run_git, "show", "HEAD:mochi/__init__.py"
-        )
-        new_version = _get_app_version()
-        if rc == 0:
-            import re
-            m = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', new_init)
-            if m:
-                new_version = m.group(1)
-
-        # Schedule restart so the new version actually takes effect.
-        # Without this, the running process keeps the old mochi/__init__.py
-        # cached in sys.modules and the UI shows stale version forever.
-        from mochi.shutdown import request_restart
-        loop = asyncio.get_event_loop()
-        loop.call_later(3, request_restart)
-
         return {
             "ok": True,
-            "message": "更新完成！3 秒后自动重启……",
+            "message": "已准备更新，3 秒后离线安装并重启……",
             "restarting": True,
-            "pre_hash": pre_hash,
-            "new_version": new_version,
-            "pull_output": pull_out[:500],
+            "new_version": release.version,
         }
 
     # ═══════════════════════════════════════════════════════════════════════

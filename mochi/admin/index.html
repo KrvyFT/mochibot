@@ -564,7 +564,7 @@ async function checkSystemUpdate(btn) {
     h += `<span class="badge badge-info">v${esc(r.current_version)}</span>`;
     h += `<span style="color:var(--text-soft)">→</span>`;
     h += `<span class="badge badge-ok">v${esc(r.remote_version)}</span>`;
-    h += `<span style="font-size:11px;color:var(--text-soft)">(${r.commits_behind} 个提交)</span>`;
+    h += `<span style="font-size:11px;color:var(--text-soft)">官方 Release ${esc(r.release_tag || '')}</span>`;
     h += `</div>`;
     if (r.changelog_diff) {
       h += `<details style="margin-bottom:10px"><summary style="cursor:pointer;font-size:12px;color:var(--text-soft)">查看更新日志</summary>`;

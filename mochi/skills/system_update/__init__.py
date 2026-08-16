@@ -1,0 +1,1 @@
+"""MochiBot self-update skill."""
