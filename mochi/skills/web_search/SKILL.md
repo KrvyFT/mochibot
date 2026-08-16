@@ -1,6 +1,6 @@
 ---
 name: web_search
-description: "网络搜索 — 在线查找最新信息（无需 API 密钥）"
+description: 联网查找最新或外部信息
 type: tool
 ---
 
@@ -9,7 +9,7 @@ type: tool
 ## Tools
 
 ### web_search (routed)
-通过 DuckDuckGo 搜索互联网。用于查询时事、新闻、价格、知识、教程等。
+在互联网上查找当前对话需要的外部信息，如新闻、价格、知识或教程。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

@@ -1,6 +1,6 @@
 ---
 name: habit
-description: "习惯打卡 — 需要长期坚持并追踪'做了没有'的事（如运动、喝水、学习）。"
+description: 追踪需要长期坚持、反复完成的事，如运动、喝水或学习
 type: tool
 multi_turn: true
 diary_status_order: 10
@@ -21,7 +21,7 @@ diary_status_order: 10
 | habit_id | integer | no | 习惯 ID（仅 stats 需要） |
 
 ### checkin_habit (routed)
-为一个已有长期习惯增加或撤销完成记录，例如已经喝完一杯水或已经跑完步。
+记录或撤销一次已经完成的习惯；“打算做”或“晚点做”不算完成。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -31,7 +31,7 @@ diary_status_order: 10
 | count | integer | no | 打卡次数（默认 1） |
 
 ### edit_habit (routed)
-创建或调整长期重复追踪的习惯，包括频率、重要性、暂停和恢复。
+创建或调整需要反复追踪的长期习惯，包括频率、重要性、暂停和恢复。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -43,9 +43,3 @@ diary_status_order: 10
 | importance | string | no | important 或 normal（默认 normal） |
 | context | string | no | 时间安排备注 |
 | until | string | no | 暂停截止日期（ISO 格式），默认 7 天 |
-
-## Capability Context
-
-- check-in 会改变完成计数，因此“打算做”或“晚点做”并不构成已完成事实。
-- `pause` 会在多天范围内暂停追踪；它不会保存一次性的“稍后再看”念头。
-- 每个写操作只改变参数中明确指定的习惯，结果会返回实际状态。
