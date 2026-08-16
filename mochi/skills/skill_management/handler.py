@@ -90,10 +90,11 @@ class SkillManagementSkill(Skill):
             if action == "view":
                 return self._get_agent_config()
             if action == "set":
-                return self._set_agent_config(
+                return self._set_agent_configs(
                     context,
-                    args.get("key", ""),
-                    args.get("value"),
+                    args.get("changes"),
+                    fallback_key=args.get("key", ""),
+                    fallback_value=args.get("value"),
                 )
             return SkillResult(
                 output="action 必须是 view 或 set。",
@@ -268,11 +269,13 @@ class SkillManagementSkill(Skill):
             )
         return SkillResult(output="\n\n".join(lines))
 
-    def _set_agent_config(
+    def _set_agent_configs(
         self,
         context: SkillContext,
-        key: str,
-        value,
+        changes,
+        *,
+        fallback_key: str,
+        fallback_value,
     ) -> SkillResult:
         from mochi.admin.admin_db import get_system_config, set_system_override
 
@@ -281,84 +284,93 @@ class SkillManagementSkill(Skill):
                 output="只有用户当前对话可以授权调整运行设置。",
                 success=False,
             )
-        field = _AGENT_CONFIG_FIELDS.get(key)
-        if field is None:
+        requested = changes if isinstance(changes, list) else []
+        if not requested and fallback_key:
+            requested = [{"key": fallback_key, "value": fallback_value}]
+        if not requested:
+            return SkillResult(output="set 需要至少一项 changes。", success=False)
+
+        current = {
+            key: get_system_config(field[0])
+            for key, field in _AGENT_CONFIG_FIELDS.items()
+        }
+        normalized_changes: dict[str, int | float] = {}
+        for item in requested:
+            if not isinstance(item, dict):
+                return SkillResult(
+                    output="changes 中的每一项都需要 key 和 value。",
+                    success=False,
+                )
+            key = str(item.get("key") or "")
+            value = item.get("value")
+            field = _AGENT_CONFIG_FIELDS.get(key)
+            if field is None:
+                return SkillResult(
+                    output=(
+                        f"未知运行设置 '{key}'。先使用 view "
+                        "查看当前可调整项。"
+                    ),
+                    success=False,
+                )
+            if isinstance(value, bool):
+                return SkillResult(
+                    output=f"{key} 的值必须是数字。",
+                    success=False,
+                )
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                return SkillResult(
+                    output=f"{key} 的值必须是数字。",
+                    success=False,
+                )
+            _, type_name, minimum, maximum, _ = field
+            if type_name == "int":
+                if not numeric.is_integer():
+                    return SkillResult(
+                        output=f"{key} 必须是整数。",
+                        success=False,
+                    )
+                normalized: int | float = int(numeric)
+            else:
+                normalized = numeric
+            if not minimum <= normalized <= maximum:
+                return SkillResult(
+                    output=f"{key} 必须在 {minimum}–{maximum} 之间。",
+                    success=False,
+                )
+            normalized_changes[key] = normalized
+
+        proposed = {**current, **normalized_changes}
+        if proposed["free_time_min_minutes"] > proposed["free_time_max_minutes"]:
             return SkillResult(
-                output=(
-                    f"未知运行设置 '{key}'。先使用 get_agent_config "
-                    "查看当前可调整项。"
-                ),
+                output="Free Time 最短间隔不能大于最长间隔。",
                 success=False,
             )
-        if isinstance(value, bool):
-            return SkillResult(output="设置值必须是数字。", success=False)
-        try:
-            numeric = float(value)
-        except (TypeError, ValueError):
-            return SkillResult(output="设置值必须是数字。", success=False)
-
-        system_key, type_name, minimum, maximum, _ = field
-        if type_name == "int":
-            if not numeric.is_integer():
-                return SkillResult(output=f"{key} 必须是整数。", success=False)
-            normalized: int | float = int(numeric)
-        else:
-            normalized = numeric
-        if not minimum <= normalized <= maximum:
+        if proposed["wake_earliest_hour"] >= proposed["sleep_after_hour"]:
             return SkillResult(
-                output=f"{key} 必须在 {minimum}–{maximum} 之间。",
+                output="最早清醒时间必须早于休息时段起点。",
                 success=False,
             )
 
-        if key == "free_time_min_minutes":
-            current_max = int(get_system_config("FREE_TIME_MAX_MINUTES"))
-            if normalized > current_max:
-                return SkillResult(
-                    output=(
-                        "free_time_min_minutes 不能大于当前 "
-                        f"free_time_max_minutes ({current_max})。"
-                    ),
-                    success=False,
-                )
-        elif key == "free_time_max_minutes":
-            current_min = int(get_system_config("FREE_TIME_MIN_MINUTES"))
-            if normalized < current_min:
-                return SkillResult(
-                    output=(
-                        "free_time_max_minutes 不能小于当前 "
-                        f"free_time_min_minutes ({current_min})。"
-                    ),
-                    success=False,
-                )
-        elif key == "wake_earliest_hour":
-            current_sleep = int(get_system_config("SLEEP_AFTER_HOUR"))
-            if normalized >= current_sleep:
-                return SkillResult(
-                    output=(
-                        "wake_earliest_hour 必须早于当前 "
-                        f"sleep_after_hour ({current_sleep})。"
-                    ),
-                    success=False,
-                )
-        elif key == "sleep_after_hour":
-            current_wake = int(get_system_config("WAKE_EARLIEST_HOUR"))
-            if normalized <= current_wake:
-                return SkillResult(
-                    output=(
-                        "sleep_after_hour 必须晚于当前 "
-                        f"wake_earliest_hour ({current_wake})。"
-                    ),
-                    success=False,
-                )
-
-        old_value = get_system_config(system_key)
-        set_system_override(system_key, str(normalized))
-        new_value = get_system_config(system_key)
+        receipts = []
+        changed = False
+        for key, normalized in normalized_changes.items():
+            old_value = current[key]
+            if old_value == normalized:
+                receipts.append(f"{key} 保持 {old_value}")
+                continue
+            system_key = _AGENT_CONFIG_FIELDS[key][0]
+            set_system_override(system_key, str(normalized))
+            new_value = get_system_config(system_key)
+            receipts.append(f"{key}: {old_value} → {new_value}")
+            changed = True
         return SkillResult(
             output=(
-                f"已将 {key} 从 {old_value} 调整为 {new_value}。"
-                "新值会被后续 Heartbeat 循环读取；已经排定的下一次时刻"
+                "已调整运行设置：\n- "
+                + "\n- ".join(receipts)
+                + "\n新值会被后续 Heartbeat 循环读取；已经排定的下一次时刻"
                 "不会追溯重算。"
             ),
-            state_changed=True,
+            state_changed=changed,
         )
