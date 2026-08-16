@@ -394,6 +394,40 @@ def _render_runtime_context(template: str, diary_status: str = "",
     return result.strip()
 
 
+def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
+    if runtime_entry.kind == "free_time":
+        situation = get_prompt("free_time_entry")
+    elif runtime_entry.kind == "attention":
+        situation = get_prompt("attention_entry")
+        fact_lines = []
+        for fact in runtime_entry.attention_facts:
+            encoded = json.dumps(
+                fact.facts,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            )
+            fact_lines.append(
+                f"- source={fact.source}; key={fact.stable_key}; "
+                f"observed_at={fact.observed_at}; freshness={fact.freshness}; "
+                f"status={fact.status}; facts={encoded}"
+            )
+        situation = situation.replace(
+            "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
+        ).replace(
+            "{{attention_facts}}",
+            "\n".join(fact_lines) if fact_lines else "- 当前没有观察事实",
+        )
+    else:
+        raise ValueError("runtime situation is only available for autonomous entries")
+    if not situation:
+        raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
+    protocol = get_prompt("runtime_silence_protocol")
+    if not protocol:
+        raise RuntimeError("Runtime silence protocol prompt is missing")
+    return f"{situation}\n\n{protocol}"
+
+
 def _build_system_prompt(user_id: int, capability_context: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
@@ -406,7 +440,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          recent_operations: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
-                         policy: ContextPolicy | None = None) -> str:
+                         policy: ContextPolicy | None = None,
+                         defer_runtime_situation: bool = False) -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -431,40 +466,15 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                 _deployment_environment(),
             )
         )
-    early_runtime_situation = []
-    if policy.early_runtime_situation and runtime_entry:
-        if runtime_entry.kind == "free_time":
-            situation = get_prompt("free_time_entry")
-        else:
-            situation = get_prompt("attention_entry")
-            if not situation:
-                raise RuntimeError("attention entry prompt is missing")
-            fact_lines = []
-            for fact in runtime_entry.attention_facts:
-                encoded = json.dumps(
-                    fact.facts,
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
-                )
-                fact_lines.append(
-                    f"- source={fact.source}; key={fact.stable_key}; "
-                    f"observed_at={fact.observed_at}; freshness={fact.freshness}; "
-                    f"status={fact.status}; facts={encoded}"
-                )
-            situation = situation.replace(
-                "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
-            ).replace(
-                "{{attention_facts}}",
-                "\n".join(fact_lines) if fact_lines else "- 当前没有未解决观察事实",
+        early_runtime_situation = []
+        if (
+            policy.early_runtime_situation
+            and runtime_entry
+            and not defer_runtime_situation
+        ):
+            early_runtime_situation.append(
+                _render_autonomous_situation(runtime_entry)
             )
-        if not situation:
-            raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
-        early_runtime_situation.append(situation)
-        protocol = get_prompt("runtime_silence_protocol")
-        if not protocol:
-            raise RuntimeError("Runtime silence protocol prompt is missing")
-        early_runtime_situation.append(protocol)
 
     capability_parts = []
     if not is_weekly:
@@ -967,11 +977,17 @@ async def chat(
             weekly_session.context.rendered if weekly_session else ""
         ),
         policy=prompt_policy,
+        defer_runtime_situation=is_autonomous,
     )
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
     messages.extend(_expand_history(history))
+    if is_autonomous:
+        messages.append({
+            "role": "system",
+            "content": _render_autonomous_situation(runtime_entry),
+        })
     if image:
         _replace_current_user_with_image(messages, stored_text, text, image)
         # Image understanding belongs to the configured Main model.
