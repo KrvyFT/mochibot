@@ -9,6 +9,8 @@ import sqlite3
 from mochi.db import (
     delete_memory_items,
     finish_tool_execution,
+    get_conversation_context,
+    get_memory_extraction_batch,
     get_recent_messages,
     get_recent_tool_executions,
     init_db,
@@ -56,6 +58,31 @@ def test_reset_boundary_hides_older_conversation():
     assert [m["content"] for m in get_recent_messages(1, since=boundary)] == [
         "after reset"
     ]
+
+
+def test_proactive_assistant_message_stays_in_chat_context_only():
+    save_message(1, "user", "ordinary user", turn_id="ordinary")
+    save_message(1, "assistant", "ordinary reply", turn_id="ordinary")
+    save_message(1, "user", "what did you mean?", turn_id="follow-up")
+    save_message(
+        1,
+        "assistant",
+        "proactive thought",
+        turn_id="attention:scheduled",
+        processed=True,
+    )
+
+    context = get_conversation_context(1, recent_turns=1)
+
+    assert [
+        (item["role"], item["content"])
+        for item in context["recent"] + context["trailing"]
+    ] == [
+        ("assistant", "proactive thought"),
+        ("user", "what did you mean?"),
+    ]
+    _, extraction_batch = get_memory_extraction_batch(1, batch_turns=2)
+    assert extraction_batch == []
 
 
 def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():

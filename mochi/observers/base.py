@@ -141,6 +141,7 @@ class Observer(ABC):
     Subclass and implement observe() — return a flat dict of data.
     Everything else (caching, interval, error handling) is handled here.
     """
+    retired_attention_keys: tuple[str, ...] = ()
 
     def __init__(self) -> None:
         self._meta: ObserverMeta | None = None
