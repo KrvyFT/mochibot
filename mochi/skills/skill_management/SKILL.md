@@ -46,7 +46,7 @@ locked: true
 | key | string | yes | 配置项名称 |
 | value | string | yes | 新值（空字符串=清除自定义值） |
 
-### manage_agent_settings (resident)
+### manage_agent_settings (on_demand)
 查看或调整 Agent 自身运行设置。用户觉得你主动联系太频繁或太少、希望改变陪伴节奏时，先用 `view` 了解当前可调项，再用 `set` 修改。系统主动回合只能查看，不能修改。
 
 | Parameter | Type | Required | Description |
