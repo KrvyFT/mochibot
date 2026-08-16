@@ -53,4 +53,5 @@ locked: true
 |-----------|------|----------|-------------|
 | action | string (enum: view, set) | yes | 查看或修改 |
 | key | string | no | `view` 返回的设置名；set 时必填 |
-| value | integer | no | 新值；set 时必填 |
+| value | number | no | 新值；set 时必填 |
+| changes | array (items: object) | no | set 时可一次提交多项，每项形如 `{"key":"设置名","value":新值}`；与 key/value 二选一 |
