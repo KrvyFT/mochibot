@@ -44,19 +44,23 @@ _CORE_DEFINITION = {
     "function": {
         "name": CORE_TOOL,
         "description": (
-            "Apply exact edit/delete/insert_after patches to the free-text Core "
-            "only when the complete visible snapshot is still current. Preserve "
-            "the user's document organization. This can succeed once per week."
+            "根据当前看到的完整 Core 快照，批量执行精确的 edit、delete "
+            "或 insert_after。保留现有自由文本组织；快照已变化时会拒绝，"
+            "每周最多成功一次。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "expected_content": {"type": "string"},
+                "expected_content": {
+                    "type": "string",
+                    "description": "本轮看到的完整 Core 原文。",
+                },
                 "operations": {
                     "type": "array",
                     "minItems": 1,
                     "maxItems": 20,
                     "items": {"type": "object"},
+                    "description": "按顺序执行的精确 patch。",
                 },
             },
             "required": ["expected_content", "operations"],
@@ -70,16 +74,15 @@ _CURATE_DEFINITION = {
     "function": {
         "name": CURATE_TOOL,
         "description": (
-            "Atomically create, edit, merge, or archive only the visible "
-            "Weekly Memory candidates. Each operation must be one of: "
+            "整理本周提供的 Memory 候选，只操作当前可见内容，并在一个批次中"
+            "完成创建、修订、合并或归档。每项 operation 使用以下一种格式："
             "create(op,content,importance,evidence_message_ids); "
             "edit(op,item_id,expected_content,expected_updated_at,content,"
             "importance,evidence_message_ids); "
             "merge(op,keep:{item_id,expected_content,expected_updated_at},"
             "remove:[same shape],content,importance,"
             "evidence_message_ids); archive(op,item_id,expected_content,"
-            "expected_updated_at,evidence_message_ids). "
-            "Use at most one successful batch."
+            "expected_updated_at,evidence_message_ids)。"
         ),
         "parameters": {
             "type": "object",
@@ -101,12 +104,10 @@ _RELATIONSHIP_DEFINITION = {
     "function": {
         "name": RELATIONSHIP_TOOL,
         "description": (
-            "Atomically upsert or archive durable relationships among the user's "
-            "people, pets, and places. Every upsert cites an exact visible Memory "
-            "Item snapshot with user-message evidence; Core is context, not "
-            "evidence. Complete Memory curation first when that tool is available, "
-            "then use its refreshed relationship context. An empty operations "
-            "array records that no change is needed."
+            "整理用户与人物、宠物、地点之间值得长期保留的关系。每次新增或"
+            "更新都引用当前可见且带用户消息证据的 Memory；Core 只能帮助理解，"
+            "不能代替证据。有 Memory 整理时先完成它，再使用刷新后的关系上下文。"
+            "没有变化时提交空 operations。"
         ),
         "parameters": {
             "type": "object",

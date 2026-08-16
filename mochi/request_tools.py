@@ -14,7 +14,6 @@ from mochi import tool_policy
 
 MAX_EXACT_REQUESTS = 3
 MAX_QUERY_LENGTH = 200
-MAX_REASON_LENGTH = 120
 MAX_SEARCH_MATCHES = 2
 
 
@@ -23,9 +22,9 @@ REQUEST_TOOLS_DEF = {
     "function": {
         "name": "request_tools",
         "description": (
-            "Load additional tool namespaces for later rounds of this turn. "
-            "Use skills for exact skill/tool names, query for a short natural-language "
-            "search, or both. Requested tools are not usable in the same response."
+            "当前工具不够时，申请本轮需要的额外能力。知道技能或工具名时"
+            "使用 skills；不知道名称时用 query 描述想做什么。申请成功后，"
+            "下一轮才能使用新工具。"
         ),
         "parameters": {
             "type": "object",
@@ -40,19 +39,14 @@ REQUEST_TOOLS_DEF = {
                     },
                     "minItems": 1,
                     "maxItems": MAX_EXACT_REQUESTS,
-                    "description": "Exact skill names or tool names.",
+                    "description": "明确的技能名或工具名。",
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": MAX_QUERY_LENGTH,
                     "pattern": r".*\S.*",
-                    "description": "Natural-language description of the needed capability.",
-                },
-                "reason": {
-                    "type": "string",
-                    "maxLength": MAX_REASON_LENGTH,
-                    "description": "Brief reason the capability is needed.",
+                    "description": "用自然语言描述需要什么能力。",
                 },
             },
             "anyOf": [{"required": ["skills"]}, {"required": ["query"]}],
@@ -344,14 +338,12 @@ def _validate_arguments(arguments: object) -> str | None:
     if not isinstance(arguments, dict):
         return "arguments must be an object"
 
-    extra = set(arguments) - {"skills", "query", "reason"}
+    extra = set(arguments) - {"skills", "query"}
     if extra:
         return f"unsupported properties: {', '.join(sorted(extra))}"
 
     skills = arguments.get("skills")
     query = arguments.get("query")
-    reason = arguments.get("reason")
-
     if "skills" in arguments:
         if not isinstance(skills, list):
             return "skills must be an array"
@@ -371,12 +363,6 @@ def _validate_arguments(arguments: object) -> str | None:
             return "query must be non-empty"
         if len(query) > MAX_QUERY_LENGTH:
             return f"query may contain at most {MAX_QUERY_LENGTH} characters"
-
-    if "reason" in arguments:
-        if not isinstance(reason, str):
-            return "reason must be a string"
-        if len(reason) > MAX_REASON_LENGTH:
-            return f"reason may contain at most {MAX_REASON_LENGTH} characters"
 
     has_skills = isinstance(skills, list) and any(item.strip() for item in skills)
     has_query = isinstance(query, str) and bool(query.strip())

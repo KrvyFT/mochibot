@@ -1,6 +1,6 @@
 ---
 name: meal
-description: "饮食记录 — 记录饮食、查询历史、删除记录"
+description: 记录和回顾饮食
 type: tool
 multi_turn: true
 diary_status_order: 40
@@ -13,7 +13,7 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 ## Tools
 
 ### log_meal (routed)
-记录一餐的食物、估算热量和宏量营养素，适用于文字描述或食物照片。结果保留总量与逐项明细，作为后续交流的真实依据。
+记录用户已经吃过的一餐，并估算食物、热量和宏量营养素。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -41,9 +41,3 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 |-----------|------|----------|-------------|
 | meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
 | date | string | | YYYY-MM-DD，默认今天 |
-
-## Capability Context
-
-- `log_meal` 写入总热量和逐项营养估算；工具回执中的明细是用户可见价值，也明确了哪些数字只是估算。
-- 没有原地编辑餐食的操作。更正一条记录会产生一次删除和一次新记录，两次操作各自返回回执。
-- `delete_meal` 是扩展能力，按日期和餐型删除整条记录。

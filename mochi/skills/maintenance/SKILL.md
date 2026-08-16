@@ -1,6 +1,6 @@
 ---
 name: maintenance
-description: "Nightly 确定性维护 — 归档、审计与保留期清理"
+description: 夜间整理、审计和清理过期数据
 type: automation
 triggers: [cron]
 locked: true

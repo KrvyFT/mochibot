@@ -7,8 +7,7 @@ ENTER_BEDTIME_DEF = {
     "function": {
         "name": ENTER_BEDTIME_TOOL_NAME,
         "description": (
-            "Request bedtime after this reply when the user is genuinely ending "
-            "the current conversation to sleep. You can still leave a natural farewell."
+            "当用户明确准备结束对话去睡觉时，在当前告别送达后进入休息。"
         ),
         "parameters": {
             "type": "object",

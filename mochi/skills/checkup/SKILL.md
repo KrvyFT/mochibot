@@ -1,17 +1,12 @@
 ---
 name: checkup
-description: "系统体检 — 一键查看 prompt 体积、数据库状态、记忆系统、运行状态"
+description: 检查自己的运行健康、记忆和近期错误
 type: tool
 ---
 
 ## Tools
 
 ### run_checkup (on_demand)
-汇总当前 prompt 体积、数据库、记忆和运行状态，适合了解 MochiBot 自身是否健康。
+检查自己当前是否运行正常，汇总上下文体积、记忆状态和近期错误。
 
 无需参数。
-
-## Capability Context
-
-- checkup 是无参数的只读快照，不修改数据库、记忆或运行配置。
-- 输出反映检查发生时的系统状态，可以作为解释异常或健康情况的事实来源。

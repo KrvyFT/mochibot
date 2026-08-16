@@ -1,6 +1,6 @@
 ---
 name: perception
-description: "通过快照信息查看最近的各种情况"
+description: 通过快照信息查看最近的各种情况
 type: tool
 locked: true
 triggers: [tool_call]
