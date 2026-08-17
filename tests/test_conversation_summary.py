@@ -78,6 +78,7 @@ async def test_length_truncation_retries_from_full_input_before_advancing(
     await summary_worker.schedule_conversation_summary(1)
 
     assert len(client.calls) == 2
+    assert client.calls[0]["max_tokens"] >= 1200
     assert (
         client.calls[1]["messages"][1]["content"]
         == client.calls[0]["messages"][1]["content"]

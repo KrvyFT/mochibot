@@ -23,6 +23,7 @@ log = logging.getLogger(__name__)
 
 SUMMARY_BATCH_SIZE = CONV_SUMMARY_BATCH_TURNS
 SUMMARY_CONTEXT_MAX_TOKENS = 16_000
+SUMMARY_GENERATION_MIN_TOKENS = 1_200
 _TRUNCATED_FINISH_REASONS = frozenset({
     "length",
     "max_tokens",
@@ -92,11 +93,20 @@ def _log_response_usage(response, usage_stage: str) -> None:
 async def _generate_summary(claim: dict) -> str:
     from mochi.config import CONV_SUMMARY_MAX_TOKENS
 
-    prompt = get_prompt("conv_summary")
-    if not prompt:
+    base_prompt = get_prompt("conv_summary")
+    if not base_prompt:
         raise RuntimeError("Conversation summary prompt is missing")
+    prompt = (
+        f"{base_prompt}\n\n"
+        f"最终摘要控制在约 {CONV_SUMMARY_MAX_TOKENS} 个中文字符以内，"
+        "用完整句子收束。"
+    )
+    generation_tokens = max(
+        SUMMARY_GENERATION_MIN_TOKENS,
+        CONV_SUMMARY_MAX_TOKENS * 4,
+    )
     summary_input = _summary_input(claim)
-    if not _fits_context(prompt, summary_input, CONV_SUMMARY_MAX_TOKENS):
+    if not _fits_context(prompt, summary_input, generation_tokens):
         raise SummaryContextError(
             "Conversation summary input exceeds the bounded Lite context"
         )
@@ -109,7 +119,7 @@ async def _generate_summary(claim: dict) -> str:
         client.chat,
         messages=messages,
         tools=None,
-        max_tokens=CONV_SUMMARY_MAX_TOKENS,
+        max_tokens=generation_tokens,
         temperature=0.2,
     )
     _log_response_usage(response, "rolling_update")
@@ -125,7 +135,7 @@ async def _generate_summary(claim: dict) -> str:
     if not _fits_context(
         compression_prompt,
         summary_input,
-        CONV_SUMMARY_MAX_TOKENS,
+        generation_tokens,
     ):
         raise SummaryContextError(
             "Conversation summary retry exceeds the bounded Lite context"
@@ -137,7 +147,7 @@ async def _generate_summary(claim: dict) -> str:
             {"role": "user", "content": summary_input},
         ],
         tools=None,
-        max_tokens=CONV_SUMMARY_MAX_TOKENS,
+        max_tokens=generation_tokens,
         temperature=0.1,
     )
     _log_response_usage(response, "compression_retry")
