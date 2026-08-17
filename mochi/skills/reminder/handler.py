@@ -9,6 +9,7 @@ from mochi.skills.reminder.queries import (
     create_reminder,
     create_self_reminder,
     get_active_reminders,
+    update_active_reminder,
 )
 from mochi.reminder_timer import notify_new_reminder
 
@@ -130,19 +131,10 @@ class ReminderSkill(Skill):
                     )
                 intent = intent.strip()
 
-            try:
-                remind_at_dt = datetime.fromisoformat(remind_at_raw)
-            except (ValueError, TypeError):
-                return SkillResult(
-                    output=f"Invalid remind_at format: {remind_at_raw!r}. "
-                           "Use ISO 8601, e.g. 2026-04-20T14:30:00+08:00",
-                    success=False,
-                )
-
-            if remind_at_dt.tzinfo is None:
-                remind_at_dt = remind_at_dt.replace(tzinfo=TZ)
-
-            remind_at = remind_at_dt.isoformat()
+            remind_at, error = self._normalize_remind_at(remind_at_raw)
+            if error:
+                return error
+            assert remind_at is not None
             if kind == "self":
                 rid = create_self_reminder(
                     uid,
@@ -186,6 +178,66 @@ class ReminderSkill(Skill):
                 output=f"{len(reminders)} reminders:\n" + "\n".join(lines)
             )
 
+        elif action == "update":
+            rid = args.get("reminder_id")
+            try:
+                rid = int(rid)
+            except (TypeError, ValueError):
+                return SkillResult(output="Need a valid reminder_id to update.", success=False)
+            reminder = next(
+                (item for item in get_active_reminders(uid) if item["id"] == rid),
+                None,
+            )
+            if reminder is None:
+                return SkillResult(output=f"Reminder #{rid} not found.", success=False)
+            remind_at = None
+            if "remind_at" in args:
+                remind_at, error = self._normalize_remind_at(args.get("remind_at"))
+                if error:
+                    return error
+            content_arg = "intent" if reminder["kind"] == "self" else "message"
+            content = args.get(content_arg) if content_arg in args else None
+            if content is not None:
+                if not isinstance(content, str) or not content.strip():
+                    return SkillResult(
+                        output=f"{content_arg} must be non-empty when provided.",
+                        success=False,
+                    )
+                content = content.strip()
+            if remind_at is None and content is None:
+                return SkillResult(
+                    output=f"Update reminder #{rid} with remind_at or {content_arg}.",
+                    success=False,
+                )
+            updated = update_active_reminder(
+                rid,
+                uid,
+                remind_at=remind_at,
+                content=content,
+            )
+            if not updated:
+                return SkillResult(
+                    output=f"Reminder #{rid} is already being delivered and cannot be updated.",
+                    success=False,
+                )
+            notify_new_reminder()
+            new_time = remind_at or reminder["remind_at"]
+            new_content = content or (
+                reminder.get("context")
+                if reminder["kind"] == "self"
+                else reminder["message"]
+            )
+            receipt = (
+                f"Reminder #{rid} updated for {new_time}: "
+                f"{_bounded_summary(new_content or '')}"
+            )
+            return SkillResult(
+                output=receipt,
+                summary=receipt,
+                entity_refs=[f"reminder:{rid}"],
+                state_changed=True,
+            )
+
         elif action == "delete":
             rid = args.get("reminder_id")
             if not rid:
@@ -204,6 +256,22 @@ class ReminderSkill(Skill):
             )
 
         return SkillResult(output=f"Unknown action: {action}", success=False)
+
+    @staticmethod
+    def _normalize_remind_at(
+        raw: object,
+    ) -> tuple[str | None, SkillResult | None]:
+        try:
+            remind_at = datetime.fromisoformat(raw)
+        except (ValueError, TypeError):
+            return None, SkillResult(
+                output=f"Invalid remind_at format: {raw!r}. "
+                       "Use ISO 8601, e.g. 2026-04-20T14:30:00+08:00",
+                success=False,
+            )
+        if remind_at.tzinfo is None:
+            remind_at = remind_at.replace(tzinfo=TZ)
+        return remind_at.isoformat(), None
 
     # ── Diary integration ─────────────────────────────────────
 

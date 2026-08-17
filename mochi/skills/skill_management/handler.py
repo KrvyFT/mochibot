@@ -93,8 +93,6 @@ class SkillManagementSkill(Skill):
                 return self._set_agent_configs(
                     context,
                     args.get("changes"),
-                    fallback_key=args.get("key", ""),
-                    fallback_value=args.get("value"),
                 )
             return SkillResult(
                 output="action 必须是 view 或 set。",
@@ -273,9 +271,6 @@ class SkillManagementSkill(Skill):
         self,
         context: SkillContext,
         changes,
-        *,
-        fallback_key: str,
-        fallback_value,
     ) -> SkillResult:
         from mochi.admin.admin_db import get_system_config, set_system_override
 
@@ -285,8 +280,6 @@ class SkillManagementSkill(Skill):
                 success=False,
             )
         requested = changes if isinstance(changes, list) else []
-        if not requested and fallback_key:
-            requested = [{"key": fallback_key, "value": fallback_value}]
         if not requested:
             return SkillResult(output="set 需要至少一项 changes。", success=False)
 
@@ -307,8 +300,8 @@ class SkillManagementSkill(Skill):
             if field is None:
                 return SkillResult(
                     output=(
-                        f"未知运行设置 '{key}'。先使用 view "
-                        "查看当前可调整项。"
+                        f"未知运行设置 '{key}'。可调整项："
+                        + ", ".join(_AGENT_CONFIG_FIELDS)
                     ),
                     success=False,
                 )

@@ -498,7 +498,7 @@ def _parse_param_table(block: str) -> tuple[dict, list[str]]:
         preq = cells[2].strip()
         pdesc = cells[3].strip()
 
-        if pname.lower() in ("name", "parameter") or pname.startswith("("):
+        if pname.lower() == "parameter" or pname.startswith("("):
             continue
         if not ptype:
             continue
@@ -511,10 +511,29 @@ def _parse_param_table(block: str) -> tuple[dict, list[str]]:
             prop["type"] = enum_match.group(1)
             prop["enum"] = [e.strip() for e in enum_match.group(2).split(",")]
 
-        array_items_match = re.match(r"array\s*\(items:\s*(\w+)\)", ptype)
+        array_items_match = re.match(
+            r"array\s*\(items:\s*(\w+)"
+            r"(?:\s*\{([^}]+)\})?\)",
+            ptype,
+        )
         if array_items_match:
             prop["type"] = "array"
             prop["items"] = {"type": array_items_match.group(1)}
+            object_fields = array_items_match.group(2)
+            if prop["items"]["type"] == "object" and object_fields:
+                item_properties: dict[str, dict] = {}
+                item_required: list[str] = []
+                for field_spec in object_fields.split(","):
+                    field_name, separator, field_type = field_spec.strip().partition(":")
+                    if not separator or not field_name or not field_type:
+                        continue
+                    item_properties[field_name.strip()] = {
+                        "type": field_type.strip(),
+                    }
+                    item_required.append(field_name.strip())
+                prop["items"]["properties"] = item_properties
+                prop["items"]["required"] = item_required
+                prop["items"]["additionalProperties"] = False
 
         # OpenAI requires array types to have an "items" schema
         if prop["type"] == "array" and "items" not in prop:
@@ -660,6 +679,16 @@ class Skill(ABC):
         Default: parsed from SKILL.md. Override for dynamic tools.
         """
         return self.skill_md.get("tools", [])
+
+    def tool_available(
+        self,
+        tool_name: str,
+        *,
+        user_id: int = 0,
+        transport: str = "",
+    ) -> bool:
+        """Return whether one declared tool is useful in the current context."""
+        return True
 
     @property
     def triggers(self) -> list:

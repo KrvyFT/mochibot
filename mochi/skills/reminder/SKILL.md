@@ -14,9 +14,9 @@ sense:
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| action | string (enum: create, list, delete) | yes | 操作类型 |
+| action | string (enum: create, list, update, delete) | yes | 操作类型 |
 | kind | string (enum: notify, self) | no | create 时使用；默认 notify |
-| message | string | no | notify 的提醒内容 |
-| intent | string | no | self 的私有回望方向，不是预写给用户的话 |
-| remind_at | string | no | ISO 8601 格式的提醒时间（create 必填） |
-| reminder_id | integer | no | 提醒 ID（delete 必填） |
+| message | string | no | notify 的提醒内容；create 必填，update 可修改 |
+| intent | string | no | self 的私有回望方向，不是预写给用户的话；create 必填，update 可修改 |
+| remind_at | string | no | ISO 8601 格式；create 必填，update 可修改 |
+| reminder_id | integer | no | list 返回的提醒 ID（update/delete 必填） |

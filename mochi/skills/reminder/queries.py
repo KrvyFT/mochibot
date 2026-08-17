@@ -125,6 +125,50 @@ def get_pending_reminders(user_id: int | None = None) -> list[dict]:
         conn.close()
 
 
+def update_active_reminder(
+    reminder_id: int,
+    user_id: int,
+    *,
+    remind_at: str | None = None,
+    content: str | None = None,
+) -> bool:
+    """Update one pending owner reminder without racing claimed delivery."""
+    assignments = []
+    params: list[object] = []
+    if remind_at is not None:
+        assignments.append("remind_at = ?")
+        params.append(remind_at)
+    if content is not None:
+        assignments.append(
+            "message = CASE WHEN kind = 'notify' THEN ? ELSE message END"
+        )
+        params.append(content)
+        assignments.append(
+            "context = CASE WHEN kind = 'self' THEN ? ELSE context END"
+        )
+        params.append(content)
+    if not assignments:
+        return False
+    assignments.extend([
+        "next_attempt_at = NULL",
+        "last_error = NULL",
+        "attempt_count = 0",
+    ])
+    params.extend([reminder_id, user_id])
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            f"UPDATE reminders SET {', '.join(assignments)} "
+            "WHERE id = ? AND user_id = ? "
+            "AND kind IN ('notify', 'self') AND status = 'pending'",
+            params,
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
 def cancel_reminder(reminder_id: int, user_id: int | None = None) -> bool:
     """Soft-cancel active work, scoped to the owner when supplied."""
     now_iso = _iso(_now())

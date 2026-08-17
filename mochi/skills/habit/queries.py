@@ -63,20 +63,21 @@ def deactivate_habit(user_id: int, habit_id: int) -> bool:
     return updated
 
 
-def update_habit(habit_id: int, **fields) -> bool:
+def update_habit(user_id: int, habit_id: int, **fields) -> bool:
     """Update mutable fields on a habit. Returns True if updated.
 
-    Allowed fields: name, context, importance, frequency.
+    Allowed fields: name, context, importance, category, frequency.
     """
-    allowed = {"name", "context", "importance", "frequency"}
+    allowed = {"name", "context", "importance", "category", "frequency"}
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
     if not updates:
         return False
     set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [habit_id]
+    values = list(updates.values()) + [habit_id, user_id]
     conn = _connect()
     cursor = conn.execute(
-        f"UPDATE habits SET {set_clause} WHERE id = ? AND active = 1",
+        f"UPDATE habits SET {set_clause} "
+        "WHERE id = ? AND user_id = ? AND active = 1",
         values,
     )
     updated = cursor.rowcount > 0

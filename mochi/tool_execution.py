@@ -33,7 +33,7 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
 )
 
 _STATE_CHANGING_ACTIONS: dict[str, set[str]] = {
-    "manage_reminder": {"create", "delete"},
+    "manage_reminder": {"create", "update", "delete"},
     "manage_todo": {"add", "complete", "delete", "update"},
     "checkin_habit": {"checkin", "undo_checkin"},
     "edit_habit": {"add", "remove", "pause", "resume", "update"},

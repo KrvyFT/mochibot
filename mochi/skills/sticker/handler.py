@@ -72,6 +72,18 @@ def get_last_sent_sticker(chat_id: int) -> str | None:
 
 class StickerSkill(Skill):
 
+    def tool_available(
+        self,
+        tool_name: str,
+        *,
+        user_id: int = 0,
+        transport: str = "",
+    ) -> bool:
+        if tool_name != "send_sticker":
+            return True
+        from mochi.skills.sticker.queries import get_sticker_count
+        return get_sticker_count(user_id) > 0
+
     def record_last_sent(self, chat_id: int, file_id: str) -> None:
         """Record the last sticker sent (wrapper for transport layer)."""
         record_last_sent_sticker(chat_id, file_id)

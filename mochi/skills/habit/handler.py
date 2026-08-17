@@ -29,6 +29,7 @@ from mochi.skills.habit.queries import (
 log = logging.getLogger(__name__)
 
 _DAY_LABEL_CN = {0: "一", 1: "二", 2: "三", 3: "四", 4: "五", 5: "六", 6: "日"}
+_VALID_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 def _format_allowed_days(days: set[int]) -> str:
@@ -52,6 +53,49 @@ def _is_paused(habit: dict) -> bool:
         return False
     today = logical_today()
     return paused_until >= today
+
+
+def _build_frequency(
+    cycle: object,
+    target: object,
+    weekdays: object = None,
+) -> tuple[str | None, str | None]:
+    if cycle not in {"daily", "weekly"}:
+        return None, "cycle must be daily or weekly."
+    if isinstance(target, bool):
+        return None, "target must be a positive integer."
+    try:
+        target_value = int(target)
+    except (TypeError, ValueError):
+        return None, "target must be a positive integer."
+    if target_value <= 0:
+        return None, "target must be a positive integer."
+    if weekdays is None:
+        normalized_days: list[str] = []
+    elif isinstance(weekdays, list):
+        normalized_days = list(dict.fromkeys(
+            str(day).strip().lower() for day in weekdays
+        ))
+    else:
+        return None, "weekdays must be an array."
+    if any(day not in _VALID_WEEKDAYS for day in normalized_days):
+        return None, "weekdays may only contain mon, tue, wed, thu, fri, sat, or sun."
+    if cycle == "daily" and normalized_days:
+        return None, "weekdays can only be used with a weekly cycle."
+    if normalized_days:
+        return f"weekly_on:{','.join(normalized_days)}:{target_value}", None
+    return f"{cycle}:{target_value}", None
+
+
+def _frequency_fields(frequency: str) -> tuple[str, int, list[str]]:
+    cycle, target = parse_frequency(frequency) or ("daily", 1)
+    allowed = get_allowed_days(frequency)
+    weekdays = (
+        [_VALID_WEEKDAYS[index] for index in sorted(allowed)]
+        if allowed is not None
+        else []
+    )
+    return cycle, target, weekdays
 
 
 class HabitSkill(Skill):
@@ -131,19 +175,24 @@ class HabitSkill(Skill):
 
     def _add(self, user_id: int, args: dict) -> SkillResult:
         name = args.get("name")
-        frequency = args.get("frequency")
         if not name:
             return SkillResult(output="Error: 'name' is required for add.", success=False)
-        if not frequency:
-            return SkillResult(output="Error: 'frequency' is required (e.g. 'daily:2' or 'weekly:3').", success=False)
-        parsed = parse_frequency(frequency)
-        if not parsed:
+        cycle = args.get("cycle")
+        if not cycle:
             return SkillResult(
-                output=f"Error: invalid frequency '{frequency}'. "
-                       "Use 'daily:N', 'weekly:N', or 'weekly_on:DAY,...:N' "
-                       "(e.g. 'weekly_on:sat,sun:1').",
+                output="Error: 'cycle' is required for add.",
                 success=False,
             )
+        frequency, frequency_error = _build_frequency(
+            cycle,
+            args.get("target", 1),
+            args.get("weekdays"),
+        )
+        if frequency_error:
+            return SkillResult(output=f"Error: {frequency_error}", success=False)
+        assert frequency is not None
+        parsed = parse_frequency(frequency)
+        assert parsed is not None
         cycle, target = parsed
         allowed_days = get_allowed_days(frequency)
         category = args.get("category", "")
@@ -221,30 +270,45 @@ class HabitSkill(Skill):
             return SkillResult(output="Error: 'habit_id' is required for update.", success=False)
 
         fields = {}
-        for key in ("name", "context", "importance", "frequency"):
+        for key in ("name", "context", "importance", "category"):
             if key in args and args[key] is not None:
                 fields[key] = args[key]
-        if not fields:
-            return SkillResult(
-                output="Error: provide at least one field to update (name, context, importance, frequency).",
-                success=False,
+        frequency_keys = {"cycle", "target", "weekdays"}
+        if frequency_keys.intersection(args):
+            habits = list_habits(user_id)
+            habit = next((h for h in habits if h["id"] == int(habit_id)), None)
+            if not habit:
+                return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
+            current_cycle, current_target, current_weekdays = _frequency_fields(
+                habit["frequency"],
             )
-
-        # Validate frequency if being updated
-        if "frequency" in fields:
-            parsed = parse_frequency(fields["frequency"])
-            if not parsed:
+            cycle = args.get("cycle", current_cycle)
+            target = args.get("target", current_target)
+            weekdays = args.get(
+                "weekdays",
+                current_weekdays if cycle == current_cycle else [],
+            )
+            frequency, frequency_error = _build_frequency(
+                cycle, target, weekdays,
+            )
+            if frequency_error:
                 return SkillResult(
-                    output=f"Error: invalid frequency '{fields['frequency']}'.",
+                    output=f"Error: {frequency_error}",
                     success=False,
                 )
+            fields["frequency"] = frequency
+        if not fields:
+            return SkillResult(
+                output="Error: provide at least one field to update.",
+                success=False,
+            )
 
         # Validate importance if being updated
         if "importance" in fields and fields["importance"] not in ("important", "normal"):
             return SkillResult(output="Error: importance must be 'important' or 'normal'.", success=False)
 
         try:
-            ok = update_habit(int(habit_id), **fields)
+            ok = update_habit(user_id, int(habit_id), **fields)
         except sqlite3.IntegrityError:
             return SkillResult(output=f"Error: habit name '{fields.get('name')}' already exists.", success=False)
 
@@ -458,4 +522,3 @@ class HabitSkill(Skill):
                 lines.append(f"- {imp}{name} ({done}/{target}){ctx_tag}{last_tag} ⏳")
 
         return lines if lines else None
-

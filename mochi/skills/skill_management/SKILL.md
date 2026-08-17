@@ -40,11 +40,9 @@ locked: true
 | value | string | yes | 新值（空字符串=清除自定义值） |
 
 ### manage_agent_settings (on_demand)
-查看或调整自身运行设置。用户希望改变你的陪伴节奏、清醒时间或时区时，先用 view 了解可调项，再用 set 修改；系统主动回合只能查看。
+查看或调整自身运行设置。用户明确要求改变陪伴节奏、清醒时间或时区时可直接 set；系统主动回合只能查看。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | action | string (enum: view, set) | yes | 查看或修改 |
-| key | string | no | `view` 返回的设置名；set 时必填 |
-| value | number | no | 新值；set 时必填 |
-| changes | array (items: object) | no | set 时可一次提交多项，每项形如 `{"key":"设置名","value":新值}`；与 key/value 二选一 |
+| changes | array (items: object {key:string, value:number}) | no | set 时必填，可一次提交多项设置 |

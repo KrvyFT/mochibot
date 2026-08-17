@@ -507,8 +507,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if user_id and tool_names and habits:
         habit_tool_names = {"query_habit", "checkin_habit", "edit_habit"}
         if habit_tool_names & set(tool_names):
+            from mochi.skills.habit.logic import describe_frequency
             habit_lines = "  ".join(
-                f"#{h['id']} {h['name']} ({h['frequency']})"
+                f"#{h['id']} {h['name']} ({describe_frequency(h['frequency'])})"
                 for h in habits
             )
             if habit_lines:
@@ -947,6 +948,11 @@ async def chat(
     # ── Policy: filter denied tools before LLM sees them ──
     from mochi.tool_policy import filter_tools, check as policy_check
     tools = filter_tools(tools)
+    tools = skill_registry.filter_tools_for_context(
+        tools,
+        user_id=user_id,
+        transport=transport,
+    )
     availability = ToolAvailability.from_definitions(
         tools, source="initial",
     )
@@ -1238,6 +1244,7 @@ async def chat(
                         tc["arguments"],
                         round_availability,
                         transport=transport,
+                        user_id=user_id,
                     )
                 pending_definitions.extend(additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)

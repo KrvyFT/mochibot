@@ -18,16 +18,12 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
-| items | string | yes | JSON 食物数组：`[{"name":"麻婆豆腐","calories":250,"protein_g":15,"carbs_g":8,"fat_g":18}]` |
-| total_calories | integer | yes | 本餐估算总热量 |
-| total_protein_g | number | | 总蛋白质克数 |
-| total_carbs_g | number | | 总碳水克数 |
-| total_fat_g | number | | 总脂肪克数 |
+| items | array (items: object {name:string, calories:integer, protein_g:number, carbs_g:number, fat_g:number}) | yes | 已吃食物及逐项营养估算；总热量和宏量营养素由代码相加 |
 | source | string | | `text` / `photo` / `voice`，默认 `text` |
 | date | string | | YYYY-MM-DD，默认今天 |
 
 ### query_meals (routed)
-读取近期餐食、热量摄入和营养趋势，可按日期或回看天数汇总。
+读取近期餐食、记录 ID、热量摄入和营养趋势，可按日期或回看天数汇总。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -35,9 +31,8 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 | date | string | | 指定日期 YYYY-MM-DD，会覆盖 days。 |
 
 ### delete_meal (on_demand)
-按日期和餐型删除饮食记录。用于用户说记错了或想删掉的情况。
+按查询结果中的记录 ID 删除一条明确饮食记录。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
-| date | string | | YYYY-MM-DD，默认今天 |
+| meal_id | integer | yes | `query_meals` 返回的记录 ID |

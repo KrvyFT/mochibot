@@ -81,13 +81,15 @@ def query_health_log(user_id: int, types: list[str] | None = None,
     return [dict(r) for r in rows]
 
 
-def delete_health_log_items(item_ids: list[int]) -> int:
-    """Hard delete health_log rows by id list. Returns count deleted."""
-    if not item_ids:
-        return 0
+def delete_health_log_item(user_id: int, item_id: int) -> bool:
+    """Hard-delete one owner-scoped meal row by stable record ID."""
     conn = _connect()
-    ph = ",".join("?" * len(item_ids))
-    conn.execute(f"DELETE FROM health_log WHERE id IN ({ph})", item_ids)
-    conn.commit()
-    conn.close()
-    return len(item_ids)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM health_log WHERE id = ? AND user_id = ? AND type = 'meal'",
+            (item_id, user_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()

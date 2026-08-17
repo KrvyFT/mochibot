@@ -9,6 +9,7 @@ import re
 _FREQ_RE = re.compile(r'^(daily|weekly):(\d+)$')
 _FREQ_ON_RE = re.compile(r'^weekly_on:([a-z,]+):(\d+)$')
 _DAY_MAP = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+_DAY_LABELS = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 
 
 def parse_frequency(freq: str) -> tuple[str, int] | None:
@@ -42,3 +43,17 @@ def get_allowed_days(freq: str) -> set[int] | None:
         return None
     days = m.group(1).split(",")
     return {_DAY_MAP[d] for d in days if d in _DAY_MAP}
+
+
+def describe_frequency(freq: str) -> str:
+    """Render the private storage encoding as a natural Main-facing label."""
+    parsed = parse_frequency(freq)
+    if not parsed:
+        return "频率未设置"
+    cycle, target = parsed
+    allowed = get_allowed_days(freq)
+    if allowed is not None:
+        days = "、".join(_DAY_LABELS[index] for index in sorted(allowed))
+        return f"每周 {days}，目标 {target} 次"
+    cycle_label = "每天" if cycle == "daily" else "每周"
+    return f"{cycle_label} {target} 次"

@@ -232,6 +232,37 @@ def get_tools(transport: str = "") -> list[dict]:
     return tools
 
 
+def filter_tools_for_context(
+    definitions: list[dict] | tuple[dict, ...],
+    *,
+    user_id: int = 0,
+    transport: str = "",
+) -> list[dict]:
+    """Remove declared tools whose runtime prerequisites are not currently met."""
+    visible: list[dict] = []
+    for definition in definitions:
+        tool_name = definition.get("function", {}).get("name", "")
+        skill = _skills.get(_tool_map.get(tool_name, ""))
+        if skill is None:
+            visible.append(definition)
+            continue
+        try:
+            available = skill.tool_available(
+                tool_name,
+                user_id=user_id,
+                transport=transport,
+            )
+        except Exception:
+            log.exception(
+                "Runtime availability check failed for tool %s; hiding it",
+                tool_name,
+            )
+            continue
+        if available:
+            visible.append(definition)
+    return visible
+
+
 def get_tools_by_names(
     skill_names: list[str],
     transport: str = "",

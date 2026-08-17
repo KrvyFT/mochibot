@@ -38,7 +38,9 @@ diary_status_order: 10
 | action | string (enum: add, remove, pause, resume, update) | yes | 操作类型 |
 | habit_id | integer | no | 习惯 ID（remove/pause/resume/update） |
 | name | string | no | 习惯名称（add 必填；update 可选） |
-| frequency | string | no | daily:N、weekly:N 或 weekly_on:DAY,...:N（add 必填；update 可选） |
+| cycle | string (enum: daily, weekly) | no | 统计周期（add 必填；update 可选） |
+| target | integer | no | 每个周期的目标次数，默认 1 |
+| weekdays | array | no | 仅 weekly 使用；可选 mon、tue、wed、thu、fri、sat、sun，省略表示不限星期 |
 | category | string | no | 分类标签（如 health、pet、study） |
 | importance | string | no | important 或 normal（默认 normal） |
 | context | string | no | 时间安排备注 |

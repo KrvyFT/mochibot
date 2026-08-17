@@ -134,7 +134,7 @@ def error_result(code: str, message: str) -> dict:
     }
 
 
-def build_catalog(transport: str = "") -> RequestCatalog:
+def build_catalog(transport: str = "", user_id: int = 0) -> RequestCatalog:
     """Build the requestable catalog from the live registry and policy."""
     disabled = skill_registry._get_disabled_skills()
     eligible: dict[str, RequestableNamespace] = {}
@@ -145,7 +145,13 @@ def build_catalog(transport: str = "") -> RequestCatalog:
     denied_tools: set[str] = set()
 
     for name, skill in skill_registry.all_skills().items():
-        definitions = _normalized_definitions(skill.get_tools())
+        definitions = _normalized_definitions(
+            skill_registry.filter_tools_for_context(
+                skill.get_tools(),
+                user_id=user_id,
+                transport=transport,
+            )
+        )
         for definition in definitions:
             tool_name = _tool_name(definition)
             if tool_name:
@@ -213,6 +219,7 @@ def resolve_request(
     availability: ToolAvailability,
     *,
     transport: str = "",
+    user_id: int = 0,
 ) -> tuple[dict, list[dict]]:
     """Resolve one request_tools call and return its result plus new definitions."""
     validation_error = _validate_arguments(arguments)
@@ -221,7 +228,7 @@ def resolve_request(
 
     args = arguments
     assert isinstance(args, dict)
-    catalog = build_catalog(transport)
+    catalog = build_catalog(transport, user_id)
     requested = args.get("skills", [])
     query = args.get("query", "").strip()
 
