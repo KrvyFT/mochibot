@@ -191,13 +191,13 @@ def _relationship_memory(content="Shiki lives with Mochi in Shanghai"):
     }
 
 
-def _relationship_upsert(source_memory):
+def _relationship_upsert(item_id):
     return {
         "op": "upsert",
         "subject": {"name": "Shiki", "type": "person"},
         "predicate": "lives_with",
         "object": {"name": "Mochi", "type": "pet"},
-        "source_memory": source_memory,
+        "source_memory": {"item_id": item_id},
     }
 
 
@@ -217,10 +217,13 @@ def test_weekly_relationship_upsert_archive_and_entity_recall():
         "subject": {"name": "Shiki", "type": "person"},
         "predicate": "lives_in",
         "object": {"name": "Shanghai", "type": "place"},
-        "source_memory": snapshot,
+        "source_memory": {"item_id": item_id},
     }
     created = curate_relationships(
-        1, {item_id}, [_relationship_upsert(snapshot), lives_in],
+        1,
+        {item_id: snapshot},
+        {},
+        [_relationship_upsert(item_id), lives_in],
     )
 
     assert len(created.upserted_ids) == 2
@@ -228,10 +231,16 @@ def test_weekly_relationship_upsert_archive_and_entity_recall():
         1, "Shiki and Mochi are going home to Shanghai",
     )) == {"shiki", "mochi", "shanghai"}
     assert find_matching_entities(1, "The unused place") == []
+    relationships = list_active_relationships(1)
+    relationship_snapshots = {
+        relationship["triple_id"]: relationship
+        for relationship in relationships
+    }
     repeated = curate_relationships(
         1,
-        {item_id},
-        [_relationship_upsert(snapshot), lives_in],
+        {item_id: snapshot},
+        relationship_snapshots,
+        [_relationship_upsert(item_id), lives_in],
     )
     assert repeated.upserted_ids == ()
 
@@ -239,7 +248,10 @@ def test_weekly_relationship_upsert_archive_and_entity_recall():
         "Shiki confirmed that Mochi still lives in the same household",
     )
     refreshed = curate_relationships(
-        1, {newer_id}, [_relationship_upsert(newer_snapshot)],
+        1,
+        {newer_id: newer_snapshot},
+        relationship_snapshots,
+        [_relationship_upsert(newer_id)],
     )
     assert len(refreshed.upserted_ids) == 1
     conn = _connect()
@@ -252,9 +264,13 @@ def test_weekly_relationship_upsert_archive_and_entity_recall():
 
     archived = curate_relationships(
         1,
-        {item_id},
+        {item_id: snapshot},
+        {
+            relationship["triple_id"]: relationship
+            for relationship in relationships
+        },
         [
-            {"op": "archive", "expected": relationship}
+            {"op": "archive", "triple_id": relationship["triple_id"]}
             for relationship in relationships
         ],
     )

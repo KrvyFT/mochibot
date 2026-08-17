@@ -2,6 +2,7 @@
 
 import re
 import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -135,24 +136,25 @@ def _entity_id(conn, user_id: int, entity: dict, now: str) -> int:
 
 
 def _validate_memory_snapshot(
-    conn, user_id: int, allowed_item_ids: set[int], raw: object,
+    conn,
+    user_id: int,
+    visible_memory_snapshots: Mapping[int, Mapping[str, object]],
+    raw: object,
 ) -> int:
-    if (
-        not isinstance(raw, dict)
-        or set(raw) != {"item_id", "content", "updated_at"}
-    ):
+    if not isinstance(raw, dict) or set(raw) != {"item_id"}:
         raise RelationshipCurationError(
-            "source_memory must contain exactly item_id, content, and updated_at"
+            "source_memory must contain exactly item_id"
         )
     item_id = raw["item_id"]
     if (
         not isinstance(item_id, int)
         or isinstance(item_id, bool)
-        or item_id not in allowed_item_ids
+        or item_id not in visible_memory_snapshots
     ):
         raise RelationshipCurationError(
             "source_memory must be a Memory Item visible this week"
         )
+    snapshot = visible_memory_snapshots[item_id]
     row = conn.execute(
         "SELECT content, updated_at, evidence_message_ids "
         "FROM memory_items WHERE id = ? AND user_id = ?",
@@ -160,8 +162,8 @@ def _validate_memory_snapshot(
     ).fetchone()
     if (
         row is None
-        or raw["content"] != row["content"]
-        or raw["updated_at"] != row["updated_at"]
+        or snapshot.get("content") != row["content"]
+        or snapshot.get("updated_at") != row["updated_at"]
     ):
         raise RelationshipCurationConflict(
             "source Memory Item changed after Weekly context was built"
@@ -184,16 +186,39 @@ def _validate_memory_snapshot(
     return item_id
 
 
-def _parse_archive_snapshot(raw: object) -> dict:
-    fields = {
-        "triple_id", "subject", "subject_type", "predicate", "object",
-        "object_type", "source_memory_id", "created_at",
-    }
-    if not isinstance(raw, dict) or set(raw) != fields:
-        raise RelationshipCurationError(
-            "archive expected must be an exact visible relationship snapshot"
-        )
-    return raw
+def _load_relationship_snapshot(conn, user_id: int, triple_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT t.id AS triple_id, s.display_name AS subject, "
+        "s.entity_type AS subject_type, t.predicate, "
+        "o.display_name AS object, o.entity_type AS object_type, "
+        "t.source_memory_id, t.created_at "
+        "FROM kg_triples t "
+        "JOIN kg_entities s ON s.id = t.subject_id "
+        "JOIN kg_entities o ON o.id = t.object_id "
+        "WHERE t.id = ? AND t.user_id = ? AND t.valid_to IS NULL",
+        (triple_id, user_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _find_visible_relationship(
+    snapshots: Mapping[int, Mapping[str, object]],
+    subject: dict,
+    predicate: str,
+    object_: dict,
+) -> Mapping[str, object] | None:
+    subject_name = _normalize_name(subject["name"])
+    object_name = _normalize_name(object_["name"])
+    for snapshot in snapshots.values():
+        if (
+            _normalize_name(str(snapshot.get("subject", ""))) == subject_name
+            and snapshot.get("subject_type") == subject["type"]
+            and snapshot.get("predicate") == predicate
+            and _normalize_name(str(snapshot.get("object", ""))) == object_name
+            and snapshot.get("object_type") == object_["type"]
+        ):
+            return snapshot
+    return None
 
 
 def _cleanup_orphan_entities(conn, user_id: int) -> None:
@@ -209,7 +234,8 @@ def _cleanup_orphan_entities(conn, user_id: int) -> None:
 
 def curate_relationships(
     user_id: int,
-    allowed_item_ids: set[int] | frozenset[int],
+    visible_memory_snapshots: Mapping[int, Mapping[str, object]],
+    visible_relationship_snapshots: Mapping[int, Mapping[str, object]],
     operations: object,
 ) -> RelationshipCurationResult:
     """Apply one exact, evidence-backed Weekly relationship batch atomically."""
@@ -242,8 +268,24 @@ def curate_relationships(
                     raise RelationshipCurationError(
                         "unsupported relationship predicate"
                     )
+                expected_relationship = _find_visible_relationship(
+                    visible_relationship_snapshots,
+                    subject,
+                    predicate,
+                    object_,
+                )
+                if expected_relationship is not None:
+                    current_relationship = _load_relationship_snapshot(
+                        conn,
+                        user_id,
+                        int(expected_relationship["triple_id"]),
+                    )
+                    if current_relationship != expected_relationship:
+                        raise RelationshipCurationConflict(
+                            "relationship changed after Weekly context was built"
+                        )
                 memory_id = _validate_memory_snapshot(
-                    conn, user_id, set(allowed_item_ids),
+                    conn, user_id, visible_memory_snapshots,
                     operation["source_memory"],
                 )
                 subject_id = _entity_id(conn, user_id, subject, now)
@@ -255,6 +297,10 @@ def curate_relationships(
                     (user_id, subject_id, predicate, object_id),
                 ).fetchone()
                 if existing:
+                    if expected_relationship is None:
+                        raise RelationshipCurationConflict(
+                            "relationship appeared after Weekly context was built"
+                        )
                     cursor = conn.execute(
                         "UPDATE kg_triples SET source_memory_id = ?, "
                         "source = 'weekly_main', confidence = 1.0 "
@@ -278,36 +324,37 @@ def curate_relationships(
                 continue
 
             if op == "archive":
-                if set(operation) != {"op", "expected"}:
+                if set(operation) != {"op", "triple_id"}:
                     raise RelationshipCurationError(
                         "archive fields do not match the tool contract"
                     )
-                expected = _parse_archive_snapshot(operation["expected"])
-                row = conn.execute(
-                    "SELECT t.id AS triple_id, s.display_name AS subject, "
-                    "s.entity_type AS subject_type, t.predicate, "
-                    "o.display_name AS object, o.entity_type AS object_type, "
-                    "t.source_memory_id, t.created_at "
-                    "FROM kg_triples t "
-                    "JOIN kg_entities s ON s.id = t.subject_id "
-                    "JOIN kg_entities o ON o.id = t.object_id "
-                    "WHERE t.id = ? AND t.user_id = ? AND t.valid_to IS NULL",
-                    (expected["triple_id"], user_id),
-                ).fetchone()
-                if row is None or dict(row) != expected:
+                triple_id = operation["triple_id"]
+                if (
+                    isinstance(triple_id, bool)
+                    or not isinstance(triple_id, int)
+                    or triple_id not in visible_relationship_snapshots
+                ):
+                    raise RelationshipCurationError(
+                        "triple_id must reference a visible active relationship"
+                    )
+                expected = visible_relationship_snapshots[triple_id]
+                current_relationship = _load_relationship_snapshot(
+                    conn, user_id, triple_id,
+                )
+                if current_relationship != expected:
                     raise RelationshipCurationConflict(
                         "relationship changed after Weekly context was built"
                     )
                 cursor = conn.execute(
                     "UPDATE kg_triples SET valid_to = ? "
                     "WHERE id = ? AND valid_to IS NULL",
-                    (now, expected["triple_id"]),
+                    (now, triple_id),
                 )
                 if cursor.rowcount != 1:
                     raise RelationshipCurationConflict(
                         "relationship changed before archive committed"
                     )
-                archived.append(int(expected["triple_id"]))
+                archived.append(triple_id)
                 continue
 
             raise RelationshipCurationError("op must be upsert or archive")

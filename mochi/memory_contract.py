@@ -3,18 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Sequence
 
 
-MAX_MEMORY_CONTENT_CHARS = 80
+MAX_MEMORY_CONTENT_CHARS = 160
 MAX_EVIDENCE_MESSAGE_IDS = 20
-
-_ATOMIC_SEPARATOR_RE = re.compile(r"[。！？!?；;\n\r]")
-_SUBJECT_PREFIX_RE = re.compile(
-    r"^(?:用户|user\b|the user\b)",
-    re.IGNORECASE,
-)
 
 
 def validate_memory_content(content: object) -> str:
@@ -25,11 +18,6 @@ def validate_memory_content(content: object) -> str:
         raise ValueError(
             f"memory content must contain 1-{MAX_MEMORY_CONTENT_CHARS} characters"
         )
-    if cleaned.startswith(("-", "*", "•")) or _SUBJECT_PREFIX_RE.match(cleaned):
-        raise ValueError("memory content must be one subject-free fact")
-    body = cleaned.rstrip("。！？!?")
-    if _ATOMIC_SEPARATOR_RE.search(body):
-        raise ValueError("memory content must contain one atomic fact")
     return cleaned
 
 

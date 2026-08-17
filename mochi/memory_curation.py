@@ -260,18 +260,6 @@ def _positive_int(value: object, label: str) -> int:
     return value
 
 
-def _expected(operation: Mapping[str, object]) -> dict:
-    content = operation["expected_content"]
-    updated_at = operation["expected_updated_at"]
-    if not isinstance(content, str) or not isinstance(updated_at, str) or not updated_at:
-        raise MemoryCurationError("expected snapshot is invalid")
-    return {
-        "item_id": _positive_int(operation["item_id"], "item_id"),
-        "content": content,
-        "updated_at": updated_at,
-    }
-
-
 def _evidence(value: object) -> tuple[int, ...]:
     if not isinstance(value, list):
         raise MemoryCurationError("evidence_message_ids must be an array")
@@ -315,54 +303,45 @@ def _parse_operations(operations: object) -> tuple[list[dict], set[int]]:
             })
             continue
         if op in {"edit", "archive"}:
-            keys = {
-                "op", "item_id", "expected_content", "expected_updated_at",
-                "evidence_message_ids",
-            }
+            keys = {"op", "item_id", "evidence_message_ids"}
             if op == "edit":
                 keys |= {"content", "importance"}
             operation = _exact(raw, keys, f"operation {index}")
-            expected = _expected(operation)
+            item_id = _positive_int(operation["item_id"], "item_id")
             parsed_operation = {
                 "op": op,
-                "expected": expected,
+                "item_id": item_id,
                 "evidence": _evidence(operation["evidence_message_ids"]),
             }
             if op == "edit":
                 parsed_operation.update(_output(operation))
-            item_ids = [expected["item_id"]]
+            item_ids = [item_id]
         elif op == "merge":
             operation = _exact(
                 raw,
                 {
-                    "op", "keep", "remove", "content",
+                    "op", "keep_item_id", "remove_item_ids", "content",
                     "importance", "evidence_message_ids",
                 },
                 f"operation {index}",
             )
-            keep = _expected(_exact(
-                operation["keep"],
-                {"item_id", "expected_content", "expected_updated_at"},
-                "merge.keep",
-            ))
-            remove_raw = operation["remove"]
+            keep_id = _positive_int(operation["keep_item_id"], "keep_item_id")
+            remove_raw = operation["remove_item_ids"]
             if not isinstance(remove_raw, list) or not remove_raw:
-                raise MemoryCurationError("merge.remove must be a non-empty array")
-            remove = tuple(
-                _expected(_exact(
-                    item,
-                    {"item_id", "expected_content", "expected_updated_at"},
-                    "merge.remove",
-                ))
-                for item in remove_raw
+                raise MemoryCurationError(
+                    "remove_item_ids must be a non-empty array"
+                )
+            remove_ids = tuple(
+                _positive_int(item_id, "remove_item_ids item")
+                for item_id in remove_raw
             )
-            item_ids = [keep["item_id"], *(item["item_id"] for item in remove)]
+            item_ids = [keep_id, *remove_ids]
             if len(item_ids) != len(set(item_ids)):
                 raise MemoryCurationError("merge contains duplicate item IDs")
             parsed_operation = {
                 "op": op,
-                "keep": keep,
-                "remove": remove,
+                "keep_item_id": keep_id,
+                "remove_item_ids": remove_ids,
                 **_output(operation),
                 "evidence": _evidence(operation["evidence_message_ids"]),
             }
@@ -397,14 +376,21 @@ def _result_from_payload(payload: dict) -> MemoryCurationResult:
 
 def curate_memory_items(
     user_id: int,
-    allowed_item_ids: Collection[int],
+    candidate_package: WeeklyMemoryCandidatePackage,
     allowed_evidence_message_ids: Collection[int],
     operations: object,
     *,
     period_key: str,
 ) -> MemoryCurationResult:
     """Apply one candidate-scoped curation batch in a single transaction."""
-    allowed_items = frozenset(allowed_item_ids)
+    if candidate_package.user_id != user_id:
+        raise MemoryCurationError("candidate package belongs to another user")
+    candidates = (
+        *candidate_package.window_items,
+        *candidate_package.related_items,
+    )
+    snapshots_by_id = {candidate.id: candidate for candidate in candidates}
+    allowed_items = frozenset(snapshots_by_id)
     allowed_evidence = frozenset(allowed_evidence_message_ids)
     parsed, touched = _parse_operations(operations)
     if not touched <= allowed_items:
@@ -439,25 +425,19 @@ def curate_memory_items(
                 list(touched),
             ).fetchall()
             rows_by_id = {row["id"]: row for row in rows}
-        expectations = []
-        for operation in parsed:
-            if operation["op"] in {"edit", "archive"}:
-                expectations.append(operation["expected"])
-            elif operation["op"] == "merge":
-                expectations.append(operation["keep"])
-                expectations.extend(operation["remove"])
-        for expected in expectations:
-            row = rows_by_id.get(expected["item_id"])
+        for item_id in touched:
+            row = rows_by_id.get(item_id)
             if row is None or row["user_id"] != user_id:
                 raise MemoryCurationError(
-                    f"Memory Item {expected['item_id']} is unavailable"
+                    f"Memory Item {item_id} is unavailable"
                 )
+            snapshot = snapshots_by_id[item_id]
             if (
-                row["content"] != expected["content"]
-                or row["updated_at"] != expected["updated_at"]
+                row["content"] != snapshot.content
+                or row["updated_at"] != snapshot.updated_at
             ):
                 raise MemoryCurationConflict(
-                    f"Memory Item {expected['item_id']} changed after packaging"
+                    f"Memory Item {item_id} changed after packaging"
                 )
         if requested_evidence:
             placeholders = ",".join("?" * len(requested_evidence))
@@ -500,7 +480,7 @@ def curate_memory_items(
                 continue
 
             if operation["op"] == "edit":
-                item_id = operation["expected"]["item_id"]
+                item_id = operation["item_id"]
                 row = rows_by_id[item_id]
                 existing_evidence = set(evidence_by_id[item_id])
                 content_changed = operation["content"] != row["content"]
@@ -534,8 +514,8 @@ def curate_memory_items(
                 continue
 
             if operation["op"] == "merge":
-                keep_id = operation["keep"]["item_id"]
-                remove_ids = [item["item_id"] for item in operation["remove"]]
+                keep_id = operation["keep_item_id"]
+                remove_ids = list(operation["remove_item_ids"])
                 all_ids = [keep_id, *remove_ids]
                 existing_evidence = {
                     evidence_id
@@ -592,7 +572,7 @@ def curate_memory_items(
                 archived.extend(remove_ids)
                 continue
 
-            item_id = operation["expected"]["item_id"]
+            item_id = operation["item_id"]
             row = rows_by_id[item_id]
             existing_evidence = set(evidence_by_id[item_id])
             if not (set(evidence) - existing_evidence):

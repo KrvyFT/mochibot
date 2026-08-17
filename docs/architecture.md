@@ -135,21 +135,24 @@ After Monday Nightly succeeds, heartbeat claims the ISO week and creates
 same Main prompt and tool loop, but receives an entry-scoped surface rather than
 ordinary chat tools:
 
-- an exact receipt-backed patch operation for the free-text Core, with snapshots;
+- a receipt-backed revision of the free-text Core;
 - one atomic curation batch over only the rendered Memory Items and same-user
   evidence messages;
-- one atomic relationship curation batch over the active user-life graph.
+- one atomic relationship curation batch over the visible active user-life graph.
 
 Weekly context contains the previous seven logical days of archived Diary,
 recent conversation context, at most 40 new Memory Items, and at most 40
 text-related older items. Counts and truncation flags are explicit; unseen rows
-are never in scope. Memory edits compare both content and update time, and
-Memory/Trash/FTS/vector/KG invalidation commits as one SQLite transaction.
+are never in scope. Main submits semantic decisions and minimal visible IDs;
+the framework binds those decisions to the captured Memory and relationship
+snapshots, including content and update-time conflict checks. Memory/Trash/FTS/
+vector/KG invalidation commits as one SQLite transaction.
 The relationship graph is intentionally limited to people, pets, places, and a
 small vocabulary of concrete life relationships. Main may upsert a relationship
-only from an exact visible Memory Item snapshot backed by user-message evidence;
-Core is useful context but is not evidence. Archives use exact active-triple
-snapshots, and the whole relationship batch commits or rolls back together.
+only from a visible Memory Item backed by user-message evidence; Core is useful
+context but is not evidence. The framework resolves relationship IDs against
+the captured active-triple snapshots, and the whole relationship batch commits
+or rolls back together.
 Weekly's final model text is discarded and no synthetic chat history is stored.
 Successful Core patches record a content-hash ISO-week receipt in the canonical
 Core store, so a later failure can retry curation without offering the Core
