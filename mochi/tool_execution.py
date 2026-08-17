@@ -31,10 +31,15 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
     r"similar line already exists|没有找到|无需|已经完成",
     re.IGNORECASE,
 )
+_EXPLICIT_STATE_FACT_TOOLS = {
+    "edit_file",
+    "manage_todo",
+    "write_diary",
+}
 
 _STATE_CHANGING_ACTIONS: dict[str, set[str]] = {
     "manage_reminder": {"create", "update", "delete"},
-    "manage_todo": {"add", "complete", "delete", "update"},
+    "manage_todo": {"add", "complete", "reopen", "delete", "update"},
     "checkin_habit": {"checkin", "undo_checkin"},
     "edit_habit": {"add", "remove", "pause", "resume", "update"},
     "edit_file": {"write"},
@@ -143,9 +148,14 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
     action = action_for(tool_name, args)
     looks_failed = bool(_FAILED_OUTPUT_RE.search((result.output or "").strip()))
     success = bool(result.success) and not looks_failed
-    changed = (
-        result.state_changed or _state_changed(tool_name, action)
-    ) if success and not _NO_CHANGE_OUTPUT_RE.search(result.output or "") else False
+    if not success:
+        changed = False
+    elif tool_name in _EXPLICIT_STATE_FACT_TOOLS:
+        changed = result.state_changed
+    elif _NO_CHANGE_OUTPUT_RE.search(result.output or ""):
+        changed = False
+    else:
+        changed = result.state_changed or _state_changed(tool_name, action)
     return {
         "action": action,
         "status": "success" if success else "failed",

@@ -35,9 +35,13 @@ def workspace(tmp_path, monkeypatch):
     return skill, diary, tmp_path
 
 
-def _context(tool_name, args):
+def _context(tool_name, args, *, turn_id="turn-1"):
     return SkillContext(
-        trigger="tool_call", user_id=1, tool_name=tool_name, args=args
+        trigger="tool_call",
+        user_id=1,
+        turn_id=turn_id,
+        tool_name=tool_name,
+        args=args,
     )
 
 
@@ -92,11 +96,42 @@ async def test_diary_write_can_be_read_back(workspace):
     assert date_body.state_changed
     assert diary.read(section="今日日記").startswith("2025-06-15\n")
 
+    archive = diary.path.parent / "diary_archive" / "2025-06.md"
+    archive.parent.mkdir()
+    archive.write_text(
+        "# Diary 2025-06-14 Saturday\n\n"
+        "## 今日状態\n"
+        "- private status\n\n"
+        "## 今日日記\n"
+        "A quiet day.\n\n"
+        "## A free-form subtitle\n"
+        "This remains part of the journal.\n",
+        encoding="utf-8",
+    )
+    historical = await skill.execute(_context(
+        "read_diary", {"date": "2025-06-14"},
+    ))
+    explicit_today = await skill.execute(_context(
+        "read_diary", {"date": "2025-06-15"},
+    ))
+
+    assert historical.output == (
+        "A quiet day.\n\n"
+        "## A free-form subtitle\n"
+        "This remains part of the journal."
+    )
+    assert "private status" not in historical.output
+    assert "# Diary" not in historical.output
+    assert explicit_today.output == diary.read(section="今日日記")
+
 
 @pytest.mark.asyncio
 async def test_markdown_file_write_can_be_read_back(workspace):
     skill, _, root = workspace
 
+    unread_write = await skill.execute(_context(
+        "edit_file", {"action": "write", "path": "draft.md", "content": "hello"}
+    ))
     write = await skill.execute(_context(
         "edit_file", {"action": "write", "path": "draft.md", "content": "hello"}
     ))
@@ -104,9 +139,114 @@ async def test_markdown_file_write_can_be_read_back(workspace):
         "edit_file", {"action": "read", "path": "draft.md"}
     ))
 
+    assert not unread_write.success
+    assert "current read snapshot" in unread_write.output
     assert write.success
+    assert write.state_changed
     assert read.output == "hello"
     assert (root / "draft.md").read_text() == "hello"
+
+    (root / "draft.md").write_text("changed elsewhere", encoding="utf-8")
+    conflict = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "draft.md", "content": "new version"},
+        turn_id="turn-2",
+    ))
+    retry = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "draft.md", "content": "new version"},
+        turn_id="turn-2",
+    ))
+
+    assert not conflict.success
+    assert "changed after it was read" in conflict.output
+    assert "changed elsewhere" in conflict.output
+    assert retry.success
+    assert (root / "draft.md").read_text(encoding="utf-8") == "new version"
+
+    (root / "shared.md").write_text("v1", encoding="utf-8")
+    await skill.execute(_context(
+        "edit_file",
+        {"action": "read", "path": "shared.md"},
+        turn_id="turn-a",
+    ))
+    await skill.execute(_context(
+        "edit_file",
+        {"action": "read", "path": "shared.md"},
+        turn_id="turn-b",
+    ))
+    first_writer = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "shared.md", "content": "v2"},
+        turn_id="turn-a",
+    ))
+    stale_writer = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "shared.md", "content": "v3"},
+        turn_id="turn-b",
+    ))
+
+    assert first_writer.success
+    assert not stale_writer.success
+    assert (root / "shared.md").read_text(encoding="utf-8") == "v2"
+
+    followup = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "shared.md", "content": "v4"},
+        turn_id="turn-c",
+    ))
+    assert followup.success
+    assert (root / "shared.md").read_text(encoding="utf-8") == "v4"
+
+
+@pytest.mark.asyncio
+async def test_list_files_is_bounded_to_public_markdown(
+    workspace,
+    monkeypatch,
+):
+    import mochi.skills.workspace.handler as workspace_module
+
+    skill, _, root = workspace
+    (root / "draft.md").write_text("draft", encoding="utf-8")
+    nested = root / "ideas"
+    nested.mkdir()
+    (nested / "plan.MD").write_text("plan", encoding="utf-8")
+    (root / "ignore.txt").write_text("ignore", encoding="utf-8")
+    (root / "core.md").write_text("private", encoding="utf-8")
+    (root / "diary.md").write_text("private", encoding="utf-8")
+    prompts = root / "prompts"
+    prompts.mkdir()
+    (prompts / "system.md").write_text("private", encoding="utf-8")
+    archive = root / "diary_archive"
+    archive.mkdir()
+    (archive / "2025-06.md").write_text("private", encoding="utf-8")
+
+    result = await skill.execute(_context("list_files", {}))
+
+    assert result.output.splitlines() == ["draft.md", "ideas/plan.MD"]
+
+    monkeypatch.setattr(workspace_module, "_MAX_LISTED_FILES", 1)
+    bounded = await skill.execute(_context("list_files", {}))
+    assert bounded.output.splitlines() == [
+        "draft.md",
+        "... (showing first 1 files)",
+    ]
+
+
+def test_workspace_file_tools_are_routed_and_multi_turn():
+    import mochi.skills as skill_registry
+
+    skill = skill_registry.get_skill("workspace")
+    tools = skill_registry.get_tools_by_tool_names(["list_files", "edit_file"])
+
+    assert skill is not None
+    assert skill.multi_turn
+    assert {
+        tool["function"]["name"]: tool["_load"] for tool in tools
+    } == {
+        "list_files": "routed",
+        "edit_file": "routed",
+    }
 
 
 @pytest.mark.asyncio
@@ -126,8 +266,16 @@ async def test_workspace_rejects_private_and_outside_paths(workspace):
     private = await skill.execute(_context(
         "edit_file", {"action": "write", "path": "core.md", "content": "nope"},
     ))
+    diary_private = await skill.execute(_context(
+        "edit_file", {"action": "read", "path": "diary_archive/2025-06.md"},
+    ))
+    prompt_private = await skill.execute(_context(
+        "edit_file", {"action": "read", "path": "prompts/system.md"},
+    ))
 
     assert "Error" in traversal.output
     assert "Error" in sibling.output
     assert "must stay private" not in sibling.output
     assert "Core storage is private" in private.output
+    assert "Diary storage is private" in diary_private.output
+    assert "Internal prompt storage is private" in prompt_private.output

@@ -17,9 +17,8 @@ Tool-only mode: `log_meal` (record meals with nutrition estimation) + `query_mea
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| meal_type | string | yes | `breakfast` / `lunch` / `dinner` / `snack` |
+| meal_type | string (enum: breakfast, lunch, dinner, snack) | yes | 餐次 |
 | items | array (items: object {name:string, calories:integer, protein_g:number, carbs_g:number, fat_g:number}) | yes | 已吃食物及逐项营养估算；总热量和宏量营养素由代码相加 |
-| source | string | | `text` / `photo` / `voice`，默认 `text` |
 | date | string | | YYYY-MM-DD，默认今天 |
 
 ### query_meals (routed)

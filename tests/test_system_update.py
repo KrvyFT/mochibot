@@ -108,6 +108,8 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
     ))
 
     assert result.success
+    assert "当前回复送达后会开始更新和重启" in result.output
+    assert "请先告诉主人" not in result.output
     assert staged[0][0] == release
     assert staged[0][1]["channel_id"] == 99
     assert exits == []

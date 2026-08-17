@@ -8,6 +8,7 @@ import mochi.skills.web_search.handler as web_handler
 from mochi.ai_client import (
     _clean_model_reply,
     _format_current_time_context,
+    _meal_source_for_current_message,
     _tool_loop_exhaustion_message,
 )
 from mochi.skills.base import SkillContext
@@ -18,6 +19,7 @@ from mochi.skills.web_search.handler import (
     _validate_public_https_url,
 )
 from mochi.transport.utils import split_bubbles
+from mochi.transport import ImageAttachment
 
 
 def test_current_time_context_includes_deterministic_weekday():
@@ -29,6 +31,13 @@ def test_current_time_context_includes_deterministic_weekday():
     assert _format_current_time_context(now) == (
         "当前时间：2026-08-17 10:03:41 +0800（星期一）"
     )
+
+
+def test_meal_source_follows_current_message_image():
+    assert _meal_source_for_current_message(None) == "text"
+    assert _meal_source_for_current_message(
+        ImageAttachment(data=b"image"),
+    ) == "photo"
 
 
 @pytest.mark.parametrize(

@@ -64,8 +64,7 @@ class SystemUpdateSkill(Skill):
         return SkillResult(
             output=(
                 f"已准备从 v{release.current_version} 更新到官方正式版 "
-                f"v{release.version}。请先告诉主人即将短暂离线；"
-                "当前回复送达后才会开始更新和重启。"
+                f"v{release.version}。当前回复送达后会开始更新和重启。"
             ),
             summary=f"Scheduled MochiBot update to v{release.version}.",
             state_changed=True,

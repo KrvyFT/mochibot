@@ -109,7 +109,9 @@ class MealSkill(Skill):
         total_protein = round(sum(item["protein_g"] for item in items), 1)
         total_carbs = round(sum(item["carbs_g"] for item in items), 1)
         total_fat = round(sum(item["fat_g"] for item in items), 1)
-        source_type = args.get("source", "text").strip().lower()
+        source_type = args.get("_source", "text")
+        if source_type not in {"text", "photo", "voice"}:
+            source_type = "text"
         date_str = args.get("date", "").strip()
 
         if not date_str:

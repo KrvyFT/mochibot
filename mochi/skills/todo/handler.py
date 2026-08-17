@@ -3,7 +3,15 @@
 from datetime import datetime
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.todo.queries import create_todo, get_todos, complete_todo, delete_todo, update_todo
+from mochi.skills.todo.queries import (
+    complete_todo,
+    create_todo,
+    delete_todo,
+    find_todos_by_exact_match,
+    get_todos,
+    reopen_todo,
+    update_todo,
+)
 
 
 class TodoSkill(Skill):
@@ -33,14 +41,20 @@ class TodoSkill(Skill):
 
         if not action:
             return SkillResult(
-                output="Error: 'action' is required. Valid actions: add, list, complete, delete, update.",
+                output=(
+                    "Error: 'action' is required. Valid actions: "
+                    "add, list, complete, reopen, update, delete."
+                ),
                 success=False)
 
         if action == "add":
-            task = args.get("task", "")
+            task = str(args.get("task") or "").strip()
             if not task:
                 return SkillResult(output="Error: 'task' is required for add.", success=False)
             nudge_date = args.get("nudge_date")
+            date_error = self._validate_nudge_date(nudge_date)
+            if date_error:
+                return date_error
             tid = create_todo(uid, task, nudge_date=nudge_date)
             nudge_str = f" (📅 {nudge_date} 提醒)" if nudge_date else ""
             receipt = f"Todo #{tid} added: '{task}'.{nudge_str}"
@@ -60,22 +74,42 @@ class TodoSkill(Skill):
                 lines.append(f"#{t['id']} {mark} {t['task']}{nudge}")
             return SkillResult(output="\n".join(lines))
 
-        elif action == "complete":
-            todo_id = args.get("todo_id")
-            if not todo_id:
-                return SkillResult(output="Error: 'todo_id' is required for complete.", success=False)
-            ok = complete_todo(uid, int(todo_id))
-            receipt = f"Todo #{todo_id} completed!" if ok else f"Todo #{todo_id} not found."
+        elif action in {"complete", "reopen"}:
+            resolved = self._resolve_todo(
+                uid,
+                args,
+                action=action,
+                done=(action == "reopen"),
+            )
+            if isinstance(resolved, SkillResult):
+                return resolved
+            todo_id = resolved
+            ok = (
+                complete_todo(uid, todo_id)
+                if action == "complete"
+                else reopen_todo(uid, todo_id)
+            )
+            receipt = (
+                f"Todo #{todo_id} completed!"
+                if ok
+                else f"Todo #{todo_id} is not active or was not found."
+            )
+            if action == "reopen":
+                receipt = (
+                    f"Todo #{todo_id} reopened."
+                    if ok
+                    else f"Todo #{todo_id} is not completed or was not found."
+                )
             return SkillResult(
                 output=receipt, success=ok, summary=receipt if ok else "",
                 entity_refs=[f"todo:{todo_id}"] if ok else [], state_changed=ok,
             )
 
         elif action == "delete":
-            todo_id = args.get("todo_id")
-            if not todo_id:
+            todo_id = self._parse_todo_id(args.get("todo_id"))
+            if todo_id is None:
                 return SkillResult(output="Error: 'todo_id' is required for delete.", success=False)
-            ok = delete_todo(uid, int(todo_id))
+            ok = delete_todo(uid, todo_id)
             receipt = f"Todo #{todo_id} deleted." if ok else f"Todo #{todo_id} not found."
             return SkillResult(
                 output=receipt, success=ok, summary=receipt if ok else "",
@@ -83,29 +117,144 @@ class TodoSkill(Skill):
             )
 
         elif action == "update":
-            todo_id = args.get("todo_id")
-            if not todo_id:
-                return SkillResult(output="Error: 'todo_id' is required for update.", success=False)
+            resolved = self._resolve_todo(uid, args, action=action, done=None)
+            if isinstance(resolved, SkillResult):
+                return resolved
+            todo_id = resolved
             fields = {}
-            for key in ("task", "nudge_date"):
-                if key in args:
-                    fields[key] = args[key]
+            if "task" in args:
+                task = str(args.get("task") or "").strip()
+                if not task:
+                    return SkillResult(
+                        output="Error: task cannot be empty.",
+                        success=False,
+                    )
+                fields["task"] = task
+            if args.get("clear_nudge_date") is True:
+                if "nudge_date" in args:
+                    return SkillResult(
+                        output=(
+                            "Error: use either nudge_date or clear_nudge_date, "
+                            "not both."
+                        ),
+                        success=False,
+                    )
+                fields["nudge_date"] = None
+            elif "nudge_date" in args:
+                date_error = self._validate_nudge_date(args["nudge_date"])
+                if date_error:
+                    return date_error
+                fields["nudge_date"] = args["nudge_date"]
             if not fields:
                 return SkillResult(
-                    output="Error: provide at least one field to update (task, nudge_date).",
+                    output=(
+                        "Error: provide task, nudge_date, or "
+                        "clear_nudge_date=true."
+                    ),
                     success=False)
-            ok = update_todo(uid, int(todo_id), **fields)
+            update_status = update_todo(uid, todo_id, **fields)
             parts = ", ".join(f"{k}={v}" for k, v in fields.items())
+            if update_status == "not_found":
+                return SkillResult(
+                    output=f"Todo #{todo_id} not found.",
+                    success=False,
+                )
+            changed = update_status == "updated"
             receipt = (
-                f"Todo #{todo_id} updated: {parts}." if ok
-                else f"Todo #{todo_id} not found."
+                f"Todo #{todo_id} updated: {parts}."
+                if changed
+                else f"Todo #{todo_id} unchanged."
             )
             return SkillResult(
-                output=receipt, success=ok, summary=receipt if ok else "",
-                entity_refs=[f"todo:{todo_id}"] if ok else [], state_changed=ok,
+                output=receipt,
+                summary=receipt,
+                entity_refs=[f"todo:{todo_id}"],
+                state_changed=changed,
             )
 
         return SkillResult(output=f"Unknown todo action: {action}", success=False)
+
+    @staticmethod
+    def _parse_todo_id(value: object) -> int | None:
+        if isinstance(value, bool) or value in (None, ""):
+            return None
+        try:
+            todo_id = int(value)
+        except (TypeError, ValueError):
+            return None
+        return todo_id if todo_id > 0 else None
+
+    def _resolve_todo(
+        self,
+        user_id: int,
+        args: dict,
+        *,
+        action: str,
+        done: bool | None,
+    ) -> int | SkillResult:
+        if args.get("todo_id") not in (None, ""):
+            todo_id = self._parse_todo_id(args.get("todo_id"))
+            if todo_id is None:
+                return SkillResult(
+                    output="Error: todo_id must be a positive integer.",
+                    success=False,
+                )
+            return todo_id
+
+        match = str(args.get("match") or "").strip()
+        if not match:
+            return SkillResult(
+                output=f"Error: todo_id or match is required for {action}.",
+                success=False,
+            )
+
+        matches = find_todos_by_exact_match(user_id, match, done=done)
+        if len(matches) == 1:
+            return matches[0]["id"]
+
+        candidates = matches
+        if not candidates:
+            candidates = get_todos(user_id, include_done=True)
+            if done is not None:
+                candidates = [
+                    todo for todo in candidates if todo["done"] is done
+                ]
+        candidate_lines = [
+            (
+                f"#{todo['id']} "
+                f"{'✅' if todo['done'] else '⬜'} {todo['task']}"
+            )
+            for todo in candidates[:10]
+        ]
+        candidate_text = (
+            "\n".join(candidate_lines) if candidate_lines else "(none)"
+        )
+        reason = "No exact match" if not matches else "Multiple exact matches"
+        return SkillResult(
+            output=(
+                f"{reason} for {match!r}; no todo was changed.\n"
+                f"Candidates:\n{candidate_text}"
+            ),
+            success=False,
+        )
+
+    @staticmethod
+    def _validate_nudge_date(value: object) -> SkillResult | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return SkillResult(
+                output="Error: nudge_date must use YYYY-MM-DD.",
+                success=False,
+            )
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return SkillResult(
+                output="Error: nudge_date must use YYYY-MM-DD.",
+                success=False,
+            )
+        return None
 
     # ── Diary integration ─────────────────────────────────────
 

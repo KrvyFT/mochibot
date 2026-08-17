@@ -6,6 +6,7 @@ every query helper.
 
 import asyncio
 import hashlib
+import json
 import sqlite3
 
 import pytest
@@ -328,3 +329,148 @@ def test_old_database_upgrades_messages_and_memory_without_data_loss(
     assert {"embedding", "access_count", "last_accessed"} <= memory_columns
     assert message == "keep me"
     assert memory == "keep this memory"
+
+
+@pytest.mark.asyncio
+async def test_todo_exact_match_reopen_and_clear_nudge_date():
+    from mochi.skills.base import SkillContext
+    from mochi.skills.todo.handler import TodoSkill
+    from mochi.skills.todo.queries import get_todos
+
+    skill = TodoSkill()
+
+    async def execute(args):
+        return await skill.execute(SkillContext(
+            trigger="tool_call",
+            user_id=1,
+            tool_name="manage_todo",
+            args=args,
+        ))
+
+    added = await execute({
+        "action": "add",
+        "task": "Buy\u3000Milk",
+        "nudge_date": "2026-08-20",
+    })
+    completed = await execute({
+        "action": "complete",
+        "match": "  buy milk ",
+    })
+    reopened = await execute({
+        "action": "reopen",
+        "todo_id": 1,
+    })
+    updated = await execute({
+        "action": "update",
+        "match": "BUY MILK",
+        "clear_nudge_date": True,
+    })
+
+    assert added.success
+    assert completed.success
+    assert reopened.success
+    assert updated.success
+    assert get_todos(1, include_done=True)[0]["nudge_date"] is None
+
+    completed_again = await execute({
+        "action": "complete",
+        "todo_id": 1,
+    })
+    assert completed_again.success
+    already_completed = await execute({
+        "action": "complete",
+        "todo_id": 1,
+    })
+    assert not already_completed.success
+
+    await execute({"action": "reopen", "todo_id": 1})
+    await execute({"action": "add", "task": "Buy Milk"})
+    ambiguous = await execute({
+        "action": "complete",
+        "match": "buy milk",
+    })
+    destructive_match = await execute({
+        "action": "delete",
+        "match": "buy milk",
+    })
+
+    assert not ambiguous.success
+    assert "Multiple exact matches" in ambiguous.output
+    assert "#1" in ambiguous.output and "#2" in ambiguous.output
+    assert not destructive_match.success
+    assert "todo_id" in destructive_match.output
+
+    unchanged = await execute({
+        "action": "update",
+        "todo_id": 1,
+        "clear_nudge_date": True,
+    })
+    assert unchanged.success
+    assert not unchanged.state_changed
+    assert "unchanged" in unchanged.output
+
+
+@pytest.mark.asyncio
+async def test_meal_source_is_hidden_and_framework_bound():
+    import mochi.skills as skill_registry
+    from mochi.skills.base import SkillContext
+    from mochi.skills.meal.handler import MealSkill
+    from mochi.skills.meal.queries import query_health_log
+
+    tool = next(
+        tool
+        for tool in skill_registry.get_tools()
+        if tool["function"]["name"] == "log_meal"
+    )
+    properties = tool["function"]["parameters"]["properties"]
+    assert "source" not in properties
+    assert properties["meal_type"]["enum"] == [
+        "breakfast", "lunch", "dinner", "snack",
+    ]
+
+    result = await MealSkill().execute(SkillContext(
+        trigger="tool_call",
+        user_id=1,
+        tool_name="log_meal",
+        args={
+            "meal_type": "lunch",
+            "items": [{
+                "name": "sandwich",
+                "calories": 420,
+                "protein_g": 18,
+                "carbs_g": 45,
+                "fat_g": 16,
+            }],
+            "_source": "photo",
+            "source": "voice",
+            "date": "2026-08-17",
+        },
+    ))
+
+    records = query_health_log(
+        user_id=1,
+        types=["meal"],
+        date="2026-08-17",
+    )
+    assert result.success
+    assert json.loads(records[0]["metrics"])["source"] == "photo"
+
+
+def test_tool_outcome_trusts_todo_state_fact_over_user_text():
+    from mochi.skills.base import SkillResult
+    from mochi.tool_execution import outcome_for
+
+    outcome = outcome_for(
+        "todo",
+        "manage_todo",
+        {
+            "action": "update",
+            "task": "Keep API unchanged.",
+        },
+        SkillResult(
+            output="Todo #1 updated: task=Keep API unchanged.",
+            state_changed=True,
+        ),
+    )
+
+    assert outcome["state_changed"]

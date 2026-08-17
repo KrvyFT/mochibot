@@ -82,6 +82,13 @@ def _image_content(text: str, image: ImageAttachment) -> list[dict]:
     ]
 
 
+def _meal_source_for_current_message(
+    image: ImageAttachment | None,
+) -> str:
+    """Bind meal provenance to the actual input shape, not model arguments."""
+    return "photo" if image is not None else "text"
+
+
 def _replace_current_user_with_image(
     messages: list[dict], stored_text: str, text: str, image: ImageAttachment,
 ) -> None:
@@ -1429,6 +1436,11 @@ async def chat(
                 dispatch_args = {
                     **tc["arguments"],
                     "_expected_content": diary_expected,
+                }
+            elif tc["name"] == "log_meal" and not is_weekly_tool:
+                dispatch_args = {
+                    **tc["arguments"],
+                    "_source": _meal_source_for_current_message(image),
                 }
             elif tc["name"] == "update_weekly_core":
                 weekly_core_update_attempted = True

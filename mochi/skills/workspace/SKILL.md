@@ -3,6 +3,7 @@ name: workspace
 description: 记录和回顾日记，按需读写 Markdown 文件
 type: tool
 locked: true
+multi_turn: true
 ---
 
 # Workspace Skill
@@ -12,7 +13,7 @@ locked: true
 ## Tools
 
 ### write_diary (resident)
-自由修订今天的日记正文。提交完整的“今日日記”即可；日期页头和状态区由系统管理，正文结构、分段与是否写时间由你决定。餐食、习惯和待办使用各自工具，不重复抄进日记。
+自由修订今天正文；完整提交“今日日記”；日期页头和状态区由系统管理；正文结构、分段、时间由 Main 决定。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
@@ -25,7 +26,12 @@ locked: true
 |-----------|------|----------|-------------|
 | date | string | no | YYYY-MM-DD 格式。不填 = 今天 |
 
-### edit_file (on_demand)
+### list_files (routed)
+列出 data/ 内可读写的 Markdown 文件；结果有系统数量与目录深度边界。
+
+无需参数。
+
+### edit_file (routed)
 按用户需要读取或覆盖 Markdown 文件。
 
 | Parameter | Type | Required | Description |
