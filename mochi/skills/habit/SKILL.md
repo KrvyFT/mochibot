@@ -26,7 +26,8 @@ diary_status_order: 10
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | action | string (enum: checkin, undo_checkin) | yes | 操作类型 |
-| habit_id | integer | yes | 习惯 ID |
+| habit_id | integer | no | 习惯 ID；与 habit_name 二选一 |
+| habit_name | string | no | 唯一、精确的习惯名称；与 habit_id 二选一 |
 | note | string | no | 备注 |
 | count | integer | no | 打卡次数（默认 1） |
 
@@ -36,7 +37,8 @@ diary_status_order: 10
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | action | string (enum: add, remove, pause, resume, update) | yes | 操作类型 |
-| habit_id | integer | no | 习惯 ID（remove/pause/resume/update） |
+| habit_id | integer | no | 习惯 ID（remove/pause/resume/update 与 habit_name 二选一） |
+| habit_name | string | no | 唯一、精确的现有习惯名称（remove/pause/resume/update 可替代 habit_id） |
 | name | string | no | 习惯名称（add 必填；update 可选） |
 | cycle | string (enum: daily, weekly) | no | 统计周期（add 必填；update 可选） |
 | target | integer | no | 每个周期的目标次数，默认 1 |

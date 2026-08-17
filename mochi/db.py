@@ -898,6 +898,27 @@ def finish_tool_execution(execution_id: int, *, status: str,
     conn.close()
 
 
+def recover_interrupted_tool_executions() -> int:
+    """Fail chat tool attempts left running by an earlier process."""
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    cursor = conn.execute(
+        "UPDATE tool_executions SET status = 'failed', "
+        "result_summary = 'Interrupted by process restart', finished_at = ? "
+        "WHERE status = 'running' AND source = 'chat'",
+        (now,),
+    )
+    recovered = cursor.rowcount
+    conn.commit()
+    conn.close()
+    if recovered:
+        logger.warning(
+            "Recovered %d interrupted chat tool execution(s)",
+            recovered,
+        )
+    return recovered
+
+
 def get_recent_tool_executions(user_id: int, *, hours: int = 24,
                                limit: int = 3,
                                skill_names: list[str] | None = None,

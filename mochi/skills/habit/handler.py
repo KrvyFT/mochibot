@@ -98,6 +98,77 @@ def _frequency_fields(frequency: str) -> tuple[str, int, list[str]]:
     return cycle, target, weekdays
 
 
+def _habit_candidates(habits: list[dict]) -> str:
+    if not habits:
+        return "No active habits are available."
+    choices = ", ".join(
+        f"#{habit['id']} {habit['name']}" for habit in habits[:8]
+    )
+    return f"Active habits: {choices}."
+
+
+def _resolve_active_habit(
+    user_id: int,
+    args: dict,
+    action: str,
+) -> tuple[dict | None, SkillResult | None]:
+    habits = list_habits(user_id)
+    raw_id = args.get("habit_id")
+    raw_name = args.get("habit_name")
+    name = str(raw_name).strip() if raw_name is not None else ""
+
+    if raw_id not in (None, ""):
+        try:
+            habit_id = int(raw_id)
+        except (TypeError, ValueError):
+            return None, SkillResult(
+                output="Error: habit_id must be an integer.",
+                success=False,
+            )
+        habit = next((item for item in habits if item["id"] == habit_id), None)
+        if habit is None:
+            return None, SkillResult(
+                output=f"Habit #{habit_id} not found. {_habit_candidates(habits)}",
+                success=False,
+            )
+        if name and habit["name"] != name:
+            return None, SkillResult(
+                output=(
+                    f"Error: habit_id #{habit_id} is '{habit['name']}', "
+                    f"not '{name}'."
+                ),
+                success=False,
+            )
+        return habit, None
+
+    if not name:
+        return None, SkillResult(
+            output=(
+                f"Error: 'habit_id' or exact 'habit_name' is required "
+                f"for {action}. {_habit_candidates(habits)}"
+            ),
+            success=False,
+        )
+
+    matches = [habit for habit in habits if habit["name"] == name]
+    if len(matches) == 1:
+        return matches[0], None
+    if len(matches) > 1:
+        return None, SkillResult(
+            output=(
+                f"Error: habit_name '{name}' is ambiguous. "
+                f"{_habit_candidates(matches)} Use habit_id."
+            ),
+            success=False,
+        )
+    return None, SkillResult(
+        output=(
+            f"Habit named '{name}' not found. {_habit_candidates(habits)}"
+        ),
+        success=False,
+    )
+
+
 class HabitSkill(Skill):
 
     def init_schema(self, conn) -> None:
@@ -202,11 +273,11 @@ class HabitSkill(Skill):
         context = args.get("context", "")
 
         try:
-            hid = add_habit(
+            hid, reactivated = add_habit(
                 user_id=user_id, name=name, frequency=frequency,
                 category=category, importance=importance, context=context,
             )
-        except sqlite3.IntegrityError:
+        except (sqlite3.IntegrityError, ValueError):
             return SkillResult(output=f"Error: habit '{name}' already exists.", success=False)
 
         if allowed_days is not None:
@@ -217,25 +288,30 @@ class HabitSkill(Skill):
             cycle_label = "weekly"
         imp_label = " ⚡important" if importance == "important" else ""
         ctx_label = f" ({context})" if context else ""
+        verb = "reactivated" if reactivated else "created"
         return SkillResult(
-            output=f"Habit #{hid} created{imp_label}: {name} ({cycle_label} x{target}){ctx_label}"
+            output=f"Habit #{hid} {verb}{imp_label}: {name} ({cycle_label} x{target}){ctx_label}"
                    f"{f' [{category}]' if category else ''}"
         )
 
     def _remove(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for remove.", success=False)
-        ok = deactivate_habit(user_id, int(habit_id))
+        habit, error = _resolve_active_habit(user_id, args, "remove")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
+        ok = deactivate_habit(user_id, habit_id)
         return SkillResult(
             output=f"Habit #{habit_id} deactivated." if ok else f"Habit #{habit_id} not found.",
             success=ok,
         )
 
     def _pause(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for pause.", success=False)
+        habit, error = _resolve_active_habit(user_id, args, "pause")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
         until = args.get("until", "")
         if not until:
             now = datetime.now(TZ)
@@ -244,30 +320,28 @@ class HabitSkill(Skill):
             datetime.strptime(until, "%Y-%m-%d")
         except ValueError:
             return SkillResult(output=f"Error: invalid date '{until}', use YYYY-MM-DD.", success=False)
-        ok = pause_habit(user_id, int(habit_id), until)
+        ok = pause_habit(user_id, habit_id, until)
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
-        name = habit["name"] if habit else f"#{habit_id}"
-        return SkillResult(output=f"⏸️ {name} paused until {until}.")
+        return SkillResult(output=f"⏸️ {habit['name']} paused until {until}.")
 
     def _resume(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for resume.", success=False)
-        ok = resume_habit(user_id, int(habit_id))
+        habit, error = _resolve_active_habit(user_id, args, "resume")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
+        ok = resume_habit(user_id, habit_id)
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
-        name = habit["name"] if habit else f"#{habit_id}"
-        return SkillResult(output=f"▶️ {name} resumed.")
+        return SkillResult(output=f"▶️ {habit['name']} resumed.")
 
     def _update(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for update.", success=False)
+        habit, error = _resolve_active_habit(user_id, args, "update")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
 
         fields = {}
         for key in ("name", "context", "importance", "category"):
@@ -275,10 +349,6 @@ class HabitSkill(Skill):
                 fields[key] = args[key]
         frequency_keys = {"cycle", "target", "weekdays"}
         if frequency_keys.intersection(args):
-            habits = list_habits(user_id)
-            habit = next((h for h in habits if h["id"] == int(habit_id)), None)
-            if not habit:
-                return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
             current_cycle, current_target, current_weekdays = _frequency_fields(
                 habit["frequency"],
             )
@@ -308,7 +378,7 @@ class HabitSkill(Skill):
             return SkillResult(output="Error: importance must be 'important' or 'normal'.", success=False)
 
         try:
-            ok = update_habit(user_id, int(habit_id), **fields)
+            ok = update_habit(user_id, habit_id, **fields)
         except sqlite3.IntegrityError:
             return SkillResult(output=f"Error: habit name '{fields.get('name')}' already exists.", success=False)
 
@@ -411,14 +481,11 @@ class HabitSkill(Skill):
     # ── checkin_habit actions ────────────────────────────────────────────
 
     def _checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for checkin.", success=False)
-
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
-        if not habit:
-            return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
+        habit, error = _resolve_active_habit(user_id, args, "checkin")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
 
         parsed = parse_frequency(habit["frequency"])
         if not parsed:
@@ -428,41 +495,32 @@ class HabitSkill(Skill):
         note = args.get("note", "")
         count = max(1, int(args.get("count", 1) or 1))
 
-        existing = get_habit_checkins(int(habit_id), period)
-        if len(existing) >= target:
-            cycle_label = "today" if cycle == "daily" else "this week"
-            return SkillResult(output=f"{habit['name']} already completed {target}x {cycle_label}! 🎉")
-
-        # Write checkins, stopping at target
-        slots_left = target - len(existing)
-        actual = min(count, slots_left)
+        existing = get_habit_checkins(habit_id, period)
+        actual = count
         for _ in range(actual):
-            checkin_habit(int(habit_id), user_id, period, note)
+            checkin_habit(habit_id, user_id, period, note)
         done = len(existing) + actual
-        remaining = target - done
+        remaining = max(0, target - done)
 
         extra = f" (x{actual})" if actual > 1 else ""
-        if remaining == 0:
+        if done >= target:
             return SkillResult(output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}")
         cycle_label = "today" if cycle == "daily" else "this week"
         return SkillResult(output=f"✅ {habit['name']} checked in {done}/{target}, {remaining} left {cycle_label}{extra}")
 
     def _undo_checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        if not habit_id:
-            return SkillResult(output="Error: 'habit_id' is required for undo_checkin.", success=False)
-
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
-        if not habit:
-            return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
+        habit, error = _resolve_active_habit(user_id, args, "undo_checkin")
+        if error:
+            return error
+        assert habit is not None
+        habit_id = habit["id"]
 
         parsed = parse_frequency(habit["frequency"])
         if not parsed:
             return SkillResult(output=f"Error: invalid frequency on habit #{habit_id}.", success=False)
         cycle, target = parsed
         period = _current_period(cycle)
-        existing = get_habit_checkins(int(habit_id), period)
+        existing = get_habit_checkins(habit_id, period)
         if not existing:
             cycle_label = "today" if cycle == "daily" else "this week"
             return SkillResult(output=f"{habit['name']} has no checkins {cycle_label} — nothing to undo.")

@@ -98,7 +98,9 @@ async def main():
 
     # 0. Database (before config validation — tier models live in DB)
     init_db()
-    from mochi.db import recover_interrupted_scheduled_runs
+    from mochi.db import (
+        recover_interrupted_scheduled_runs,
+    )
     recover_interrupted_scheduled_runs()
     log.info("Database ready")
 
@@ -134,6 +136,8 @@ async def main():
             ADMIN_PORT,
         )
         return
+    from mochi.db import recover_interrupted_tool_executions
+    recover_interrupted_tool_executions()
 
     # 2. Skills
     skills = skill_registry.discover()

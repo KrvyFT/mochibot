@@ -12,25 +12,54 @@ from mochi.config import TZ
 
 def add_habit(user_id: int, name: str, frequency: str,
               category: str = "", importance: str = "normal",
-              context: str = "") -> int:
-    """Create a new habit. Returns the habit id.
+              context: str = "") -> tuple[int, bool]:
+    """Create or reactivate a habit, preserving its id and history.
 
     frequency: "daily:N" (N times/day) or "weekly:N" (N times/week)
                or "weekly_on:DAY,...:N".
     importance: "important" or "normal".
     context: descriptive note (e.g. "morning and evening, after meals").
+    Returns ``(habit_id, reactivated)``.
     """
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    cursor = conn.execute(
-        "INSERT INTO habits (user_id, name, frequency, category, "
-        "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (user_id, name, frequency, category, importance, context, now),
-    )
-    habit_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return habit_id
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        existing = conn.execute(
+            "SELECT id, active FROM habits WHERE user_id = ? AND name = ?",
+            (user_id, name),
+        ).fetchone()
+        if existing is not None:
+            if existing["active"]:
+                raise ValueError(f"habit '{name}' already exists")
+            conn.execute(
+                "UPDATE habits SET frequency = ?, category = ?, importance = ?, "
+                "context = ?, active = 1, paused_until = NULL, "
+                "snoozed_until = NULL WHERE id = ?",
+                (
+                    frequency,
+                    category,
+                    importance,
+                    context,
+                    existing["id"],
+                ),
+            )
+            conn.commit()
+            return int(existing["id"]), True
+
+        cursor = conn.execute(
+            "INSERT INTO habits (user_id, name, frequency, category, "
+            "importance, context, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (user_id, name, frequency, category, importance, context, now),
+        )
+        habit_id = int(cursor.lastrowid)
+        conn.commit()
+        return habit_id, False
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def list_habits(user_id: int, active_only: bool = True) -> list[dict]:

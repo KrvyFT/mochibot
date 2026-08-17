@@ -6,7 +6,10 @@ every query helper.
 
 import sqlite3
 
+import pytest
+
 from mochi.db import (
+    _connect,
     delete_memory_items,
     finish_tool_execution,
     get_conversation_context,
@@ -14,11 +17,14 @@ from mochi.db import (
     init_db,
     list_memory_trash,
     recall_memory,
+    recover_interrupted_tool_executions,
     restore_memory_from_trash,
     save_memory_item,
     save_message,
     start_tool_execution,
 )
+from mochi.skills.base import SkillContext
+from mochi.skills.habit.handler import HabitSkill
 
 
 def test_context_uses_exact_current_message_and_never_revives_stale_orphans():
@@ -89,6 +95,137 @@ def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():
     assert len(rows) == 1
     assert rows[0]["arguments"] == {"message": "report"}
     assert rows[0]["entity_refs"] == ["reminder:27"]
+
+
+def test_startup_recovers_only_interrupted_chat_tool_executions():
+    chat_id = start_tool_execution(
+        turn_id="turn_chat",
+        tool_call_id="call_chat",
+        user_id=1,
+        source="chat",
+        skill_name="habit",
+        tool_name="checkin_habit",
+        action="checkin",
+        arguments_json="{}",
+    )
+    runtime_id = start_tool_execution(
+        turn_id="turn_reminder",
+        tool_call_id="call_reminder",
+        user_id=1,
+        source="runtime:self_reminder",
+        skill_name="reminder",
+        tool_name="manage_reminder",
+        action="create",
+        arguments_json="{}",
+    )
+
+    assert recover_interrupted_tool_executions() == 1
+
+    conn = _connect()
+    rows = {
+        row["id"]: dict(row)
+        for row in conn.execute(
+            "SELECT id, status, result_summary, finished_at "
+            "FROM tool_executions ORDER BY id"
+        )
+    }
+    conn.close()
+    assert rows[chat_id]["status"] == "failed"
+    assert rows[chat_id]["result_summary"] == "Interrupted by process restart"
+    assert rows[chat_id]["finished_at"]
+    assert rows[runtime_id]["status"] == "running"
+    assert rows[runtime_id]["finished_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_habit_threshold_name_resolution_and_reactivation():
+    skill = HabitSkill()
+
+    async def execute(tool_name: str, **args):
+        return await skill.execute(SkillContext(
+            trigger="tool_call",
+            user_id=1,
+            tool_name=tool_name,
+            args=args,
+        ))
+
+    created = await execute(
+        "edit_habit",
+        action="add",
+        name="Drink water",
+        cycle="daily",
+        target=2,
+    )
+    assert created.success
+    conn = _connect()
+    habit_id = conn.execute(
+        "SELECT id FROM habits WHERE user_id = 1 AND name = 'Drink water'"
+    ).fetchone()["id"]
+    conn.close()
+
+    checked = await execute(
+        "checkin_habit",
+        action="checkin",
+        habit_name="Drink water",
+        count=3,
+    )
+    assert checked.success
+    assert "(3/2)" in checked.output
+    conn = _connect()
+    assert conn.execute(
+        "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?",
+        (habit_id,),
+    ).fetchone()[0] == 3
+    conn.close()
+
+    updated = await execute(
+        "edit_habit",
+        action="update",
+        habit_name="Drink water",
+        context="after meals",
+    )
+    assert updated.success
+    missing = await execute(
+        "checkin_habit",
+        action="checkin",
+        habit_name="Water",
+    )
+    assert not missing.success
+    assert f"#{habit_id} Drink water" in missing.output
+
+    removed = await execute(
+        "edit_habit",
+        action="remove",
+        habit_name="Drink water",
+    )
+    assert removed.success
+    revived = await execute(
+        "edit_habit",
+        action="add",
+        name="Drink water",
+        cycle="weekly",
+        target=4,
+        category="health",
+    )
+    assert revived.success
+    assert f"Habit #{habit_id} reactivated" in revived.output
+
+    conn = _connect()
+    habit = conn.execute(
+        "SELECT id, active, frequency, category, context "
+        "FROM habits WHERE user_id = 1 AND name = 'Drink water'"
+    ).fetchone()
+    history_count = conn.execute(
+        "SELECT COUNT(*) FROM habit_logs WHERE habit_id = ?",
+        (habit_id,),
+    ).fetchone()[0]
+    conn.close()
+    assert habit["id"] == habit_id
+    assert habit["active"] == 1
+    assert habit["frequency"] == "weekly:4"
+    assert habit["category"] == "health"
+    assert habit["context"] == ""
+    assert history_count == 3
 
 
 def test_deleted_memory_can_be_restored():
