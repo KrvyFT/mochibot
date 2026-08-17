@@ -479,6 +479,11 @@ class WeeklyMaintenanceSession:
                 output="Weekly Core revision already committed for this week.",
                 summary="Weekly Core revision replayed safely.",
             )
+        if outcome == "unchanged":
+            return SkillResult(
+                output="Weekly Core already reflects the current judgment.",
+                summary="Weekly Core reviewed without changes.",
+            )
         return SkillResult(
             output="Weekly Core revision committed with a snapshot.",
             summary="Weekly Core revision committed.",

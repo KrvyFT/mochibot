@@ -132,7 +132,7 @@ def update_active_reminder(
     remind_at: str | None = None,
     content: str | None = None,
 ) -> bool:
-    """Update one pending owner reminder without racing claimed delivery."""
+    """Update one idle owner reminder without racing active delivery."""
     assignments = []
     params: list[object] = []
     if remind_at is not None:
@@ -150,9 +150,17 @@ def update_active_reminder(
     if not assignments:
         return False
     assignments.extend([
+        "status = 'pending'",
         "next_attempt_at = NULL",
         "last_error = NULL",
         "attempt_count = 0",
+        "prepared_text = NULL",
+        "result_json = NULL",
+        "outcome = NULL",
+        "handled_at = NULL",
+        "delivery_cursor = 0",
+        "delivery_started_at = NULL",
+        "fired = 0",
     ])
     params.extend([reminder_id, user_id])
     conn = _connect()
@@ -160,7 +168,10 @@ def update_active_reminder(
         cursor = conn.execute(
             f"UPDATE reminders SET {', '.join(assignments)} "
             "WHERE id = ? AND user_id = ? "
-            "AND kind IN ('notify', 'self') AND status = 'pending'",
+            "AND kind IN ('notify', 'self') "
+            "AND status IN ('pending', 'ready') "
+            "AND claimed_at IS NULL AND lease_until IS NULL "
+            "AND delivery_started_at IS NULL",
             params,
         )
         conn.commit()

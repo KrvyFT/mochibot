@@ -448,7 +448,7 @@ def replace_weekly_core_exact(
             outcome = "replayed"
             snapshot = None
         elif current == updated:
-            outcome = "committed"
+            outcome = "unchanged"
             snapshot = None
         else:
             snapshot = _snapshot_unlocked(current, f"weekly-{period_key}")

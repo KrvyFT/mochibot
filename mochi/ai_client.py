@@ -406,10 +406,13 @@ def _format_current_time_context(now: datetime) -> str:
 def _tool_loop_exhaustion_message(
     *, successful_effects: bool, tool_audit: list[dict],
 ) -> str:
-    if successful_effects:
+    successful_tools = [
+        item for item in tool_audit if item.get("status") == "success"
+    ]
+    if successful_tools:
         if any(item.get("status") != "success" for item in tool_audit):
             return "刚才只处理成功了一部分，剩下的还没改完。"
-        return "处理已经完成。"
+        return "处理已经完成。" if successful_effects else "已经查完了。"
     return "处理过程出了点问题，你再说一次试试？"
 
 
