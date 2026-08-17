@@ -323,12 +323,21 @@ KG_MAX_TRIPLES_PER_ENTITY = _env_int("KG_MAX_TRIPLES_PER_ENTITY", 20)
 # ═══════════════════════════════════════════════════════════════════════════
 
 AI_CHAT_MAX_COMPLETION_TOKENS = _env_int("AI_CHAT_MAX_COMPLETION_TOKENS", 4096)
-TOOL_LOOP_MAX_ROUNDS = _env_int("TOOL_LOOP_MAX_ROUNDS", 5)
-TOOL_LOOP_TOTAL_TOOL_LIMIT = max(
-    0, min(_env_int("TOOL_LOOP_TOTAL_TOOL_LIMIT", 8), 8),
+TOOL_LOOP_MAX_ROUNDS = max(
+    1, min(_env_int("TOOL_LOOP_MAX_ROUNDS", 8), 8),
 )
-TOOL_LOOP_PER_TOOL_LIMIT = max(
-    0, min(_env_int("TOOL_LOOP_PER_TOOL_LIMIT", 3), 3),
+TOOL_LOOP_TOTAL_TOOL_LIMIT = max(
+    0, min(_env_int("TOOL_LOOP_TOTAL_TOOL_LIMIT", 12), 12),
+)
+TOOL_LOOP_DUPLICATE_LIMIT = max(
+    0,
+    min(
+        _env_int(
+            "TOOL_LOOP_DUPLICATE_LIMIT",
+            _env_int("TOOL_LOOP_PER_TOOL_LIMIT", 2),
+        ),
+        2,
+    ),
 )
 
 # ═══════════════════════════════════════════════════════════════════════════

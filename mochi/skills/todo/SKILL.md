@@ -2,6 +2,7 @@
 name: todo
 description: 追踪做完即结束的一次性事项，如买猫粮、约牙医或查资料
 type: tool
+multi_turn: true
 diary_status_order: 20
 sense:
   interval: 20

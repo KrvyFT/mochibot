@@ -11,7 +11,6 @@ from mochi.tool_policy import filter_tools
 
 _SKILLOFF_BASE_TOOLS = ("update_core",)
 _SKILLOFF_TELEGRAM_TOOLS = ("send_sticker",)
-MAX_ROUTED_SKILLS = 2
 
 
 @dataclass(frozen=True)
@@ -30,7 +29,7 @@ class TurnToolPlan:
         return dict(self.router_catalog)
 
     def filter_router_selection(self, skill_names: object) -> list[str]:
-        """Keep at most two unique, currently eligible daily skills."""
+        """Keep unique, currently eligible skills selected for this message."""
         if not self.router_enabled or not isinstance(skill_names, list):
             return []
         eligible = set(self.router_descriptions)
@@ -39,8 +38,6 @@ class TurnToolPlan:
             if not isinstance(name, str) or name not in eligible or name in selected:
                 continue
             selected.append(name)
-            if len(selected) >= MAX_ROUTED_SKILLS:
-                break
         return selected
 
 

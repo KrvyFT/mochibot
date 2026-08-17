@@ -2,6 +2,7 @@
 name: reminder
 description: 在明确时间联系用户，或给未来的自己留一个提醒
 type: tool
+multi_turn: true
 diary_status_order: 30
 sense:
   interval: 5

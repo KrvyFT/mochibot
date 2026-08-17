@@ -80,11 +80,11 @@ class RequestCatalog:
 
 @dataclass
 class ToolLoopBudget:
-    """Mutable counters owned by one chat() invocation."""
+    """Loose runaway fuse owned by one chat() invocation."""
 
     request_attempts: int = 0
     ordinary_attempts: int = 0
-    per_tool_attempts: dict[str, int] = field(default_factory=dict)
+    duplicate_attempts: dict[str, int] = field(default_factory=dict)
 
     def claim_request(self, limit: int) -> dict | None:
         if self.request_attempts >= limit:
@@ -98,17 +98,32 @@ class ToolLoopBudget:
     def claim_tool(
         self,
         tool_name: str,
+        arguments: object,
         *,
         total_limit: int,
-        per_tool_limit: int,
+        duplicate_limit: int,
     ) -> dict | None:
-        current = self.per_tool_attempts.get(tool_name, 0)
-        if current >= per_tool_limit:
+        try:
+            encoded = json.dumps(
+                arguments,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            encoded = repr(arguments)
+        fingerprint = f"{tool_name}:{encoded}"
+        duplicates = self.duplicate_attempts.get(fingerprint, 0)
+        if duplicates >= duplicate_limit:
             return {
                 "ok": False,
-                "error": "per_tool_limit_reached",
+                "error": "repeated_tool_call",
                 "tool": tool_name,
-                "limit": per_tool_limit,
+                "limit": duplicate_limit,
+                "message": (
+                    "The same tool call is repeating without new arguments. "
+                    "Use the previous result or change the approach."
+                ),
             }
         if self.ordinary_attempts >= total_limit:
             return {
@@ -118,7 +133,7 @@ class ToolLoopBudget:
                 "limit": total_limit,
             }
         self.ordinary_attempts += 1
-        self.per_tool_attempts[tool_name] = current + 1
+        self.duplicate_attempts[fingerprint] = duplicates + 1
         return None
 
 

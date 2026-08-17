@@ -700,7 +700,7 @@ async def chat(
         TOOL_LOOP_MAX_ROUNDS, AI_CHAT_MAX_COMPLETION_TOKENS,
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
         TOOL_ESCALATION_MAX_PER_TURN, TOOL_LOOP_TOTAL_TOOL_LIMIT,
-        TOOL_LOOP_PER_TOOL_LIMIT,
+        TOOL_LOOP_DUPLICATE_LIMIT,
     )
 
     runtime_entry = runtime_entry or (
@@ -1343,8 +1343,9 @@ async def chat(
 
             budget_error = tool_budget.claim_tool(
                 tc["name"],
+                tc["arguments"],
                 total_limit=TOOL_LOOP_TOTAL_TOOL_LIMIT,
-                per_tool_limit=TOOL_LOOP_PER_TOOL_LIMIT,
+                duplicate_limit=TOOL_LOOP_DUPLICATE_LIMIT,
             )
             if budget_error:
                 messages.append({

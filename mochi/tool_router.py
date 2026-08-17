@@ -40,7 +40,7 @@ def _build_router_prompt(descriptions: dict[str, str],
         f"{habit_hint}"
         "返回 JSON：{\"skills\": [\"skill1\", \"skill2\"]}\n"
         "如果不需要任何工具（纯聊天），返回：{\"skills\": []}\n"
-        "最多选择 2 个，只包含消息明确需要的技能，不要过度分类。"
+        "只包含消息明确需要的技能，不要遗漏，也不要过度分类。"
     )
 
 
@@ -148,8 +148,6 @@ async def classify_skills_llm(message: str, user_id: int | None = None,
                     and skill not in selected
                 ):
                     selected.append(skill)
-                if len(selected) >= 2:
-                    break
             log.info("Router classified: raw=%s selected=%s", skills, selected)
             from mochi.model_health import record_success
             record_success("lite")
