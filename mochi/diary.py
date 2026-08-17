@@ -36,6 +36,10 @@ class DiaryArchiveWindow:
     truncated: bool
 
 
+class DiaryConflictError(ValueError):
+    """Raised when the journal changed after Main received its current text."""
+
+
 def _atomic_replace_text(path: Path, content: str) -> None:
     """Replace a text file from a flushed temporary sibling."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +141,10 @@ class DailyFile:
         )
         return f"# {self.label} {d.strftime('%Y-%m-%d')} {_WEEKDAYS[d.weekday()]}"
 
+    def current_date(self) -> str:
+        """Return the logical date used by today's file header."""
+        return _today_str()
+
     def _ensure_today(self) -> str:
         """Ensure file exists with today's header (+ section headers). Returns content."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -200,6 +208,47 @@ class DailyFile:
         parsed = self._parse_sections(content)
         return parsed.get(section, [])
 
+    def _section_span(self, content: str, section: str) -> tuple[int, int]:
+        heading = re.search(
+            rf"(?m)^## {re.escape(section)}[ \t]*(?:\r?\n|\Z)",
+            content,
+        )
+        if heading is None:
+            raise ValueError(f"unknown section '{section}'")
+        body_start = heading.end()
+        reserved = "|".join(re.escape(item) for item in self.sections)
+        next_heading = re.search(
+            rf"(?m)^## (?:{reserved})[ \t]*(?:\r?\n|\Z)",
+            content[body_start:],
+        )
+        body_end = (
+            body_start + next_heading.start()
+            if next_heading is not None
+            else len(content)
+        )
+        return body_start, body_end
+
+    def _section_content(self, content: str, section: str) -> str:
+        start, end = self._section_span(content, section)
+        return content[start:end].strip()
+
+    def _replace_section_content(
+        self,
+        content: str,
+        section: str,
+        body: str,
+    ) -> str:
+        start, end = self._section_span(content, section)
+        before = content[:start].rstrip() + "\n"
+        after = content[end:].lstrip("\r\n")
+        normalized = body.strip()
+        replacement = before
+        if normalized:
+            replacement += normalized + "\n"
+        if after:
+            replacement += "\n" + after
+        return replacement.rstrip()
+
     def _max_for_section(self, section: str | None) -> int:
         if section and section in self._section_max:
             return self._section_max[section]
@@ -211,6 +260,8 @@ class DailyFile:
         """Read today's entries. section=None returns all entries (no header)."""
         with self._lock:
             content = self._ensure_today()
+        if self.sections and section:
+            return self._section_content(content, section)
         entries = self._get_section_lines(content, section)
         return "\n".join(entries)
 
@@ -227,8 +278,6 @@ class DailyFile:
         entry = entry.strip()
         if not entry:
             return "Error: entry is empty."
-        if len(entry) > 100:
-            entry = entry[:97] + "..."
 
         line = _format_line(entry, source)
 
@@ -268,8 +317,6 @@ class DailyFile:
         entry = entry.strip()
         if not entry:
             return "Error: entry is empty."
-        if len(entry) > 100:
-            entry = entry[:97] + "..."
 
         new_line = _format_line(entry, source)
 
@@ -353,18 +400,48 @@ class DailyFile:
 
         return f"{self.label} section '{section}' rewritten with {len(lines)} entries."
 
+    def replace_section_exact(
+        self,
+        section: str,
+        *,
+        expected_content: str,
+        content: str,
+    ) -> dict:
+        """Replace one free-text section against the turn-start content."""
+        if section not in self.sections:
+            raise ValueError(f"unknown section '{section}'")
+        with self._lock:
+            current_document = self._ensure_today()
+            current = self._section_content(current_document, section)
+            if current != expected_content.strip():
+                raise DiaryConflictError(
+                    "Today's journal changed since this turn began."
+                )
+            normalized = content.strip()
+            if current == normalized:
+                return {"changed": False, "chars": len(current)}
+            updated = self._replace_section_content(
+                current_document,
+                section,
+                normalized,
+            )
+            _atomic_replace_text(self.path, updated + "\n")
+            return {"changed": True, "chars": len(normalized)}
+
     def _write_section(self, content: str, section: str | None,
                        entry_lines: list[str]) -> None:
         """Write entry_lines to a section. Must be called under lock."""
         if not self.sections or section is None:
             header_line = content.strip().split("\n")[0]
             all_lines = [header_line] + entry_lines
-            self.path.write_text("\n".join(all_lines) + "\n", encoding="utf-8")
+            _atomic_replace_text(self.path, "\n".join(all_lines) + "\n")
         else:
-            parsed = self._parse_sections(content)
-            parsed[section] = entry_lines
-            rebuilt = self._rebuild_from_sections(parsed)
-            self.path.write_text(rebuilt + "\n", encoding="utf-8")
+            rebuilt = self._replace_section_content(
+                content,
+                section,
+                "\n".join(entry_lines),
+            )
+            _atomic_replace_text(self.path, rebuilt + "\n")
 
     # -- archive --
 

@@ -44,13 +44,53 @@ def _context(tool_name, args):
 @pytest.mark.asyncio
 async def test_diary_write_can_be_read_back(workspace):
     skill, diary, _ = workspace
+    detail = "went to gym and kept the complete story " + ("x" * 140)
+    existing = diary.read(section="今日日記")
 
-    write = await skill.execute(_context("write_diary", {"entry": "went to gym"}))
+    write = await skill.execute(_context(
+        "write_diary",
+        {
+            "content": (
+                "# Diary 2025-06-15 Sunday\n"
+                "2025-06-15 was the deadline, and I finished.\n\n"
+                f"## Trip notes\n{detail}"
+            ),
+            "_expected_content": existing,
+        },
+    ))
     read = await skill.execute(_context("read_diary", {}))
 
     assert write.success
-    assert "went to gym" in read.output
-    assert "[10:00]" in diary.read_raw()
+    assert write.state_changed
+    assert detail in read.output
+    assert "2025-06-15 Sunday" not in read.output
+    assert "2025-06-15 was the deadline" in read.output
+    assert "## Trip notes\n" in read.output
+    assert "..." not in read.output
+    assert "[10:00]" not in diary.read_raw()
+
+    diary.rewrite_section("今日状態", ["- current status"])
+    assert "## Trip notes\n" in diary.read(section="今日日記")
+
+    cleared = await skill.execute(_context(
+        "write_diary",
+        {
+            "content": "",
+            "_expected_content": diary.read(section="今日日記"),
+        },
+    ))
+    assert cleared.state_changed
+    assert (await skill.execute(_context("read_diary", {}))).output == ""
+
+    date_body = await skill.execute(_context(
+        "write_diary",
+        {
+            "content": "2025-06-15\nThis date is part of the story.",
+            "_expected_content": "",
+        },
+    ))
+    assert date_body.state_changed
+    assert diary.read(section="今日日記").startswith("2025-06-15\n")
 
 
 @pytest.mark.asyncio

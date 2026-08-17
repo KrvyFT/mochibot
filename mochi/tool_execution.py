@@ -42,7 +42,7 @@ _STATE_CHANGING_ACTIONS: dict[str, set[str]] = {
 }
 _ALWAYS_STATE_CHANGING = {
     "log_meal", "delete_meal", "update_core",
-    "delete_memory", "write_diary", "toggle_skill", "set_skill_config",
+    "delete_memory", "toggle_skill", "set_skill_config",
 }
 
 
@@ -96,7 +96,7 @@ def action_for(tool_name: str, args: dict) -> str:
         "delete_meal": "delete",
         "update_core": "update",
         "delete_memory": "delete",
-        "write_diary": "create",
+        "write_diary": "update",
         "toggle_skill": "update",
         "set_skill_config": "update",
     }

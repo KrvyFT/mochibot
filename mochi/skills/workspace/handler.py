@@ -1,12 +1,18 @@
 """Workspace skill — diary read/write and markdown file editing."""
 
 import logging
+import re
 from pathlib import Path
 
-from mochi.diary import diary
+from mochi.diary import DiaryConflictError, diary
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
+
+_WEEKDAY_PREFIX = (
+    r"(?:周[一二三四五六日天]|星期[一二三四五六日天]|"
+    r"Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
+)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 _CORE_PRIVATE_PATHS = frozenset({
@@ -29,24 +35,61 @@ class WorkspaceSkill(Skill):
     async def execute(self, context: SkillContext) -> SkillResult:
         tool_name, args = context.tool_name, context.args
         if tool_name == "write_diary":
-            return SkillResult(output=self._write_diary(args))
+            return self._write_diary(args)
         elif tool_name == "read_diary":
             return SkillResult(output=self._read_diary(args))
         elif tool_name == "edit_file":
             return SkillResult(output=self._edit_file(args))
         return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
 
-    def _write_diary(self, args: dict) -> str:
-        entry = (args.get("entry") or "").strip()
-        if not entry:
-            return "Error: entry is required."
-        return diary.append(entry, source="chat", section="今日日記")
+    def _write_diary(self, args: dict) -> SkillResult:
+        content = args.get("content")
+        expected = args.get("_expected_content")
+        if not isinstance(content, str):
+            return SkillResult(output="Error: content is required.", success=False)
+        if not isinstance(expected, str):
+            return SkillResult(
+                output="Diary update context is unavailable. Try again next turn.",
+                success=False,
+            )
+        lines = content.strip().splitlines()
+        if lines and re.fullmatch(
+            rf"#\s+Diary\s+{re.escape(diary.current_date())}"
+            rf"\s+{_WEEKDAY_PREFIX}\s*[。.!：:]?",
+            lines[0].strip(),
+            flags=re.IGNORECASE,
+        ):
+            lines = lines[1:]
+        content = "\n".join(lines).strip()
+        try:
+            result = diary.replace_section_exact(
+                "今日日記",
+                expected_content=expected,
+                content=content,
+            )
+        except DiaryConflictError as exc:
+            return SkillResult(
+                output=(
+                    f"Diary update rejected: {exc}\n\n"
+                    f"Current journal:\n{diary.read(section='今日日記')}"
+                ),
+                success=False,
+            )
+        receipt = (
+            f"Today's journal {'updated' if result['changed'] else 'unchanged'} "
+            f"({result['chars']} chars)."
+        )
+        return SkillResult(
+            output=receipt,
+            summary=receipt,
+            entity_refs=["diary:today"],
+            state_changed=result["changed"],
+        )
 
     def _read_diary(self, args: dict) -> str:
         date_str = (args.get("date") or "").strip()
         if not date_str:
-            content = diary.read_raw()
-            return content if content else "Today's diary is empty."
+            return diary.read(section="今日日記")
 
         try:
             year_month = date_str[:7]

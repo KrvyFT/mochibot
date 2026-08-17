@@ -1084,6 +1084,8 @@ async def chat(
     successful_effects = False
     core_expected = core_memory
     core_write_completed = False
+    diary_expected = _dj
+    diary_write_completed = False
     bedtime_requested = False
     after_delivery_actions: list[Callable[[], None]] = []
     tool_budget = ToolLoopBudget()
@@ -1255,6 +1257,7 @@ async def chat(
 
         pending_definitions: list[dict] = []
         core_update_attempted = False
+        diary_update_attempted = False
         weekly_core_update_attempted = False
         for tc in response.tool_calls:
             # ── Handle tool escalation ──
@@ -1326,6 +1329,17 @@ async def chat(
                     "content": (
                         "Core was already updated successfully this turn. "
                         f"No second write was applied.\n\nCurrent Core:\n{current}"
+                    ),
+                })
+                continue
+            if tc["name"] == "write_diary" and diary_write_completed:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": (
+                        "Today's journal was already updated successfully this "
+                        "turn. No second write was applied.\n\n"
+                        f"Current journal:\n{_diary.read(section='今日日記')}"
                     ),
                 })
                 continue
@@ -1414,6 +1428,12 @@ async def chat(
                     **tc["arguments"],
                     "_expected_content": core_expected,
                 }
+            elif tc["name"] == "write_diary" and not is_weekly_tool:
+                diary_update_attempted = True
+                dispatch_args = {
+                    **tc["arguments"],
+                    "_expected_content": diary_expected,
+                }
             elif tc["name"] == "update_weekly_core":
                 weekly_core_update_attempted = True
             try:
@@ -1444,6 +1464,8 @@ async def chat(
                     successful_effects = True
                     if tc["name"] == "update_core":
                         core_write_completed = True
+                    elif tc["name"] == "write_diary":
+                        diary_write_completed = True
                 finish_tool_execution(
                     execution_id,
                     status=outcome["status"],
@@ -1477,6 +1499,13 @@ async def chat(
             core_memory = await asyncio.to_thread(read_core)
             if not core_write_completed:
                 core_expected = core_memory
+        if diary_update_attempted:
+            current_journal = await asyncio.to_thread(
+                _diary.read,
+                "今日日記",
+            )
+            if not diary_write_completed:
+                diary_expected = current_journal
         if weekly_core_update_attempted and weekly_session:
             weekly_session.expected_core = await asyncio.to_thread(read_core)
 
