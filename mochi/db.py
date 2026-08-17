@@ -899,13 +899,13 @@ def finish_tool_execution(execution_id: int, *, status: str,
 
 
 def recover_interrupted_tool_executions() -> int:
-    """Fail chat tool attempts left running by an earlier process."""
+    """Fail tool attempts left running by an earlier process."""
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     cursor = conn.execute(
         "UPDATE tool_executions SET status = 'failed', "
         "result_summary = 'Interrupted by process restart', finished_at = ? "
-        "WHERE status = 'running' AND source = 'chat'",
+        "WHERE status = 'running'",
         (now,),
     )
     recovered = cursor.rowcount

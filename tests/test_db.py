@@ -102,7 +102,7 @@ def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():
     assert rows[0]["entity_refs"] == ["reminder:27"]
 
 
-def test_startup_recovers_only_interrupted_chat_tool_executions():
+def test_startup_recovers_interrupted_tool_executions():
     chat_id = start_tool_execution(
         turn_id="turn_chat",
         tool_call_id="call_chat",
@@ -124,7 +124,7 @@ def test_startup_recovers_only_interrupted_chat_tool_executions():
         arguments_json="{}",
     )
 
-    assert recover_interrupted_tool_executions() == 1
+    assert recover_interrupted_tool_executions() == 2
 
     conn = _connect()
     rows = {
@@ -138,8 +138,9 @@ def test_startup_recovers_only_interrupted_chat_tool_executions():
     assert rows[chat_id]["status"] == "failed"
     assert rows[chat_id]["result_summary"] == "Interrupted by process restart"
     assert rows[chat_id]["finished_at"]
-    assert rows[runtime_id]["status"] == "running"
-    assert rows[runtime_id]["finished_at"] is None
+    assert rows[runtime_id]["status"] == "failed"
+    assert rows[runtime_id]["result_summary"] == "Interrupted by process restart"
+    assert rows[runtime_id]["finished_at"]
 
 
 @pytest.mark.asyncio
