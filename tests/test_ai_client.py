@@ -86,6 +86,15 @@ def test_legacy_bubble_delimiter_becomes_natural_persistable_text():
         "Second thought",
         "Use `left ||| right` in code.",
     ]
+    fenced = "Here\n\n```python\nprint(1)\n\nprint(2)\n```\n\nDone"
+    assert split_bubbles(fenced) == [
+        "Here",
+        "```python\nprint(1)\n\nprint(2)\n```\n\nDone",
+    ]
+    many = "\n\n".join(f"paragraph {index}" for index in range(10))
+    split = split_bubbles(many, max_bubbles=3)
+    assert len(split) == 3
+    assert "paragraph 9" in split[-1]
 
 
 def test_look_around_detail_reads_all_sources_without_arbitrary_cap(monkeypatch):

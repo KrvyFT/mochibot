@@ -283,7 +283,14 @@ class WorkspaceSkill(Skill):
             temp_path = None
         finally:
             if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    log.warning(
+                        "edit_file: failed to clean temporary file %s",
+                        temp_path,
+                        exc_info=True,
+                    )
 
     def _edit_file(self, context: SkillContext) -> SkillResult:
         args = context.args
@@ -319,7 +326,13 @@ class WorkspaceSkill(Skill):
         )
 
         if action == "read":
-            content = self._read_file_content(target)
+            try:
+                content = self._read_file_content(target)
+            except OSError as exc:
+                return SkillResult(
+                    output=f"File read failed: {exc}",
+                    success=False,
+                )
             self._remember_snapshot(
                 key,
                 content=content,
@@ -338,7 +351,13 @@ class WorkspaceSkill(Skill):
                     output="Error: content is required for write.",
                     success=False,
                 )
-            current = self._read_file_content(target)
+            try:
+                current = self._read_file_content(target)
+            except OSError as exc:
+                return SkillResult(
+                    output=f"File read failed before write: {exc}",
+                    success=False,
+                )
             snapshot = self._snapshot_for_write(key)
             if snapshot is None:
                 self._remember_snapshot(
@@ -351,7 +370,6 @@ class WorkspaceSkill(Skill):
                         "File write needs a current read snapshot; no write was "
                         f"applied.\n\nCurrent content:\n{current_text}"
                     ),
-                    success=False,
                 )
             if snapshot.content != current:
                 self._remember_snapshot(
@@ -365,7 +383,6 @@ class WorkspaceSkill(Skill):
                         "The snapshot is now refreshed.\n\n"
                         f"Current content:\n{current_text}"
                     ),
-                    success=False,
                 )
 
             changed = current != content
@@ -391,6 +408,10 @@ class WorkspaceSkill(Skill):
                             "write was applied. The snapshot is now refreshed."
                             f"\n\nCurrent content:\n{current_text}"
                         ),
+                    )
+                except OSError as exc:
+                    return SkillResult(
+                        output=f"File write failed: {exc}",
                         success=False,
                     )
                 log.info(

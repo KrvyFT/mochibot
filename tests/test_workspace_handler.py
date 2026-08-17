@@ -126,7 +126,7 @@ async def test_diary_write_can_be_read_back(workspace):
 
 
 @pytest.mark.asyncio
-async def test_markdown_file_write_can_be_read_back(workspace):
+async def test_markdown_file_write_can_be_read_back(workspace, monkeypatch):
     skill, _, root = workspace
 
     unread_write = await skill.execute(_context(
@@ -139,7 +139,8 @@ async def test_markdown_file_write_can_be_read_back(workspace):
         "edit_file", {"action": "read", "path": "draft.md"}
     ))
 
-    assert not unread_write.success
+    assert unread_write.success
+    assert not unread_write.state_changed
     assert "current read snapshot" in unread_write.output
     assert write.success
     assert write.state_changed
@@ -158,7 +159,8 @@ async def test_markdown_file_write_can_be_read_back(workspace):
         turn_id="turn-2",
     ))
 
-    assert not conflict.success
+    assert conflict.success
+    assert not conflict.state_changed
     assert "changed after it was read" in conflict.output
     assert "changed elsewhere" in conflict.output
     assert retry.success
@@ -187,7 +189,8 @@ async def test_markdown_file_write_can_be_read_back(workspace):
     ))
 
     assert first_writer.success
-    assert not stale_writer.success
+    assert stale_writer.success
+    assert not stale_writer.state_changed
     assert (root / "shared.md").read_text(encoding="utf-8") == "v2"
 
     followup = await skill.execute(_context(
@@ -197,6 +200,25 @@ async def test_markdown_file_write_can_be_read_back(workspace):
     ))
     assert followup.success
     assert (root / "shared.md").read_text(encoding="utf-8") == "v4"
+
+    (root / "locked.md").write_text("before", encoding="utf-8")
+    await skill.execute(_context(
+        "edit_file",
+        {"action": "read", "path": "locked.md"},
+        turn_id="locked-turn",
+    ))
+
+    def fail_replace(*_args, **_kwargs):
+        raise PermissionError("locked")
+
+    monkeypatch.setattr(skill, "_replace_file", fail_replace)
+    locked = await skill.execute(_context(
+        "edit_file",
+        {"action": "write", "path": "locked.md", "content": "after"},
+        turn_id="locked-turn",
+    ))
+    assert not locked.success
+    assert "File write failed" in locked.output
 
 
 @pytest.mark.asyncio

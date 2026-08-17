@@ -76,7 +76,33 @@ def split_bubbles(text: str, max_bubbles: int = 8,
     Merge short fragments into previous bubble.
     """
     if "\n\n" in text:
-        parts = [p.strip() for p in text.split("\n\n") if p.strip()]
+        parts: list[str] = []
+        current: list[str] = []
+        fence: str | None = None
+        for line in text.splitlines(keepends=True):
+            stripped = line.lstrip()
+            marker = (
+                "```" if stripped.startswith("```")
+                else "~~~" if stripped.startswith("~~~")
+                else None
+            )
+            if marker:
+                if fence is None:
+                    fence = marker
+                elif fence == marker:
+                    fence = None
+                current.append(line)
+                continue
+            if fence is None and not line.strip():
+                paragraph = "".join(current).strip()
+                if paragraph:
+                    parts.append(paragraph)
+                current = []
+            else:
+                current.append(line)
+        paragraph = "".join(current).strip()
+        if paragraph:
+            parts.append(paragraph)
     elif delimiter and delimiter in text:
         parts = [p.strip() for p in text.split(delimiter) if p.strip()]
     else:
@@ -93,4 +119,10 @@ def split_bubbles(text: str, max_bubbles: int = 8,
         else:
             bubbles.append(part)
 
-    return bubbles[:max_bubbles]
+    limit = max(1, int(max_bubbles))
+    if len(bubbles) > limit:
+        bubbles = (
+            bubbles[:limit - 1]
+            + ["\n\n".join(bubbles[limit - 1:])]
+        )
+    return bubbles
