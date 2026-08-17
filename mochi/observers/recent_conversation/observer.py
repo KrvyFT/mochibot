@@ -59,7 +59,13 @@ class RecentConversationObserver(Observer):
     def detail_view(self, data: dict) -> dict:
         return self.select_view(
             data,
-            scalar_fields=("count", "last_user_message_when"),
+            scalar_fields=(
+                "count",
+                "last_user_message",
+                "last_user_message_when",
+            ),
+            list_fields={"messages": ("role", "content", "when")},
+            item_limit=MSG_LIMIT,
         )
 
     async def observe(self) -> dict:

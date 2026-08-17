@@ -26,6 +26,20 @@ ALLOWED_PREDICATES = frozenset({
 })
 MAX_RELATIONSHIP_OPERATIONS = 20
 
+_RELATIONSHIP_TEMPLATES = {
+    "is_family_of": "{subject} 和 {object} 是家人",
+    "is_partner_of": "{subject} 的伴侣是 {object}",
+    "is_parent_of": "{subject} 是 {object} 的家长",
+    "is_child_of": "{subject} 是 {object} 的孩子",
+    "is_sibling_of": "{subject} 和 {object} 是兄弟姐妹",
+    "is_friend_of": "{subject} 和 {object} 是朋友",
+    "lives_with": "{subject} 和 {object} 住在一起",
+    "cares_for": "{subject} 在照顾 {object}",
+    "lives_in": "{subject} 住在 {object}",
+    "grew_up_in": "{subject} 在 {object} 长大",
+    "works_at": "{subject} 在 {object} 工作",
+}
+
 
 class RelationshipCurationError(ValueError):
     """The requested relationship curation is outside the Weekly scope."""
@@ -39,6 +53,21 @@ class RelationshipCurationConflict(RelationshipCurationError):
 class RelationshipCurationResult:
     upserted_ids: tuple[int, ...]
     archived_ids: tuple[int, ...]
+
+
+def format_relationship(subject: str, predicate: str, object_: str) -> str:
+    template = _RELATIONSHIP_TEMPLATES.get(predicate)
+    if template:
+        return template.format(subject=subject, object=object_)
+    return f"{subject} 与 {object_} 的关系是 {predicate.replace('_', ' ')}"
+
+
+def format_relationship_snapshot(snapshot: dict) -> str:
+    return format_relationship(
+        str(snapshot.get("subject") or "?"),
+        str(snapshot.get("predicate") or ""),
+        str(snapshot.get("object") or "?"),
+    )
 
 # Emoji pattern: common animal/object emoji + supplementary plane symbols
 _EMOJI_RE = re.compile(
@@ -449,41 +478,28 @@ def entity_context_for_prompt(user_id: int, entity_name: str) -> str:
         return ""
 
     entity = result["entity"]
-    pred_groups: dict[str, list[str]] = {}
+    display = entity.get("display_name", entity.get("name", "?"))
+    relationships: list[str] = []
 
     for tri in result["as_subject"]:
-        pred = tri["predicate"]
-        disp = tri.get("object_display") or tri.get("object_name", "?")
-        pred_groups.setdefault(pred, []).append(disp)
+        other = tri.get("object_display") or tri.get("object_name", "?")
+        relationships.append(
+            format_relationship(display, tri["predicate"], other)
+        )
 
     for tri in result["as_object"]:
-        pred = tri["predicate"]
-        disp = tri.get("subject_display") or tri.get("subject_name", "?")
-        pred_groups.setdefault(f"\u2190{pred}", []).append(disp)
+        other = tri.get("subject_display") or tri.get("subject_name", "?")
+        relationships.append(
+            format_relationship(other, tri["predicate"], display)
+        )
 
-    if not pred_groups:
+    relationships = list(dict.fromkeys(relationships))
+    if not relationships:
         return ""
 
-    _PRED_PRIORITY = [
-        "is_family_of", "is_partner_of", "is_parent_of", "is_child_of",
-        "is_sibling_of", "lives_with", "cares_for", "lives_in",
-        "grew_up_in", "works_at", "is_friend_of",
-    ]
-    ordered_preds: list[str] = []
-    for p in _PRED_PRIORITY:
-        if p in pred_groups:
-            ordered_preds.append(p)
-    for p in pred_groups:
-        if p not in ordered_preds:
-            ordered_preds.append(p)
-
-    parts: list[str] = []
-    for pred in ordered_preds:
-        parts.append(f"{pred}:{','.join(pred_groups[pred])}")
-
-    type_label = entity.get("entity_type", "")
-    disp = entity.get("display_name", entity.get("name", "?"))
-    text = f"\u3010{disp}\u3011({type_label}) " + " | ".join(parts)
+    text = "已知关系：\n" + "\n".join(
+        f"- {relationship}" for relationship in relationships
+    )
 
     max_chars = KG_MAX_ENTITY_CONTEXT_TOKENS * 2 // 3
     if len(text) > max_chars:

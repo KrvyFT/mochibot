@@ -35,6 +35,7 @@ from mochi.knowledge_graph import (
     ALLOWED_PREDICATES,
     RelationshipCurationError,
     curate_relationships,
+    format_relationship_snapshot,
     list_active_relationships,
 )
 from mochi.skills.base import SkillResult
@@ -307,6 +308,18 @@ def _render_context(
         )
         for message in recent_messages
     ) or "(none)"
+    relationships = "\n".join(
+        (
+            f"- relationship_id={item['triple_id']}: "
+            f"{format_relationship_snapshot(item)}"
+            + (
+                f"（依据 memory_id={item['source_memory_id']}）"
+                if item.get("source_memory_id") is not None
+                else ""
+            )
+        )
+        for item in active_relationships
+    ) or "(none)"
     return (
         "## Weekly bounded context\n"
         f"logical_monday: {logical_date}\n"
@@ -329,7 +342,7 @@ def _render_context(
         "### Recent user messages available as additional evidence\n"
         f"{recent}\n\n"
         "### Active user-life relationships\n"
-        f"{json.dumps(active_relationships, ensure_ascii=False)}\n\n"
+        f"{relationships}\n\n"
         "Only rendered item and evidence IDs are in curation scope. "
         "Truncated or missing content was not reviewed. Core can inform judgment "
         "but cannot support a relationship upsert."

@@ -416,24 +416,70 @@ def _tool_loop_exhaustion_message(
     return "处理过程出了点问题，你再说一次试试？"
 
 
+_ATTENTION_SOURCE_LABELS = {
+    "reminder": "提醒",
+    "todo": "待办",
+    "weather": "天气",
+    "activity_pattern": "对话活动",
+    "recent_conversation": "最近对话",
+    "time_context": "时间",
+}
+
+_ATTENTION_FACT_LABELS = {
+    "message": "内容",
+    "remind_at": "时间",
+    "active_count": "未完成数量",
+    "pending_count": "待处理数量",
+    "temperature_c": "温度",
+    "feels_like_c": "体感温度",
+    "condition": "天气状况",
+    "description": "描述",
+}
+
+
+def _format_attention_value(value) -> str:
+    if isinstance(value, dict):
+        return "，".join(
+            f"{_ATTENTION_FACT_LABELS.get(str(key), str(key).replace('_', ' '))} "
+            f"{_format_attention_value(item)}"
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return "、".join(_format_attention_value(item) for item in value)
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    return str(value)
+
+
+def _format_attention_fact(fact) -> str:
+    source = _ATTENTION_SOURCE_LABELS.get(
+        fact.source, fact.source.replace("_", " "),
+    )
+    freshness = "新近观察" if fact.freshness == "fresh" else "较早观察"
+    try:
+        observed = datetime.fromisoformat(fact.observed_at)
+        from mochi.config import TZ
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=TZ)
+        else:
+            observed = observed.astimezone(TZ)
+        observed_label = observed.strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        observed_label = ""
+    details = _format_attention_value(fact.facts)
+    context = f"{freshness} {observed_label}".strip()
+    return f"- {source}（{context}）：{details}"
+
+
 def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     if runtime_entry.kind == "free_time":
         situation = get_prompt("free_time_entry")
     elif runtime_entry.kind == "attention":
         situation = get_prompt("attention_entry")
-        fact_lines = []
-        for fact in runtime_entry.attention_facts:
-            encoded = json.dumps(
-                fact.facts,
-                ensure_ascii=False,
-                separators=(",", ":"),
-                sort_keys=True,
-            )
-            fact_lines.append(
-                f"- source={fact.source}; key={fact.stable_key}; "
-                f"observed_at={fact.observed_at}; freshness={fact.freshness}; "
-                f"status={fact.status}; facts={encoded}"
-            )
+        fact_lines = [
+            _format_attention_fact(fact)
+            for fact in runtime_entry.attention_facts
+        ]
         situation = situation.replace(
             "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
         ).replace(
@@ -555,6 +601,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         bedtime_context = get_prompt("bedtime_entry")
         if not bedtime_context:
             raise RuntimeError("Bedtime entry prompt is missing")
+        silence_protocol = get_prompt("runtime_silence_protocol")
+        if not silence_protocol:
+            raise RuntimeError("Runtime silence protocol prompt is missing")
         trigger_labels = {
             "explicit": "用户刚刚亲自表达了晚安或准备睡觉",
             "silence": "夜间持续安静后，系统判断用户大概已经睡着",
@@ -565,6 +614,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                 "{{trigger}}",
                 trigger_labels[runtime_entry.trigger],
             )
+            + "\n\n"
+            + silence_protocol
         )
     elif runtime_entry and runtime_entry.kind == "self_reminder":
         reminder_context = get_prompt("self_reminder_entry")
@@ -1037,7 +1088,6 @@ async def chat(
     after_delivery_actions: list[Callable[[], None]] = []
     tool_budget = ToolLoopBudget()
     on_interim = message.on_interim if message is not None else None
-    bedtime_finalization_attempted = False
 
     def _log_main_usage(
         response: LLMResponse,
@@ -1066,13 +1116,14 @@ async def chat(
         )
 
     def _final_result(reply: str) -> ChatResult:
+        if is_bedtime or bedtime_requested:
+            reply, _ = _parse_runtime_reply(reply)
         tool_history_json = (
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
         )
         if is_bedtime:
             if not reply and not pending_stickers:
-                log.warning("Bedtime Main turn returned no disposition")
                 return ChatResult()
             return ChatResult(
                 text=reply,
@@ -1123,6 +1174,13 @@ async def chat(
                 successful_effects=successful_effects,
                 disposition="handled" if successful_effects else "skip",
             )
+        if bedtime_requested and not reply and not pending_stickers:
+            return ChatResult(
+                bedtime_requested=True,
+                tool_audit=tool_audit,
+                successful_effects=successful_effects,
+                disposition="handled",
+            )
         return ChatResult(
             text=reply,
             stickers=pending_stickers,
@@ -1136,38 +1194,6 @@ async def chat(
                 "processed": False,
             },
         )
-
-    async def _finalize_bedtime() -> str:
-        nonlocal bedtime_finalization_attempted
-        if bedtime_finalization_attempted:
-            return ""
-        bedtime_finalization_attempted = True
-        try:
-            final_response = await asyncio.to_thread(
-                client.chat,
-                messages=messages,
-                tools=None,
-                max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
-            )
-        except Exception as exc:
-            log.error("Bedtime finalization failed: %s", exc, exc_info=True)
-            return ""
-        _log_main_usage(
-            final_response,
-            call_type="bedtime_finalization",
-        )
-        return _clean_model_reply(final_response.content)
-
-    async def _ensure_bedtime_farewell(reply: str) -> str:
-        if not (is_bedtime or bedtime_requested):
-            return reply
-        reply, _ = _parse_runtime_reply(reply)
-        if pending_stickers:
-            return reply
-        if not reply:
-            reply = await _finalize_bedtime()
-        reply, _ = _parse_runtime_reply(reply)
-        return reply
 
     for round_num in range(max_tool_rounds):
         round_availability = availability
@@ -1209,7 +1235,6 @@ async def chat(
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = _clean_model_reply(response.content)
-            reply = await _ensure_bedtime_farewell(reply)
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
@@ -1280,7 +1305,10 @@ async def chat(
                     result_text = json.dumps({
                         "ok": True,
                         "bedtime_requested": True,
-                        "message": "Bedtime will begin after your farewell.",
+                        "message": (
+                            "Bedtime will begin after this turn. If nothing else "
+                            "needs saying, finish with [SKIP]."
+                        ),
                     }, ensure_ascii=False)
                 messages.append({
                     "role": "tool",
@@ -1459,7 +1487,6 @@ async def chat(
 
     # If we exhausted tool rounds, return whatever we have
     reply = _clean_model_reply(response.content)
-    reply = await _ensure_bedtime_farewell(reply)
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous
     ):

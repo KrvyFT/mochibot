@@ -190,6 +190,7 @@ async def collect_attention_facts() -> bool:
     """Refresh canonical bounded facts for sources that are actually due."""
     from mochi.db import get_disabled_skills
     from mochi.heartbeat_runtime import (
+        retire_attention_source,
         retire_attention_facts,
         sync_attention_facts,
     )
@@ -198,7 +199,10 @@ async def collect_attention_facts() -> bool:
     now = datetime.now(TZ)
     changed = False
     for name, obs in _observers.items():
-        retire_attention_facts(name, obs.retired_attention_keys)
+        if obs.retire_all_attention_facts:
+            retire_attention_source(name)
+        else:
+            retire_attention_facts(name, obs.retired_attention_keys)
         if not obs.meta.enabled or obs._consecutive_errors >= 5:
             continue
         if obs.meta.skill_name and obs.meta.skill_name in disabled_skills:

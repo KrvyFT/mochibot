@@ -142,6 +142,7 @@ class Observer(ABC):
     Everything else (caching, interval, error handling) is handled here.
     """
     retired_attention_keys: tuple[str, ...] = ()
+    retire_all_attention_facts: bool = False
 
     def __init__(self) -> None:
         self._meta: ObserverMeta | None = None

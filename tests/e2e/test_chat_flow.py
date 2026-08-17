@@ -36,7 +36,7 @@ class TestSimpleReply:
             tool["function"]["name"] == "enter_bedtime"
             for tool in mock.call_log[0]["tools"]
         )
-        assert "Bedtime will begin after your farewell" in (
+        assert "Bedtime will begin after this turn" in (
             mock.call_log[1]["messages"][-1]["content"]
         )
 

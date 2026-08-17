@@ -115,8 +115,9 @@ again. The restarted transport reports the durable result to the owner.
 During night conversations, Main may call the framework-scoped
 `enter_bedtime` tool when it understands that the user is genuinely ending the
 conversation to sleep. Main leaves a natural farewell in the same tool loop,
-then the transport claims and completes the sleep transition. No keyword or
-separate classifier decides what the user meant.
+or ends the turn quietly when that fits the moment; the transport then claims
+and completes the sleep transition. No keyword or separate classifier decides
+what the user meant.
 
 Heartbeat-detected silence still creates a `MainRuntimeEntry(kind="bedtime")`
 with a lived sleep-transition situation. The heartbeat atomically claims the

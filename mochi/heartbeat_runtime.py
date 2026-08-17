@@ -127,6 +127,21 @@ def retire_attention_facts(source: str, stable_keys: tuple[str, ...]) -> int:
         conn.close()
 
 
+def retire_attention_source(source: str) -> int:
+    """Resolve every legacy fact for a source that no longer feeds Attention."""
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
+            "WHERE source = ? AND status = 'unresolved'",
+            (_iso(_utc_now()), source),
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def get_unresolved_attention_facts(
     *, now: datetime | None = None, limit: int = _MAX_ATTENTION_FACTS,
 ) -> tuple[AttentionFact, ...]:

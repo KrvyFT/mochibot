@@ -477,6 +477,26 @@ class TelegramTransport(Transport):
                                 except Exception:
                                     pass
                             return
+                        if (
+                            result.disposition == "handled"
+                            and not result.text
+                            and not result.stickers
+                        ):
+                            if TG_STATUS_REACTIONS_ENABLED:
+                                status.reaction_state = ""
+                                await _set_reaction(
+                                    context.bot, chat_id, user_msg_id, None,
+                                )
+                            if status.status_msg_id:
+                                try:
+                                    await context.bot.delete_message(
+                                        chat_id=chat_id,
+                                        message_id=status.status_msg_id,
+                                    )
+                                except Exception:
+                                    pass
+                                status.status_msg_id = None
+                            return
                     delivered = False
                     if status.status_msg_id and result.text:
                         # Edit status message into final reply, with bubble splitting

@@ -15,6 +15,7 @@ from mochi import tool_policy
 MAX_EXACT_REQUESTS = 3
 MAX_QUERY_LENGTH = 200
 MAX_SEARCH_MATCHES = 2
+MAX_DISCOVERY_SUGGESTIONS = 8
 
 
 REQUEST_TOOLS_DEF = {
@@ -24,7 +25,7 @@ REQUEST_TOOLS_DEF = {
         "description": (
             "当前工具不够时，申请本轮需要的额外能力。知道技能或工具名时"
             "使用 skills；不知道名称时用 query 描述想做什么。申请成功后，"
-            "下一轮才能使用新工具。"
+            "下一轮才能使用新工具；未找到时会返回可申请能力候选。"
         ),
         "parameters": {
             "type": "object",
@@ -129,6 +130,7 @@ def error_result(code: str, message: str) -> dict:
         "loaded": [],
         "already_loaded": [],
         "matches": [],
+        "suggestions": [],
         "unavailable": [],
         "no_match": False,
     }
@@ -331,13 +333,33 @@ def resolve_request(
                 "tools": list(item.tool_names),
             })
 
+    no_match = bool(query and not query_matched_catalog)
+    needs_discovery = no_match or any(
+        item.get("reason") == "not_found" for item in unavailable_items
+    )
+    suggestions = (
+        [
+            {
+                "skill": item.name,
+                "description": item.description,
+                "tools": list(item.tool_names),
+            }
+            for item in sorted(
+                catalog.eligible.values(),
+                key=lambda candidate: candidate.name,
+            )[:MAX_DISCOVERY_SUGGESTIONS]
+        ]
+        if needs_discovery
+        else []
+    )
     return {
         "ok": True,
         "loaded": loaded,
         "already_loaded": already_loaded,
         "matches": matches,
+        "suggestions": suggestions,
         "unavailable": unavailable_items,
-        "no_match": bool(query and not query_matched_catalog),
+        "no_match": no_match,
     }, additions
 
 
