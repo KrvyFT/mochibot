@@ -40,7 +40,7 @@ def summary_state(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_summary_retries_same_batch_then_advances(monkeypatch):
+async def test_provider_failure_retries_same_batch_before_advancing(monkeypatch):
     _save_turns(2)
     failed = Client([RuntimeError("offline")])
     monkeypatch.setattr(

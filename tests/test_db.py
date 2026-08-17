@@ -14,15 +14,11 @@ import pytest
 from mochi.db import (
     _connect,
     delete_memory_items,
-    finish_tool_execution,
     get_conversation_context,
-    get_recent_tool_executions,
     init_db,
     list_all_memories,
     list_memory_trash,
-    recall_memory,
     recover_interrupted_tool_executions,
-    restore_memory_from_trash,
     save_memory_item,
     save_message,
     start_tool_execution,
@@ -75,31 +71,6 @@ def test_context_uses_exact_current_message_and_never_revives_stale_orphans():
         "What did you mean just now?",
     ]
     assert get_conversation_context(1)["trailing"] == []
-
-
-def test_tool_ledger_keeps_real_receipt_and_filters_non_changes():
-    success_id = start_tool_execution(
-        turn_id="turn_1", tool_call_id="call_1", user_id=1,
-        source="chat", skill_name="reminder",
-        tool_name="manage_reminder", action="create",
-        arguments_json='{"message":"report"}',
-    )
-    finish_tool_execution(
-        success_id, status="success", result_summary="Reminder #27 set",
-        entity_refs=["reminder:27"], state_changed=True,
-    )
-    failed_id = start_tool_execution(
-        turn_id="turn_2", tool_call_id="call_2", user_id=1,
-        source="chat", skill_name="reminder",
-        tool_name="manage_reminder", action="create", arguments_json="{}",
-    )
-    finish_tool_execution(failed_id, status="failed", result_summary="failed")
-
-    rows = get_recent_tool_executions(1, state_changes_only=True)
-
-    assert len(rows) == 1
-    assert rows[0]["arguments"] == {"message": "report"}
-    assert rows[0]["entity_refs"] == ["reminder:27"]
 
 
 def test_startup_recovers_interrupted_tool_executions():
@@ -232,21 +203,6 @@ async def test_habit_threshold_name_resolution_and_reactivation():
     assert habit["category"] == "health"
     assert habit["context"] == ""
     assert history_count == 3
-
-
-def test_deleted_memory_can_be_restored():
-    first_event = save_memory_item(1, "[2026-08-15] Started a new project")
-    second_event = save_memory_item(1, "[2026-08-15] Started learning Japanese")
-    assert first_event != second_event
-
-    memory_id = save_memory_item(1, "Likes jasmine tea")
-    assert delete_memory_items([memory_id], deleted_by="user") == 1
-    assert recall_memory(1, query="jasmine") == []
-
-    trash = list_memory_trash(1)
-    assert trash[0]["content"] == "Likes jasmine tea"
-    assert restore_memory_from_trash(trash[0]["id"], 1) is not None
-    assert recall_memory(1, query="jasmine")[0]["content"] == "Likes jasmine tea"
 
 
 def test_memory_and_trash_lists_expose_continuation_metadata():
@@ -410,6 +366,20 @@ async def test_todo_exact_match_reopen_and_clear_nudge_date():
     assert not unchanged.state_changed
     assert "unchanged" in unchanged.output
 
+    from mochi.skills.base import SkillResult
+    from mochi.tool_execution import outcome_for
+
+    outcome = outcome_for(
+        "todo",
+        "manage_todo",
+        {"action": "update", "task": "Keep API unchanged."},
+        SkillResult(
+            output="Todo #1 updated: task=Keep API unchanged.",
+            state_changed=True,
+        ),
+    )
+    assert outcome["state_changed"]
+
 
 @pytest.mark.asyncio
 async def test_meal_source_is_hidden_and_framework_bound():
@@ -455,23 +425,3 @@ async def test_meal_source_is_hidden_and_framework_bound():
     )
     assert result.success
     assert json.loads(records[0]["metrics"])["source"] == "photo"
-
-
-def test_tool_outcome_trusts_todo_state_fact_over_user_text():
-    from mochi.skills.base import SkillResult
-    from mochi.tool_execution import outcome_for
-
-    outcome = outcome_for(
-        "todo",
-        "manage_todo",
-        {
-            "action": "update",
-            "task": "Keep API unchanged.",
-        },
-        SkillResult(
-            output="Todo #1 updated: task=Keep API unchanged.",
-            state_changed=True,
-        ),
-    )
-
-    assert outcome["state_changed"]

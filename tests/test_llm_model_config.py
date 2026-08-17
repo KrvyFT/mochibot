@@ -22,9 +22,6 @@ def test_only_official_chat_providers_are_accepted(monkeypatch):
     for provider in ("azure_openai", "gemini", "deepseek", "custom"):
         with pytest.raises(ValueError):
             llm._make_client(provider, "key", "model", "")
-
-
-def test_admin_accepts_https_compatible_endpoint_and_rejects_unsafe_urls(monkeypatch):
     import mochi.admin.admin_db as admin_db
 
     monkeypatch.setattr(admin_db, "encrypt_api_key", lambda value: value)

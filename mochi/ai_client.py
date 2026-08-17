@@ -974,7 +974,11 @@ async def chat(
 
     history = (
         [
-            *conversation_context["overflow"],
+            *(
+                conversation_context["overflow"]
+                if prompt_policy.trailing_history
+                else []
+            ),
             *conversation_context["recent"],
             *(
                 conversation_context["trailing"]

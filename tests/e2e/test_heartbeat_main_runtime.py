@@ -70,7 +70,11 @@ async def test_free_time_uses_recent_complete_turns_and_consumes_skip_marker(
 
     result = await chat(runtime_entry=entry)
 
-    history = mock.call_log[0]["messages"][1:]
+    history = [
+        item
+        for item in mock.call_log[0]["messages"][1:]
+        if item["role"] in {"user", "assistant"}
+    ]
     assert [item["content"].split("] ", 1)[-1] for item in history] == [
         "user-1",
         "assistant-1",

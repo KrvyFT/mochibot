@@ -253,9 +253,6 @@ async def test_list_files_is_bounded_to_public_markdown(
         "draft.md",
         "... (showing first 1 files)",
     ]
-
-
-def test_workspace_file_tools_are_routed_and_multi_turn():
     import mochi.skills as skill_registry
 
     skill = skill_registry.get_skill("workspace")

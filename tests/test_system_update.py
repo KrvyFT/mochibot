@@ -121,13 +121,7 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
     assert delivered.confirm_delivered()
     assert exits == [shutdown.UPDATE_EXIT_CODE]
 
-
-@pytest.mark.asyncio
-async def test_autonomous_runtime_cannot_install(monkeypatch):
-    from mochi.skills.system_update.handler import SystemUpdateSkill
-
-    skill = SystemUpdateSkill()
-    result = await skill.execute(SkillContext(
+    autonomous = await skill.execute(SkillContext(
         trigger="tool_call",
         user_id=1,
         actor="main",
@@ -135,9 +129,8 @@ async def test_autonomous_runtime_cannot_install(monkeypatch):
         tool_name="install_system_update",
         args={},
     ))
-
-    assert not result.success
-    assert "主人当前对话" in result.output
+    assert not autonomous.success
+    assert "主人当前对话" in autonomous.output
 
 
 def test_launcher_replaces_code_with_exact_staged_release(tmp_path, monkeypatch):

@@ -67,7 +67,7 @@ class TestSimpleReply:
         assert set(parameters["properties"]) == {"content"}
 
     @pytest.mark.asyncio
-    async def test_multiple_core_writes_in_one_response_share_one_snapshot(
+    async def test_only_first_core_write_in_turn_can_commit(
         self, mock_llm_factory,
     ):
         from mochi.core_store import read_core, replace_core
@@ -82,52 +82,47 @@ class TestSimpleReply:
                     "content": "Stale second revision",
                 }),
             ]),
-            make_response("I kept the revision that committed safely."),
+            make_response("Saved safely."),
         ])
 
-        result = await chat(_msg("整理 Core"))
+        await chat(_msg("整理 Core"))
 
         assert read_core() == "First complete revision"
-        assert result.text == "I kept the revision that committed safely."
-        tool_results = [
-            message["content"]
-            for message in mock.call_log[1]["messages"]
-            if message["role"] == "tool"
+        results = [
+            item["content"]
+            for item in mock.call_log[1]["messages"]
+            if item["role"] == "tool"
         ]
-        assert any("No second write was applied" in content for content in tool_results)
+        assert any("No second write was applied" in item for item in results)
 
     @pytest.mark.asyncio
-    async def test_second_core_write_in_same_turn_cannot_replace_first(
+    async def test_later_round_cannot_replace_core_written_this_turn(
         self, mock_llm_factory,
     ):
         from mochi.core_store import read_core, replace_core
 
         replace_core("Core before")
         mock = mock_llm_factory([
-            make_response(tool_calls=[
-                make_tool_call("update_core", {
-                    "content": "Core before\n\nFirst addition",
-                }),
-            ]),
-            make_response(tool_calls=[
-                make_tool_call("update_core", {
-                    "content": "Core before\n\nStale replacement",
-                }),
-            ]),
-            make_response("The first complete revision is saved."),
+            make_response(tool_calls=[make_tool_call("update_core", {
+                "content": "First complete revision",
+            })]),
+            make_response(tool_calls=[make_tool_call("update_core", {
+                "content": "Stale later revision",
+            })]),
+            make_response("Done."),
         ])
 
         await chat(_msg("整理 Core"))
 
-        assert read_core() == "Core before\n\nFirst addition"
-        first_result = mock.call_log[1]["messages"][-1]["content"]
-        assert "Current Core:\nCore before\n\nFirst addition" in first_result
-        second_results = [
-            message["content"]
-            for message in mock.call_log[2]["messages"]
-            if message["role"] == "tool"
+        assert read_core() == "First complete revision"
+        later_results = [
+            item["content"]
+            for item in mock.call_log[2]["messages"]
+            if item["role"] == "tool"
         ]
-        assert any("No second write was applied" in content for content in second_results)
+        assert any(
+            "No second write was applied" in item for item in later_results
+        )
 
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""

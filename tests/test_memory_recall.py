@@ -51,12 +51,8 @@ def _recall_config(monkeypatch):
     monkeypatch.setattr(config, "KG_ENABLED", False)
 
 
-@pytest.mark.parametrize(
-    "pool",
-    [Pool(), Pool(error=RuntimeError("provider offline"))],
-)
 def test_auto_recall_uses_text_when_embedding_is_unavailable(
-    monkeypatch, pool,
+    monkeypatch,
 ):
     import mochi.model_pool as model_pool
 
@@ -77,13 +73,12 @@ def test_auto_recall_uses_text_when_embedding_is_unavailable(
         1, "喜欢茉莉花茶", source="admin",
         evidence_message_ids=[first_evidence_id, last_evidence_id],
     )
-    monkeypatch.setattr(model_pool, "get_pool", lambda: pool)
-
-    recalled = _retrieve_memories_for_turn("我喜欢什么花茶？", 1)
-
-    assert [item["text"] for item in recalled] == ["喜欢茉莉花茶"]
-    assert recalled[0]["evidence_start"] == "2026-08-14"
-    assert recalled[0]["evidence_end"] == "2026-08-15"
+    for pool in (Pool(), Pool(error=RuntimeError("provider offline"))):
+        monkeypatch.setattr(model_pool, "get_pool", lambda: pool)
+        recalled = _retrieve_memories_for_turn("我喜欢什么花茶？", 1)
+        assert [item["text"] for item in recalled] == ["喜欢茉莉花茶"]
+        assert recalled[0]["evidence_start"] == "2026-08-14"
+        assert recalled[0]["evidence_end"] == "2026-08-15"
 def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     monkeypatch,
 ):
