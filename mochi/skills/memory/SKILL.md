@@ -27,6 +27,7 @@ locked: true
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | limit | integer | no | 最大返回条数（默认 30） |
+| offset | integer | no | 从第几条开始（默认 0）；结果中的 next_offset 可用于继续读取 |
 
 ### delete_memory (on_demand)
 按 ID 删除一条记忆（移入回收站，30 天内可恢复）。
@@ -52,6 +53,8 @@ locked: true
 |-----------|------|----------|-------------|
 | action | string (enum: list, restore) | no | list（默认）或 restore |
 | trash_id | integer | no | restore 时必填——要恢复的回收站条目 ID |
+| limit | integer | no | list 时最大返回条数（默认 20） |
+| offset | integer | no | list 时从第几条开始（默认 0）；结果中的 next_offset 可用于继续读取 |
 
 ## Usage Rules
 - **update_core 每轮都可用**：Main 只维护每轮常驻的稳定 Core

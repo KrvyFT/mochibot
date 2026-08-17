@@ -41,6 +41,7 @@ from mochi.tool_availability import ToolAvailability, unavailable_tool_error
 from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
+from mochi.transport.utils import normalize_legacy_bubble_delimiters
 
 log = logging.getLogger(__name__)
 
@@ -264,6 +265,7 @@ def _format_history_timestamp(created_at) -> str:
 
 def _clean_model_reply(content: str | None) -> str:
     reply = STICKER_RE.sub("", content or "").strip()
+    reply = normalize_legacy_bubble_delimiters(reply)
     return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
 
 
@@ -567,12 +569,6 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if policy.prompt_sections and not is_weekly:
         for section in skill_registry.get_prompt_sections(compact=True):
             capability_parts.append(section)
-
-    from mochi.config import BUBBLE_ENABLED
-    if BUBBLE_ENABLED and not is_weekly and not is_autonomous:
-        bubble_inst = get_prompt("system_chat/_bubble")
-        if bubble_inst:
-            capability_parts.append(bubble_inst)
 
     hist_ts_inst = get_prompt("system_chat/_history_timestamp")
     if hist_ts_inst and not is_weekly and policy.recent_history:

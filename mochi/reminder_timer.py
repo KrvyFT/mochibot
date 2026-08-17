@@ -18,6 +18,7 @@ from mochi.core_store import read_core
 from mochi.llm import get_client_for_tier
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 from mochi.prompt_loader import get_prompt
+from mochi.transport.utils import normalize_legacy_bubble_delimiters
 from mochi.skills.reminder.queries import (
     begin_delivery,
     claim_reminder,
@@ -146,7 +147,9 @@ async def _rephrase_reminder(message: str, user_id: int) -> str:
             reasoning_tokens=response.reasoning_tokens,
             cached_prompt_tokens=response.cached_prompt_tokens,
         )
-        return (response.content or "").strip() or fallback
+        return normalize_legacy_bubble_delimiters(
+            response.content or "",
+        ) or fallback
     except Exception as exc:
         log.warning("Reminder rewrite unavailable, using raw content: %s", exc)
         return fallback

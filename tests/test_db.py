@@ -4,6 +4,8 @@ These tests intentionally cover durable user data and upgrade boundaries, not
 every query helper.
 """
 
+import asyncio
+import hashlib
 import sqlite3
 
 import pytest
@@ -15,6 +17,7 @@ from mochi.db import (
     get_conversation_context,
     get_recent_tool_executions,
     init_db,
+    list_all_memories,
     list_memory_trash,
     recall_memory,
     recover_interrupted_tool_executions,
@@ -25,6 +28,7 @@ from mochi.db import (
 )
 from mochi.skills.base import SkillContext
 from mochi.skills.habit.handler import HabitSkill
+from mochi.skills.memory.handler import MemorySkill
 
 
 def test_context_uses_exact_current_message_and_never_revives_stale_orphans():
@@ -241,6 +245,39 @@ def test_deleted_memory_can_be_restored():
     assert trash[0]["content"] == "Likes jasmine tea"
     assert restore_memory_from_trash(trash[0]["id"], 1) is not None
     assert recall_memory(1, query="jasmine")[0]["content"] == "Likes jasmine tea"
+
+
+def test_memory_and_trash_lists_expose_continuation_metadata():
+    memory_ids = [
+        save_memory_item(
+            1,
+            f"Fact {hashlib.sha256(str(index).encode()).hexdigest()}",
+        )
+        for index in range(35)
+    ]
+    assert len(list_all_memories(1, limit=10, offset=10)) == 10
+
+    skill = MemorySkill()
+    memories = asyncio.run(skill.execute(SkillContext(
+        trigger="tool_call",
+        user_id=1,
+        tool_name="list_memories",
+        args={"limit": 10, "offset": 10},
+    )))
+    assert memories.output.startswith(
+        "Memories: total=35, shown=10, offset=10, next_offset=20"
+    )
+
+    assert delete_memory_items(memory_ids[:25], deleted_by="user") == 25
+    trash = asyncio.run(skill.execute(SkillContext(
+        trigger="tool_call",
+        user_id=1,
+        tool_name="memory_trash_bin",
+        args={"action": "list"},
+    )))
+    assert trash.output.startswith(
+        "Trash: total=25, shown=20, offset=0, next_offset=20"
+    )
 
 
 def test_old_database_upgrades_messages_and_memory_without_data_loss(

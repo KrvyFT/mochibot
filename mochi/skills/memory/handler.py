@@ -83,20 +83,25 @@ class MemorySkill(Skill):
             )
 
         elif tool == "list_memories":
-            limit = args.get("limit", 30)
+            paging = _paging_args(args, default_limit=30)
+            if isinstance(paging, SkillResult):
+                return paging
+            limit, offset = paging
             try:
-                items = db_list_all(uid, limit=limit)
+                items = db_list_all(uid, limit=limit, offset=offset)
+                total = db_stats(uid)["total"]
             except Exception as e:
                 log.error("list_memories failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed: {e}", success=False)
+            header = _page_header("Memories", total, len(items), offset)
             if not items:
-                return SkillResult(output="No memories found.")
+                return SkillResult(output=f"{header}\nNo memories on this page.")
             lines = [
                 f"#{m['id']} ★{m['importance']} | {m['content']} "
                 f"(evidence {_evidence_label(m)})"
                 for m in items
             ]
-            return SkillResult(output="\n".join(lines))
+            return SkillResult(output="\n".join([header, *lines]))
 
         elif tool == "delete_memory":
             mid = args.get("memory_id")
@@ -113,7 +118,6 @@ class MemorySkill(Skill):
         elif tool == "memory_stats":
             try:
                 stats = db_stats(uid)
-                trash = db_list_trash(uid, limit=100)
             except Exception as e:
                 log.error("memory_stats failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed: {e}", success=False)
@@ -121,7 +125,7 @@ class MemorySkill(Skill):
                 "Memory Stats:",
                 f"- Total memories: {stats['total']}",
                 f"- 关键 (★3): {stats['high_importance']}",
-                f"- Trash bin: {len(trash)} items",
+                f"- Trash bin: {stats['trash_total']} items",
             ]
             try:
                 from mochi.knowledge_graph import get_kg_stats
@@ -143,14 +147,20 @@ class MemorySkill(Skill):
         elif tool == "memory_trash_bin":
             action = args.get("action", "list")
             if action == "list":
+                paging = _paging_args(args, default_limit=20)
+                if isinstance(paging, SkillResult):
+                    return paging
+                limit, offset = paging
                 try:
-                    trash = db_list_trash(uid)
+                    trash = db_list_trash(uid, limit=limit, offset=offset)
+                    total = db_stats(uid)["trash_total"]
                 except Exception as e:
                     log.error("memory_trash_bin list failed: %s", e, exc_info=True)
                     return SkillResult(output=f"Failed: {e}", success=False)
+                header = _page_header("Trash", total, len(trash), offset)
                 if not trash:
-                    return SkillResult(output="Trash is empty.")
-                lines = ["Deleted memories (kept 30 days):"]
+                    return SkillResult(output=f"{header}\nTrash is empty on this page.")
+                lines = [header, "Deleted memories (kept 30 days):"]
                 for t in trash:
                     lines.append(
                         f"Trash#{t['id']} (was #{t['original_id']}) "
@@ -182,3 +192,36 @@ def _evidence_label(item: dict) -> str:
     if start and end and start != end:
         return f"{start} to {end}"
     return start or "unknown"
+
+
+def _paging_args(
+    args: dict,
+    *,
+    default_limit: int,
+) -> tuple[int, int] | SkillResult:
+    try:
+        limit = int(args.get("limit", default_limit))
+        offset = int(args.get("offset", 0))
+    except (TypeError, ValueError):
+        return SkillResult(
+            output="limit and offset must be integers.",
+            success=False,
+        )
+    if not 1 <= limit <= 100:
+        return SkillResult(output="limit must be between 1 and 100.", success=False)
+    if offset < 0:
+        return SkillResult(output="offset must be zero or greater.", success=False)
+    return limit, offset
+
+
+def _page_header(name: str, total: int, shown: int, offset: int) -> str:
+    next_offset = offset + shown if offset + shown < total else None
+    continuation = (
+        str(next_offset)
+        if next_offset is not None
+        else "none"
+    )
+    return (
+        f"{name}: total={total}, shown={shown}, offset={offset}, "
+        f"next_offset={continuation}"
+    )

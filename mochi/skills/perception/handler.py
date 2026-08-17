@@ -37,7 +37,6 @@ class PerceptionSkill(Skill):
         parameters = definitions[0]["function"]["parameters"]
         parameters["additionalProperties"] = False
         sources = parameters["properties"]["sources"]
-        sources["maxItems"] = 3
         sources["uniqueItems"] = True
         sources["items"].update({
             "minLength": 1,
@@ -56,25 +55,24 @@ class PerceptionSkill(Skill):
         if not isinstance(context.args, dict):
             return _error("invalid_arguments", "arguments must be an object")
 
-        extra = set(context.args) - {"sources"}
+        extra = set(context.args) - {"sources", "detail"}
         if extra:
             return _error(
                 "invalid_arguments",
                 f"unsupported properties: {', '.join(sorted(extra))}",
             )
 
+        detail = context.args.get("detail", False)
+        if not isinstance(detail, bool):
+            return _error("invalid_arguments", "detail must be a boolean")
+
         raw_sources = context.args.get("sources")
         if "sources" not in context.args or raw_sources == []:
-            mode = "overview"
             requested = None
+            mode = "detail" if detail else "overview"
         else:
             if not isinstance(raw_sources, list):
                 return _error("invalid_arguments", "sources must be an array")
-            if len(raw_sources) > 3:
-                return _error(
-                    "invalid_arguments",
-                    "sources may contain at most 3 items",
-                )
 
             requested = []
             seen: set[str] = set()

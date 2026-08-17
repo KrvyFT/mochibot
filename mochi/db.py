@@ -2315,14 +2315,18 @@ def merge_memory_items(keep_id: int, delete_ids: list[int],
         conn.close()
 
 
-def list_all_memories(user_id: int, limit: int = 50) -> list[dict]:
+def list_all_memories(
+    user_id: int,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
     """List recent Memory Items with their user-evidence dates."""
     conn = _connect()
     rows = conn.execute(
         "SELECT id, content, importance, source, evidence_message_ids, "
         "created_at, updated_at FROM memory_items WHERE user_id = ? "
-        "ORDER BY updated_at DESC LIMIT ?",
-        (user_id, limit),
+        "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
     ).fetchall()
     evidence_dates = _memory_evidence_dates(conn, user_id, rows)
     conn.close()
@@ -2351,20 +2355,29 @@ def get_memory_stats(user_id: int) -> dict:
         "SELECT COUNT(*) as cnt FROM memory_items "
         "WHERE user_id = ? AND importance >= 3", (user_id,)
     ).fetchone()["cnt"]
+    trash_total = conn.execute(
+        "SELECT COUNT(*) as cnt FROM memory_trash WHERE user_id = ?", (user_id,)
+    ).fetchone()["cnt"]
     conn.close()
     return {
         "total": total,
         "high_importance": high_imp,
+        "trash_total": trash_total,
     }
 
 
-def list_memory_trash(user_id: int, limit: int = 20) -> list[dict]:
+def list_memory_trash(
+    user_id: int,
+    limit: int = 20,
+    offset: int = 0,
+) -> list[dict]:
     """List recently deleted memories (trash bin)."""
     conn = _connect()
     rows = conn.execute(
         "SELECT id, original_id, content, importance, deleted_by, deleted_at "
-        "FROM memory_trash WHERE user_id = ? ORDER BY deleted_at DESC LIMIT ?",
-        (user_id, limit),
+        "FROM memory_trash WHERE user_id = ? "
+        "ORDER BY deleted_at DESC LIMIT ? OFFSET ?",
+        (user_id, limit, offset),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
