@@ -37,16 +37,21 @@ def test_legacy_identity_migrates_once_with_backups():
         raw_soul,
     ).hexdigest()
     assert core_store.initialize_core(1)["target_sha256"] == status["target_sha256"]
-def test_exact_patch_conflict_and_internal_snapshot():
+def test_agent_replaces_complete_core_with_internal_conflict_check():
     core_store.replace_core("alpha\n\nbeta")
-    with pytest.raises(core_store.CoreConflictError):
-        core_store.update_core(
-            action="edit", old_text="missing", new_text="changed",
-        )
-    assert core_store.read_core() == "alpha\n\nbeta"
+    expected = core_store.read_core()
 
-    core_store.update_core(
-        action="edit", old_text="alpha", new_text="gamma",
+    core_store.replace_core_exact(
+        expected_content=expected,
+        content="gamma\n\nbeta",
     )
     assert core_store.read_core() == "gamma\n\nbeta"
     assert list((core_store.DATA_DIR / "core_history").glob("*.md"))
+
+    core_store.replace_core("admin changed it")
+    with pytest.raises(core_store.CoreConflictError):
+        core_store.replace_core_exact(
+            expected_content="gamma\n\nbeta",
+            content="agent overwrote it",
+        )
+    assert core_store.read_core() == "admin changed it"

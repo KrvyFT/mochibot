@@ -807,16 +807,17 @@ async def chat(
     weekly_session = None
     if is_weekly:
         from mochi.weekly_maintenance import create_weekly_session
-        weekly_session = create_weekly_session(
-            user_id=user_id,
-            logical_date=runtime_entry.logical_date or "",
-            period_key=runtime_entry.period_key or "",
-        )
-        tools = weekly_session.definitions()
         core_memory, conversation_context = await asyncio.gather(
             asyncio.to_thread(read_core),
             _safe_conversation_context(),
         )
+        weekly_session = create_weekly_session(
+            user_id=user_id,
+            logical_date=runtime_entry.logical_date or "",
+            period_key=runtime_entry.period_key or "",
+            core_content=core_memory,
+        )
+        tools = weekly_session.definitions()
         recalled_memories = []
         habits = []
 
@@ -1017,6 +1018,8 @@ async def chat(
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
     successful_effects = False
+    core_expected = core_memory
+    core_write_completed = False
     bedtime_requested = False
     after_delivery_actions: list[Callable[[], None]] = []
     tool_budget = ToolLoopBudget()
@@ -1213,6 +1216,8 @@ async def chat(
         messages.append(assistant_msg)
 
         pending_definitions: list[dict] = []
+        core_update_attempted = False
+        weekly_core_update_attempted = False
         for tc in response.tool_calls:
             # ── Handle tool escalation ──
             if tc["name"] == "request_tools":
@@ -1271,6 +1276,18 @@ async def chat(
                 continue
 
             # ── Normal tool execution ──
+            if tc["name"] == "update_core" and core_write_completed:
+                current = await asyncio.to_thread(read_core)
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": (
+                        "Core was already updated successfully this turn. "
+                        f"No second write was applied.\n\nCurrent Core:\n{current}"
+                    ),
+                })
+                continue
+
             log.info("Tool call: %s", tc["name"])
             log.debug("Tool args: %s(%s)", tc["name"], tc["arguments"])
 
@@ -1347,6 +1364,15 @@ async def chat(
                 action=action_for(tc["name"], tc["arguments"]),
                 arguments_json=serialized_arguments(tc["name"], tc["arguments"]),
             )
+            dispatch_args = tc["arguments"]
+            if tc["name"] == "update_core" and not is_weekly_tool:
+                core_update_attempted = True
+                dispatch_args = {
+                    **tc["arguments"],
+                    "_expected_content": core_expected,
+                }
+            elif tc["name"] == "update_weekly_core":
+                weekly_core_update_attempted = True
             try:
                 if is_weekly_tool:
                     result = await weekly_session.execute(
@@ -1354,7 +1380,7 @@ async def chat(
                     )
                 else:
                     result = await skill_registry.dispatch(
-                        tc["name"], tc["arguments"],
+                        tc["name"], dispatch_args,
                         user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
@@ -1373,6 +1399,8 @@ async def chat(
                 })
                 if outcome["status"] == "success" and outcome["state_changed"]:
                     successful_effects = True
+                    if tc["name"] == "update_core":
+                        core_write_completed = True
                 finish_tool_execution(
                     execution_id,
                     status=outcome["status"],
@@ -1401,6 +1429,13 @@ async def chat(
                 "tool_call_id": tc["id"],
                 "content": result.output,
             })
+
+        if core_update_attempted:
+            core_memory = await asyncio.to_thread(read_core)
+            if not core_write_completed:
+                core_expected = core_memory
+        if weekly_core_update_attempted and weekly_session:
+            weekly_session.expected_core = await asyncio.to_thread(read_core)
 
         if pending_definitions:
             availability = availability.with_definitions(
