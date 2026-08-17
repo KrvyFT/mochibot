@@ -48,6 +48,10 @@ STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
 _HISTORY_TIMESTAMP_PREFIX_RE = re.compile(
     r"^\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*"
 )
+_WEEKDAY_NAMES = (
+    "星期一", "星期二", "星期三", "星期四",
+    "星期五", "星期六", "星期日",
+)
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
 _TOOL_HISTORY_EXCLUDE = frozenset({
@@ -394,6 +398,11 @@ def _render_runtime_context(template: str, diary_status: str = "",
     return result.strip()
 
 
+def _format_current_time_context(now: datetime) -> str:
+    weekday = _WEEKDAY_NAMES[now.weekday()]
+    return f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S %z')}（{weekday}）"
+
+
 def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     if runtime_entry.kind == "free_time":
         situation = get_prompt("free_time_entry")
@@ -447,7 +456,6 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     modules = get_system_chat_modules()
     from mochi.config import TZ
     now = datetime.now(TZ)
-    now_str = now.strftime("%Y-%m-%d %H:%M:%S %z")
     policy = policy or context_policy(runtime_entry)
     is_weekly = bool(
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
@@ -594,7 +602,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         + early_runtime_situation
         + capability_parts
         + dynamic_live_context
-        + [f"当前时间：{now_str}"]
+        + [_format_current_time_context(now)]
     )
     if not parts:
         raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
