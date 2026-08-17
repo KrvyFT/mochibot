@@ -403,6 +403,16 @@ def _format_current_time_context(now: datetime) -> str:
     return f"当前时间：{now.strftime('%Y-%m-%d %H:%M:%S %z')}（{weekday}）"
 
 
+def _tool_loop_exhaustion_message(
+    *, successful_effects: bool, tool_audit: list[dict],
+) -> str:
+    if successful_effects:
+        if any(item.get("status") != "success" for item in tool_audit):
+            return "刚才只处理成功了一部分，剩下的还没改完。"
+        return "处理已经完成。"
+    return "处理过程出了点问题，你再说一次试试？"
+
+
 def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     if runtime_entry.kind == "free_time":
         situation = get_prompt("free_time_entry")
@@ -1404,7 +1414,10 @@ async def chat(
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous
     ):
-        reply = "处理过程出了点问题，你再说一次试试？"
+        reply = _tool_loop_exhaustion_message(
+            successful_effects=successful_effects,
+            tool_audit=tool_audit,
+        )
     if _health_warning and reply:
         reply += _health_warning
     return _final_result(reply)
