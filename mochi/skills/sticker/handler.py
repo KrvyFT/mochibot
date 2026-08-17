@@ -165,7 +165,7 @@ class StickerSkill(Skill):
                  mood, file_id, chosen.get("tags", ""))
 
         return SkillResult(
-            output=f"[STICKER:{file_id}] Sticker queued. You MUST also write a text reply to accompany it."
+            output=f"[STICKER:{file_id}] Sticker queued."
         )
 
     @staticmethod

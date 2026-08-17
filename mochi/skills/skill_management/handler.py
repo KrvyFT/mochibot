@@ -2,6 +2,7 @@
 
 import logging
 import os
+from copy import deepcopy
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
@@ -68,6 +69,32 @@ _AGENT_CONFIG_FIELDS = {
 
 
 class SkillManagementSkill(Skill):
+
+    def get_tools(self) -> list[dict]:
+        definitions = deepcopy(super().get_tools())
+        setting_keys = list(_AGENT_CONFIG_FIELDS)
+        for definition in definitions:
+            function = definition.get("function", {})
+            if function.get("name") != "manage_agent_settings":
+                continue
+            changes = function["parameters"]["properties"]["changes"]
+            changes["items"] = {
+                "type": "object",
+                "properties": {
+                    "key": {
+                        "type": "string",
+                        "enum": setting_keys,
+                        "description": "要调整的设置",
+                    },
+                    "value": {
+                        "type": "number",
+                        "description": "新值",
+                    },
+                },
+                "required": ["key", "value"],
+                "additionalProperties": False,
+            }
+        return definitions
 
     async def execute(self, context: SkillContext) -> SkillResult:
         tool = context.tool_name

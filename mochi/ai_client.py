@@ -616,7 +616,11 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         + early_runtime_situation
         + capability_parts
         + dynamic_live_context
-        + [_format_current_time_context(now)]
+        + (
+            [_format_current_time_context(now)]
+            if policy.temporal_context
+            else []
+        )
     )
     if not parts:
         raise RuntimeError("System prompt is empty — check prompts/ directory and prompt_loader")
