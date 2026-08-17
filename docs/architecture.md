@@ -221,10 +221,11 @@ blocks factual Attention or independent reminder delivery. Sleeping and
 long-silence pause gates run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
-Free Time receives only the last two role-true conversation turns and last
-contact age for immediate relationship continuity. It deliberately excludes
-Agenda, Diary, summaries, auto-recall, recent operations, and semantic routing,
-so recent conversation remains background rather than an assigned topic.
+Free Time receives the last two role-true conversation turns, the rolling
+conversation summary, today's Diary journal, and last contact age for lightweight
+life continuity. It still excludes the status panel, auto-recall, recent
+operations, and semantic routing, so this context remains background rather than
+an assigned topic.
 Attention receives bounded unresolved facts plus Diary, conversation summary,
 temporal context, and role-true recent history. Both start with resident tools
 and may request other tools; neither inherits a sticky routed skill.
