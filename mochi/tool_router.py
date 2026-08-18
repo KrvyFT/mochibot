@@ -34,13 +34,15 @@ def _build_router_prompt(descriptions: dict[str, str],
     )
     habit_hint = _build_habit_hint(active_habits)
     return (
-        "你是技能分类器。根据用户消息，返回一个 JSON 对象，列出处理该消息所需的技能。\n\n"
+        "你是 Main 的候选能力召回器，不替 Main 决定最终动作。"
+        "根据用户消息，返回一个 JSON 对象，列出可能有助于理解、澄清或处理当前需求的技能。\n\n"
         "可用技能：\n"
         f"{skill_lines}\n\n"
         f"{habit_hint}"
         "返回 JSON：{\"skills\": [\"skill1\", \"skill2\"]}\n"
         "如果不需要任何工具（纯聊天），返回：{\"skills\": []}\n"
-        "只包含消息明确需要的技能，不要遗漏，也不要过度分类。"
+        "一条消息可以包含多个目标；当不同技能分别覆盖其中的目标，"
+        "或 Main 需要看见这些能力才能澄清取舍时，都列出。不要加入无关技能。"
     )
 
 

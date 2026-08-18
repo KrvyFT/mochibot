@@ -420,6 +420,10 @@ class WeixinTransport(Transport):
             from mochi.db import set_skill_config
             set_skill_config("_transport:wechat", "owner_weixin_id", from_user)
 
+        if from_user != self._owner_weixin_id:
+            log.info("WeChat: rejected message from non-owner %s", from_user)
+            return
+
         context_token = msg.get("context_token", "")
         self._remember_context_token(from_user, context_token)
 

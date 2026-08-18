@@ -115,6 +115,28 @@ def _compute_next_occurrence(
     return None
 
 
+def _next_remind_at(reminder: dict) -> str | None:
+    recurrence = reminder.get("recurrence")
+    if not recurrence:
+        return None
+    try:
+        remind_at = datetime.fromisoformat(reminder["remind_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if remind_at.tzinfo is None:
+        remind_at = remind_at.replace(tzinfo=TZ)
+    next_occurrence = _compute_next_occurrence(remind_at, recurrence)
+    now = _utc_now()
+    while next_occurrence is not None and next_occurrence.astimezone(
+        timezone.utc
+    ) <= now:
+        later = _compute_next_occurrence(next_occurrence, recurrence)
+        if later is None or later <= next_occurrence:
+            return None
+        next_occurrence = later
+    return next_occurrence.isoformat() if next_occurrence else None
+
+
 async def _rephrase_reminder(message: str, user_id: int) -> str:
     """Prepare one durable notification; raw content is a safe fallback."""
     fallback = f"⏰ {message}"
@@ -254,6 +276,7 @@ async def _prepare_self_reminder(
             durable.to_json(),
             "no_op",
             handled_at=_utc_now(),
+            next_remind_at=_next_remind_at(claimed),
         )
         return None
     if durable.disposition == "handled" and durable.successful_effects:
@@ -263,6 +286,7 @@ async def _prepare_self_reminder(
             durable.to_json(),
             "handled",
             handled_at=_utc_now(),
+            next_remind_at=_next_remind_at(claimed),
         )
         return None
     if durable.disposition != "deliver" or not (
@@ -420,6 +444,7 @@ async def _fire_reminder(reminder: dict) -> None:
                     recovered.to_json(),
                     "handled",
                     handled_at=_utc_now(),
+                    next_remind_at=_next_remind_at(claimed),
                 )
                 return
             durable_result = await _prepare_self_reminder(claimed)
@@ -461,21 +486,6 @@ async def _fire_reminder(reminder: dict) -> None:
             )
             return
 
-    next_remind_at = None
-    recurrence = claimed.get("recurrence")
-    if recurrence:
-        try:
-            remind_at = datetime.fromisoformat(claimed["remind_at"])
-            if remind_at.tzinfo is None:
-                remind_at = remind_at.replace(tzinfo=TZ)
-            next_occurrence = _compute_next_occurrence(
-                remind_at, recurrence,
-            )
-            if next_occurrence:
-                next_remind_at = next_occurrence.isoformat()
-        except (TypeError, ValueError):
-            pass
-
     try:
         if kind == "notify":
             save_message_once(
@@ -492,7 +502,7 @@ async def _fire_reminder(reminder: dict) -> None:
             claimed["id"],
             claimed["claimed_at"],
             delivered_at=_utc_now(),
-            next_remind_at=next_remind_at,
+            next_remind_at=_next_remind_at(claimed),
         )
     except Exception as exc:
         await _persist_failure(

@@ -1,6 +1,6 @@
 ---
 name: habit
-description: 追踪需要长期坚持、反复完成的事，如运动、喝水或学习
+description: 追踪每天或每周反复完成的目标与次数；同一请求还要求定时提醒时也需要 habit
 type: tool
 multi_turn: true
 diary_status_order: 10

@@ -14,6 +14,9 @@ from mochi.skills.reminder.queries import (
 from mochi.reminder_timer import notify_new_reminder
 
 
+_RECURRENCES = {"daily", "weekdays", "weekly"}
+
+
 def _bounded_summary(value: str, limit: int = 120) -> str:
     summary = " ".join(value.split())
     return summary if len(summary) <= limit else summary[:limit - 3] + "..."
@@ -25,7 +28,7 @@ def _current_owner_main(context: SkillContext) -> bool:
     if (
         isinstance(context.user_id, bool)
         or not isinstance(context.user_id, int)
-        or context.user_id <= 0
+        or context.user_id < 0
     ):
         return False
     from mochi.config import OWNER_USER_ID
@@ -124,17 +127,17 @@ class ReminderSkill(Skill):
                         output="Self reminders accept intent, not a prewritten message.",
                         success=False,
                     )
-                if "recurrence" in args:
-                    return SkillResult(
-                        output="Self reminders must be one-time.",
-                        success=False,
-                    )
                 intent = intent.strip()
 
             remind_at, error = self._normalize_remind_at(remind_at_raw)
             if error:
                 return error
             assert remind_at is not None
+            recurrence, error = self._normalize_recurrence(
+                args.get("recurrence", "one_time")
+            )
+            if error:
+                return error
             if kind == "self":
                 rid = create_self_reminder(
                     uid,
@@ -142,6 +145,7 @@ class ReminderSkill(Skill):
                     intent,
                     remind_at,
                     context.transport,
+                    recurrence,
                 )
                 receipt = (
                     f"Self reminder #{rid} set for {remind_at}: "
@@ -149,9 +153,15 @@ class ReminderSkill(Skill):
                 )
             else:
                 rid = create_reminder(
-                    uid, context.channel_id, message, remind_at,
+                    uid,
+                    context.channel_id,
+                    message,
+                    remind_at,
+                    recurrence,
                 )
                 receipt = f"Reminder #{rid} set for {remind_at}: {message}"
+            if recurrence:
+                receipt += f" (repeats {recurrence})"
             notify_new_reminder()
             return SkillResult(
                 output=receipt, summary=receipt,
@@ -170,9 +180,14 @@ class ReminderSkill(Skill):
                 else:
                     content = reminder["message"]
                     label = "提醒用户"
+                recurrence_label = (
+                    f"（{reminder['recurrence']}）"
+                    if reminder.get("recurrence")
+                    else ""
+                )
                 lines.append(
                     f"- #{reminder['id']} [{reminder['remind_at']}] "
-                    f"{label}：{content}"
+                    f"{label}：{content}{recurrence_label}"
                 )
             return SkillResult(
                 output=f"{len(reminders)} reminders:\n" + "\n".join(lines)
@@ -204,17 +219,29 @@ class ReminderSkill(Skill):
                         success=False,
                     )
                 content = content.strip()
-            if remind_at is None and content is None:
+            recurrence_provided = "recurrence" in args
+            recurrence = None
+            if recurrence_provided:
+                recurrence, error = self._normalize_recurrence(
+                    args.get("recurrence")
+                )
+                if error:
+                    return error
+            if remind_at is None and content is None and not recurrence_provided:
                 return SkillResult(
-                    output=f"Update reminder #{rid} with remind_at or {content_arg}.",
+                    output=(
+                        f"Update reminder #{rid} with remind_at, "
+                        f"{content_arg}, or recurrence."
+                    ),
                     success=False,
                 )
-            updated = update_active_reminder(
-                rid,
-                uid,
-                remind_at=remind_at,
-                content=content,
-            )
+            update_kwargs = {
+                "remind_at": remind_at,
+                "content": content,
+            }
+            if recurrence_provided:
+                update_kwargs["recurrence"] = recurrence
+            updated = update_active_reminder(rid, uid, **update_kwargs)
             if not updated:
                 return SkillResult(
                     output=f"Reminder #{rid} is already being delivered and cannot be updated.",
@@ -231,6 +258,13 @@ class ReminderSkill(Skill):
                 f"Reminder #{rid} updated for {new_time}: "
                 f"{_bounded_summary(new_content or '')}"
             )
+            effective_recurrence = (
+                recurrence
+                if recurrence_provided
+                else reminder.get("recurrence")
+            )
+            if effective_recurrence:
+                receipt += f" (repeats {effective_recurrence})"
             return SkillResult(
                 output=receipt,
                 summary=receipt,
@@ -272,6 +306,22 @@ class ReminderSkill(Skill):
         if remind_at.tzinfo is None:
             remind_at = remind_at.replace(tzinfo=TZ)
         return remind_at.isoformat(), None
+
+    @staticmethod
+    def _normalize_recurrence(
+        raw: object,
+    ) -> tuple[str | None, SkillResult | None]:
+        if raw in (None, "", "one_time"):
+            return None, None
+        if not isinstance(raw, str) or raw not in _RECURRENCES:
+            return None, SkillResult(
+                output=(
+                    f"Invalid recurrence: {raw!r}. Use one_time, daily, "
+                    "weekdays, or weekly."
+                ),
+                success=False,
+            )
+        return raw, None
 
     # ── Diary integration ─────────────────────────────────────
 
