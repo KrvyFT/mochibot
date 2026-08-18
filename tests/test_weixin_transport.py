@@ -5,7 +5,21 @@ import pytest
 
 from mochi.db import get_skill_config, set_skill_config
 from mochi.main import _restore_weixin_owner_state
-from mochi.transport.weixin import WeixinTransport
+from mochi.transport.weixin import (
+    BASE_INFO,
+    ILINK_APP_CLIENT_VERSION,
+    WeixinTransport,
+    _build_headers,
+)
+
+
+def test_weixin_requests_identify_current_ilink_protocol():
+    headers = _build_headers()
+
+    assert headers["iLink-App-Id"] == "bot"
+    assert headers["iLink-App-ClientVersion"] == str(ILINK_APP_CLIENT_VERSION)
+    assert BASE_INFO["channel_version"] == "2.4.6"
+    assert BASE_INFO["bot_agent"].startswith("mochibot/")
 
 
 @pytest.mark.asyncio
