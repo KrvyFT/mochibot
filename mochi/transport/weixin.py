@@ -13,6 +13,7 @@ import struct
 import time
 from typing import Any
 
+from mochi import __version__
 from mochi.transport import Transport, IncomingMessage
 from mochi.transport.utils import (
     clean_reply_markers,
@@ -40,6 +41,12 @@ log = logging.getLogger(__name__)
 
 SESSION_EXPIRED_ERRCODE = -14
 CONTEXT_TOKEN_MAX_AGE_S = 60
+WEIXIN_CHANNEL_VERSION = "2.4.6"
+ILINK_APP_CLIENT_VERSION = (2 << 16) | (4 << 8) | 6
+BASE_INFO = {
+    "channel_version": WEIXIN_CHANNEL_VERSION,
+    "bot_agent": f"mochibot/{__version__} (python)",
+}
 
 # WeChat item types (from item_list[].type)
 _ITEM_TEXT = 1
@@ -77,6 +84,8 @@ def _build_headers() -> dict[str, str]:
         "Content-Type": "application/json",
         "AuthorizationType": "ilink_bot_token",
         "X-WECHAT-UIN": _random_wechat_uin(),
+        "iLink-App-Id": "bot",
+        "iLink-App-ClientVersion": str(ILINK_APP_CLIENT_VERSION),
     }
     if WEIXIN_BOT_TOKEN:
         headers["Authorization"] = f"Bearer {WEIXIN_BOT_TOKEN}"
@@ -372,6 +381,7 @@ class WeixinTransport(Transport):
                                   timeout_s: int) -> dict:
         return await self._api_post("ilink/bot/getupdates", {
             "get_updates_buf": get_updates_buf,
+            "base_info": BASE_INFO,
         }, timeout_s=timeout_s, timeout_is_wait=True)
 
     async def _weixin_send_message(self, to: str, text: str,
@@ -389,7 +399,7 @@ class WeixinTransport(Transport):
                     {"type": _ITEM_TEXT, "text_item": {"text": text}},
                 ],
             },
-            "base_info": {"channel_version": "1.0.0"},
+            "base_info": BASE_INFO,
         })
 
     async def _weixin_get_config(self, user_id: str,
@@ -397,6 +407,7 @@ class WeixinTransport(Transport):
         return await self._api_post("ilink/bot/getconfig", {
             "ilink_user_id": user_id,
             "context_token": context_token,
+            "base_info": BASE_INFO,
         }, timeout_s=10)
 
     async def _weixin_send_typing(self, user_id: str, ticket: str,
@@ -407,6 +418,7 @@ class WeixinTransport(Transport):
                 "ilink_user_id": user_id,
                 "typing_ticket": ticket,
                 "status": status,
+                "base_info": BASE_INFO,
             }, timeout_s=10)
         except Exception as e:
             log.debug("WeChat typing error: %s", e)
