@@ -139,10 +139,41 @@ class WeixinTransport(Transport):
         """True when iLink session is expired and awaiting QR re-scan."""
         return self._session_expired
 
-    def restore_owner_id(self, weixin_id: str, *, source: str = "restart flag") -> None:
-        """Pre-set the owner WeChat ID (used after restart)."""
+    def restore_owner_id(
+        self,
+        weixin_id: str,
+        *,
+        context_token: str = "",
+        source: str = "restart flag",
+    ) -> None:
+        """Restore the owner and any persisted proactive-send context."""
         self._owner_weixin_id = weixin_id
+        if context_token:
+            self._context_tokens[weixin_id] = context_token
         log.info("WeChat: owner ID restored (%s): %s", source, weixin_id)
+
+    def _remember_context_token(self, weixin_id: str, context_token: str) -> None:
+        """Cache the latest peer context and persist the owner's encrypted copy."""
+        if not context_token or self._context_tokens.get(weixin_id) == context_token:
+            return
+        self._context_tokens[weixin_id] = context_token
+        if weixin_id != self._owner_weixin_id:
+            return
+        from mochi.admin.admin_crypto import encrypt_api_key, is_encrypted
+        from mochi.db import set_skill_config
+
+        encrypted = encrypt_api_key(context_token)
+        if not is_encrypted(encrypted):
+            log.warning(
+                "WeChat: owner context remains memory-only because encryption "
+                "is unavailable"
+            )
+            return
+        set_skill_config(
+            "_transport:wechat",
+            "owner_context_token",
+            encrypted,
+        )
 
     async def start(self) -> None:
         try:
@@ -191,6 +222,11 @@ class WeixinTransport(Transport):
 
         weixin_id = self._owner_weixin_id
         context_token = self._context_tokens.get(weixin_id, "")
+        if not context_token:
+            log.warning(
+                "WeChat: cannot send proactively — owner context is not ready"
+            )
+            return False
         return await self._send_text(weixin_id, text, context_token)
 
     async def _send_text(
@@ -214,7 +250,14 @@ class WeixinTransport(Transport):
                     response = await self._weixin_send_message(
                         weixin_id, chunk, context_token,
                     )
-                    if response.get("ret", 0) != 0 or response.get("errcode", 0) != 0:
+                    ret = response.get("ret", 0)
+                    errcode = response.get("errcode", 0)
+                    if ret != 0 or errcode != 0:
+                        log.warning(
+                            "WeChat: send rejected (ret=%s errcode=%s)",
+                            ret,
+                            errcode,
+                        )
                         delivered = False
                 except Exception as e:
                     log.error("WeChat: send error to %s: %s", weixin_id, e)
@@ -370,17 +413,15 @@ class WeixinTransport(Transport):
             log.info("WeChat: non-text message from %s, skipping", from_user)
             return
 
-        # Cache context_token for replies
-        context_token = msg.get("context_token", "")
-        if context_token:
-            self._context_tokens[from_user] = context_token
-
         # Learn the owner's WeChat ID from the first allowed message
         if self._owner_weixin_id is None:
             self._owner_weixin_id = from_user
             log.info("WeChat: owner ID learned: %s", from_user)
             from mochi.db import set_skill_config
             set_skill_config("_transport:wechat", "owner_weixin_id", from_user)
+
+        context_token = msg.get("context_token", "")
+        self._remember_context_token(from_user, context_token)
 
         # System command: /restart (owner only)
         if text.strip() == "/restart":

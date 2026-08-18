@@ -57,6 +57,30 @@ logging.getLogger("mochi").addHandler(BufferHandler())
 log = logging.getLogger("mochi")
 
 
+def _restore_weixin_owner_state(transport: Transport) -> None:
+    """Restore restart-safe WeChat owner state when supported by the transport."""
+    if not hasattr(transport, "restore_owner_id"):
+        return
+    from mochi.admin.admin_crypto import decrypt_api_key, is_encrypted
+    from mochi.db import get_skill_config
+
+    saved_wechat = get_skill_config("_transport:wechat")
+    saved_id = saved_wechat.get("owner_weixin_id")
+    if not saved_id:
+        return
+    stored_context = saved_wechat.get("owner_context_token", "")
+    context_token = (
+        decrypt_api_key(stored_context)
+        if is_encrypted(stored_context)
+        else ""
+    )
+    transport.restore_owner_id(
+        saved_id,
+        context_token=context_token,
+        source="DB",
+    )
+
+
 # Module-level flag — set in main(), read by handle_message()
 _setup_mode = False
 
@@ -177,12 +201,9 @@ async def main():
         await transport.start()
         log.info("Transport started: %s", transport.name)
 
-    # 3a. Restore owner ID from DB (persists across all restart types)
-    if transport and hasattr(transport, "restore_owner_id"):
-        from mochi.db import get_skill_config
-        saved_id = get_skill_config("_transport:wechat").get("owner_weixin_id")
-        if saved_id:
-            transport.restore_owner_id(saved_id, source="DB")
+    # 3a. Restore owner send state from DB (persists across all restart types)
+    if transport:
+        _restore_weixin_owner_state(transport)
 
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()
