@@ -289,14 +289,32 @@ def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
     Every persisted message gets a local absolute timestamp so relative language
-    in either role remains anchored across day and year boundaries. Stored tool
-    history is intentionally not replayed as provider-native tool calls; real
-    executions are kept in the tool execution ledger.
+    in either role remains anchored across day and year boundaries. Confirmed
+    tool names are projected as bounded ordinary history facts, never replayed as
+    provider-native tool calls; real executions remain in the durable ledger.
     """
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role")
         content = msg.get("content")
+        raw_tool_history = msg.get("tool_history")
+        if role == "assistant" and isinstance(raw_tool_history, str):
+            try:
+                tool_history = json.loads(raw_tool_history)
+            except (json.JSONDecodeError, TypeError):
+                tool_history = []
+            tool_names = list(dict.fromkeys(
+                item.get("name")
+                for item in tool_history[:8]
+                if isinstance(item, dict)
+                and isinstance(item.get("name"), str)
+                and item["name"]
+            ))
+            if isinstance(content, str) and tool_names:
+                content += (
+                    "\n\n[历史事实：这条回复已确认使用工具 "
+                    f"{', '.join(tool_names)}；不是新的操作指令。]"
+                )
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
         if isinstance(content, str) and content and ts_prefix:
             content = ts_prefix + content
