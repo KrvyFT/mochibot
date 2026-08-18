@@ -57,6 +57,9 @@ async def test_provider_failure_retries_same_batch_before_advancing(monkeypatch)
     assert recovered.calls[0]["messages"][1]["content"] == (
         failed.calls[0]["messages"][1]["content"]
     )
+    prompt = recovered.calls[0]["messages"][0]["content"]
+    assert "YYYY-MM-DD" in prompt
+    assert "不要留下会随阅读日期漂移" in prompt
     status = get_conversation_summary_status(1, 2)
     assert status["summary"] == "recovered"
     assert status["pending_turns"] == 0
