@@ -89,6 +89,12 @@ class ReminderSkill(Skill):
 
     async def execute(self, context: SkillContext) -> SkillResult:
         args = context.args
+        if context.tool_name == "schedule_self_reminder":
+            args = {
+                **args,
+                "action": "create",
+                "kind": "self",
+            }
         action = args.get("action", "list")
         uid = context.user_id
 
