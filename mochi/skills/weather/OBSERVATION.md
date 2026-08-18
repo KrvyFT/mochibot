@@ -7,7 +7,7 @@ requires_config: [WEATHER_CITY]
 skill_name: weather
 ---
 
-Provides current weather data for the user's location via wttr.in (no API key required).
+Provides current weather data for the user's location via Open-Meteo (no API key required).
 
 ## Fields
 | Field | Type | Description |
@@ -23,4 +23,4 @@ Provides current weather data for the user's location via wttr.in (no API key re
 ## Config
 | Env Var | Required | Description |
 |---------|----------|-------------|
-| WEATHER_CITY | yes | City name (e.g. Tokyo, New York, Shanghai) |
+| WEATHER_CITY | yes | City name, optionally with region for ambiguous names (e.g. Tokyo, New York, Suzhou, Jiangsu) |

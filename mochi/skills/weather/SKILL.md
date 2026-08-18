@@ -10,7 +10,7 @@ config:
   WEATHER_CITY:
     type: str
     default: ""
-    description: "City name (e.g. Tokyo, New York, Shanghai)"
+    description: "City name, optionally with region (e.g. Tokyo, New York, Suzhou, Jiangsu)"
 ---
 
 ## Tools
