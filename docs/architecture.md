@@ -182,24 +182,27 @@ embedding is available, and recent-only rows are never semantic recall filler.
 ## Self Reminder flow
 
 `manage_reminder(kind="self")` stores a private future intent, not a prewritten
-user notification. At the scheduled time, the reminder scheduler claims the
-row and creates `MainRuntimeEntry(kind="self_reminder")`; Main sees current
-Core, conversation, Diary, and the capabilities available on the pinned
-transport, without a synthetic user message.
+user notification. It may be one-time or recurring. At each scheduled time,
+the reminder scheduler claims the row and creates
+`MainRuntimeEntry(kind="self_reminder")`; Main sees current Core, conversation,
+Diary, and the capabilities available on the pinned transport, without a
+synthetic user message.
 
 Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
-success and skip are terminal outcomes that require no transport delivery. A
+success and skip require no transport delivery; for a recurring reminder they
+advance the same row to its next occurrence. A
 deliverable result is serialized before any external send. Text and stickers
 are checkpointed independently, so ordinary retry resumes components not yet
 checkpointed. A crash after transport success but before its SQLite checkpoint
 can duplicate that one component; transport and SQLite provide at-least-once,
 not exactly-once, delivery. A stable turn ledger prevents restart from
 re-entering Main after any tool attempt, avoiding duplicate side effects at the
-cost of conservatively ending an interrupted turn. Assistant
+cost of conservatively ending an interrupted turn. Each occurrence has a stable turn keyed by its scheduled time. Assistant
 history is written idempotently after delivery and marked processed so an
 assistant-only system turn does not enter memory extraction.
 
-Ordinary `notify` reminders remain authorized, deterministic deliveries. Their
+Ordinary `notify` reminders remain authorized, deterministic deliveries and
+may advance the same durable row through a recurrence. Their
 voice rendering is prepared once and persisted; transport retry reuses that
 outbox. SQLite claims and leases prevent concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit

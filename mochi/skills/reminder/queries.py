@@ -9,6 +9,7 @@ from mochi.db import _connect
 
 
 ACTIVE_STATUSES = ("pending", "running", "ready")
+_UNSET = object()
 
 
 def _now() -> datetime:
@@ -50,14 +51,16 @@ def create_reminder(
     channel_id: int,
     message: str,
     remind_at: str,
+    recurrence: str | None = None,
 ) -> int:
     conn = _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO reminders "
-            "(user_id, channel_id, message, remind_at, kind, status, fired) "
-            "VALUES (?, ?, ?, ?, 'notify', 'pending', 0)",
-            (user_id, channel_id, message, remind_at),
+            "(user_id, channel_id, message, remind_at, recurrence, "
+            "kind, status, fired) "
+            "VALUES (?, ?, ?, ?, ?, 'notify', 'pending', 0)",
+            (user_id, channel_id, message, remind_at, recurrence),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -71,16 +74,24 @@ def create_self_reminder(
     intent: str,
     remind_at: str,
     transport: str,
+    recurrence: str | None = None,
 ) -> int:
-    """Persist a one-time private intent for future Main."""
+    """Persist a private intent for future Main."""
     conn = _connect()
     try:
         cursor = conn.execute(
             "INSERT INTO reminders "
             "(user_id, channel_id, message, remind_at, recurrence, kind, "
             "context, source, transport, status, fired) "
-            "VALUES (?, ?, '', ?, NULL, 'self', ?, 'main', ?, 'pending', 0)",
-            (user_id, channel_id, remind_at, intent, transport or None),
+            "VALUES (?, ?, '', ?, ?, 'self', ?, 'main', ?, 'pending', 0)",
+            (
+                user_id,
+                channel_id,
+                remind_at,
+                recurrence,
+                intent,
+                transport or None,
+            ),
         )
         conn.commit()
         return int(cursor.lastrowid)
@@ -92,8 +103,8 @@ def get_active_reminders(user_id: int) -> list[dict]:
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT id, user_id, channel_id, message, remind_at, kind, "
-            "context, source, status FROM reminders "
+            "SELECT id, user_id, channel_id, message, remind_at, recurrence, "
+            "kind, context, source, status FROM reminders "
             "WHERE user_id = ? AND kind IN ('notify', 'self') "
             "AND status IN ('pending', 'running', 'ready') "
             "ORDER BY remind_at ASC",
@@ -131,6 +142,7 @@ def update_active_reminder(
     *,
     remind_at: str | None = None,
     content: str | None = None,
+    recurrence: str | None | object = _UNSET,
 ) -> bool:
     """Update one idle owner reminder without racing active delivery."""
     assignments = []
@@ -147,6 +159,9 @@ def update_active_reminder(
             "context = CASE WHEN kind = 'self' THEN ? ELSE context END"
         )
         params.append(content)
+    if recurrence is not _UNSET:
+        assignments.append("recurrence = ?")
+        params.append(recurrence)
     if not assignments:
         return False
     assignments.extend([
@@ -360,6 +375,7 @@ def complete_without_delivery(
     outcome: str,
     *,
     handled_at: datetime | None = None,
+    next_remind_at: str | None = None,
 ) -> bool:
     if outcome not in {"no_op", "handled"}:
         raise ValueError("invalid reminder terminal outcome")
@@ -367,17 +383,29 @@ def complete_without_delivery(
     handled_iso = _iso(handled_at)
     conn = _connect()
     try:
-        cursor = conn.execute(
-            "UPDATE reminders SET status = 'delivered', fired = 1, "
-            "result_json = ?, outcome = ?, handled_at = ?, delivered_at = ?, "
-            "claimed_at = NULL, lease_until = NULL, next_attempt_at = NULL, "
-            "last_error = NULL WHERE id = ? AND kind = 'self' "
-            "AND status = 'running' AND claimed_at = ?",
-            (
-                result_json, outcome, handled_iso, handled_iso,
-                reminder_id, claimed_at,
-            ),
-        )
+        if next_remind_at:
+            cursor = conn.execute(
+                "UPDATE reminders SET status = 'pending', fired = 0, "
+                "remind_at = ?, result_json = NULL, outcome = NULL, "
+                "handled_at = NULL, delivered_at = NULL, claimed_at = NULL, "
+                "lease_until = NULL, attempt_count = 0, next_attempt_at = NULL, "
+                "last_error = NULL, prepared_text = NULL, delivery_cursor = 0, "
+                "delivery_started_at = NULL WHERE id = ? AND kind = 'self' "
+                "AND status = 'running' AND claimed_at = ?",
+                (next_remind_at, reminder_id, claimed_at),
+            )
+        else:
+            cursor = conn.execute(
+                "UPDATE reminders SET status = 'delivered', fired = 1, "
+                "result_json = ?, outcome = ?, handled_at = ?, delivered_at = ?, "
+                "claimed_at = NULL, lease_until = NULL, next_attempt_at = NULL, "
+                "last_error = NULL WHERE id = ? AND kind = 'self' "
+                "AND status = 'running' AND claimed_at = ?",
+                (
+                    result_json, outcome, handled_iso, handled_iso,
+                    reminder_id, claimed_at,
+                ),
+            )
         conn.commit()
         return cursor.rowcount == 1
     finally:
@@ -486,7 +514,7 @@ def complete_reminder_delivery(
                 "remind_at = ?, claimed_at = NULL, lease_until = NULL, "
                 "attempt_count = 0, next_attempt_at = NULL, last_error = NULL, "
                 "prepared_text = NULL, result_json = NULL, outcome = NULL, "
-                "delivery_cursor = 0, delivery_started_at = NULL, "
+                "handled_at = NULL, delivery_cursor = 0, delivery_started_at = NULL, "
                 "delivered_at = NULL WHERE id = ? AND status = 'ready' "
                 "AND claimed_at = ?",
                 (next_remind_at, reminder_id, claimed_at),
