@@ -5,7 +5,12 @@ from mochi.skills.base import SkillContext
 from mochi.skills.reminder.handler import ReminderSkill
 
 
-def _context(user_id: int, **args) -> SkillContext:
+def _context(
+    user_id: int,
+    *,
+    tool_name: str = "manage_reminder",
+    **args,
+) -> SkillContext:
     return SkillContext(
         trigger="tool_call",
         user_id=user_id,
@@ -14,7 +19,7 @@ def _context(user_id: int, **args) -> SkillContext:
         actor="main",
         source="chat",
         turn_id="turn-reminder",
-        tool_name="manage_reminder",
+        tool_name=tool_name,
         args=args,
     )
 
@@ -41,8 +46,7 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
 
     self_reminder = await skill.execute(_context(
         0,
-        action="create",
-        kind="self",
+        tool_name="schedule_self_reminder",
         intent="look at today's hydration progress",
         remind_at="2026-08-19T20:00:00+08:00",
         recurrence="daily",

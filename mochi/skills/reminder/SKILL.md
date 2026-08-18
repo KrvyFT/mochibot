@@ -10,6 +10,15 @@ sense:
 
 ## Tools
 
+### schedule_self_reminder (resident)
+给未来的自己留下一个明确时间的回望意图；到时结合新的事实、相处上下文和可用能力重新判断。
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| intent | string | yes | 未来重新判断的方向，不是预写给用户的话 |
+| remind_at | string | yes | ISO 8601 格式的首次回望时间 |
+| recurrence | string (enum: one_time, daily, weekdays, weekly) | no | 默认 one_time |
+
 ### manage_reminder (routed)
 管理定时联系：notify 到点直接通知用户；self 到点让未来的自己结合当时情况重新判断。提醒可一次性或周期重复，但不追踪事情后来是否完成。
 
