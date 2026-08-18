@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import struct
+import time
 from typing import Any
 
 from mochi.transport import Transport, IncomingMessage
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 
 SESSION_EXPIRED_ERRCODE = -14
+CONTEXT_TOKEN_MAX_AGE_S = 60
 
 # WeChat item types (from item_list[].type)
 _ITEM_TEXT = 1
@@ -127,6 +129,7 @@ class WeixinTransport(Transport):
         self._owner_weixin_id: str | None = None
         # context_token cache: weixin_user_id → latest context_token
         self._context_tokens: dict[str, str] = {}
+        self._context_token_at: dict[str, float] = {}
         # typing ticket cache
         self._typing_tickets: dict[str, str] = {}
 
@@ -150,11 +153,15 @@ class WeixinTransport(Transport):
         self._owner_weixin_id = weixin_id
         if context_token:
             self._context_tokens[weixin_id] = context_token
+            self._context_token_at[weixin_id] = 0
         log.info("WeChat: owner ID restored (%s): %s", source, weixin_id)
 
     def _remember_context_token(self, weixin_id: str, context_token: str) -> None:
         """Cache the latest peer context and persist the owner's encrypted copy."""
-        if not context_token or self._context_tokens.get(weixin_id) == context_token:
+        if not context_token:
+            return
+        self._context_token_at[weixin_id] = time.time()
+        if self._context_tokens.get(weixin_id) == context_token:
             return
         self._context_tokens[weixin_id] = context_token
         if weixin_id != self._owner_weixin_id:
@@ -174,6 +181,37 @@ class WeixinTransport(Transport):
             "owner_context_token",
             encrypted,
         )
+
+    async def _refresh_context_token_if_stale(
+        self,
+        weixin_id: str,
+        context_token: str,
+    ) -> str:
+        if not context_token:
+            return ""
+        now = time.time()
+        if now - self._context_token_at.get(weixin_id, 0) < CONTEXT_TOKEN_MAX_AGE_S:
+            return context_token
+        try:
+            response = await self._weixin_get_config(weixin_id, context_token)
+        except Exception as exc:
+            log.warning("WeChat: context refresh failed: %s", exc)
+            return context_token
+        ret = response.get("ret", 0)
+        errcode = response.get("errcode", 0)
+        if ret != 0 or errcode != 0:
+            log.warning(
+                "WeChat: context refresh rejected (ret=%s errcode=%s)",
+                ret,
+                errcode,
+            )
+            return context_token
+        cached = self._context_tokens.get(weixin_id, "")
+        if cached and cached != context_token:
+            return cached
+        refreshed = str(response.get("context_token", "") or context_token)
+        self._remember_context_token(weixin_id, refreshed)
+        return refreshed
 
     async def start(self) -> None:
         try:
@@ -239,6 +277,13 @@ class WeixinTransport(Transport):
         text = clean_reply_markers(text)
         if not text:
             return False
+        if not context_token:
+            log.warning("WeChat: cannot send text — context is not ready")
+            return False
+        context_token = await self._refresh_context_token_if_stale(
+            weixin_id,
+            context_token,
+        )
 
         delivered = True
         bubbles = split_bubbles(text)
