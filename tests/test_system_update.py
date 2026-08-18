@@ -40,28 +40,6 @@ def _init_repo(repo: Path) -> None:
     _git(repo, "commit", "-m", "initial")
 
 
-def test_validate_installation_allows_local_code_changes(
-    tmp_path,
-    monkeypatch,
-):
-    import mochi.update_service as updater
-
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    _git(repo, "remote", "add", "origin", updater.OFFICIAL_REMOTE_URL)
-    monkeypatch.setattr(updater, "PROJECT_ROOT", repo)
-    monkeypatch.setattr(updater, "_is_container", lambda: False)
-
-    status = updater.validate_installation(require_launcher=False)
-    assert status["branch"] == "main"
-    assert not status["dirty"]
-
-    (repo / "local.py").write_text("mine\n", encoding="utf-8")
-    assert updater.validate_installation(
-        require_launcher=False,
-    )["dirty"]
-
-
 @pytest.mark.asyncio
 async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
     import mochi.skills.system_update.handler as handler

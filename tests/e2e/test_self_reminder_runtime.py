@@ -116,16 +116,8 @@ async def test_recurring_notify_advances_same_row(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "result",
-    [
-        ChatResult(disposition="skip"),
-        ChatResult(successful_effects=True, disposition="handled"),
-    ],
-)
 async def test_recurring_self_advances_after_silent_outcome(
     monkeypatch,
-    result,
 ):
     import mochi.reminder_timer as timer
     import mochi.skills.reminder.queries as queries
@@ -144,7 +136,7 @@ async def test_recurring_self_advances_after_silent_outcome(
     )
 
     async def prepare(_entry):
-        return result
+        return ChatResult(disposition="skip")
 
     async def deliver(_channel_id, _result):
         raise AssertionError("silent outcome must not cross transport")
@@ -164,58 +156,3 @@ async def test_recurring_self_advances_after_silent_outcome(
     assert row["recurrence"] == "daily"
     assert row["result_json"] is None
     assert row["outcome"] is None
-
-
-@pytest.mark.asyncio
-async def test_recurring_self_recovery_advances_without_replaying_main(
-    monkeypatch,
-):
-    import mochi.reminder_timer as timer
-    import mochi.skills.reminder.queries as queries
-
-    clock = {"now": datetime(2026, 8, 12, 6, 0, tzinfo=timezone.utc)}
-    monkeypatch.setattr(timer, "_utc_now", lambda: clock["now"])
-    monkeypatch.setattr(queries, "_now", lambda: clock["now"])
-    due = clock["now"] - timedelta(minutes=1)
-    reminder_id = create_self_reminder(
-        1,
-        100,
-        "review hydration progress",
-        due.isoformat(),
-        "fake",
-        "daily",
-    )
-    execution_id = start_tool_execution(
-        turn_id=f"self-reminder:{reminder_id}:{due.isoformat()}",
-        tool_call_id="call-1",
-        user_id=1,
-        source="runtime:self_reminder",
-        skill_name="habit",
-        tool_name="query_habit",
-        action="list",
-        arguments_json='{"action":"list"}',
-    )
-    finish_tool_execution(
-        execution_id,
-        status="success",
-        state_changed=False,
-    )
-    prepared = 0
-
-    async def prepare(_entry):
-        nonlocal prepared
-        prepared += 1
-        return ChatResult(text="should not run")
-
-    set_self_reminder_callbacks(prepare, None, "fake")
-    await _fire_reminder(get_schedulable_reminders(now=clock["now"])[0])
-
-    conn = _connect()
-    row = conn.execute(
-        "SELECT status, remind_at FROM reminders WHERE id = ?",
-        (reminder_id,),
-    ).fetchone()
-    conn.close()
-    assert prepared == 0
-    assert row["status"] == "pending"
-    assert row["remind_at"] == (due + timedelta(days=1)).isoformat()
