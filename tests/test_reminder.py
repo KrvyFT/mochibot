@@ -31,6 +31,14 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
     import mochi.config as config
 
     monkeypatch.setattr(config, "OWNER_USER_ID", None)
+    import mochi.skills as skill_registry
+
+    resident = {
+        tool["function"]["name"]
+        for tool in skill_registry.get_tools_by_load("resident")
+    }
+    assert "schedule_self_reminder" in resident
+    assert "manage_reminder" not in resident
     skill = ReminderSkill()
 
     notify = await skill.execute(_context(
@@ -81,16 +89,15 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("recurrence", ["hourly", "monthly"])
-async def test_invalid_recurrence_is_rejected(recurrence):
-    result = await ReminderSkill().execute(_context(
-        1,
-        action="create",
-        kind="notify",
-        message="test",
-        remind_at="2026-08-19T08:30:00+08:00",
-        recurrence=recurrence,
-    ))
-
-    assert not result.success
-    assert "Invalid recurrence" in result.output
+async def test_invalid_recurrence_is_rejected():
+    for recurrence in ("hourly", "monthly"):
+        result = await ReminderSkill().execute(_context(
+            1,
+            action="create",
+            kind="notify",
+            message="test",
+            remind_at="2026-08-19T08:30:00+08:00",
+            recurrence=recurrence,
+        ))
+        assert not result.success
+        assert "Invalid recurrence" in result.output

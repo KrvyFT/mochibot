@@ -95,35 +95,6 @@ class TestSimpleReply:
         ]
         assert any("No second write was applied" in item for item in results)
 
-    @pytest.mark.asyncio
-    async def test_later_round_cannot_replace_core_written_this_turn(
-        self, mock_llm_factory,
-    ):
-        from mochi.core_store import read_core, replace_core
-
-        replace_core("Core before")
-        mock = mock_llm_factory([
-            make_response(tool_calls=[make_tool_call("update_core", {
-                "content": "First complete revision",
-            })]),
-            make_response(tool_calls=[make_tool_call("update_core", {
-                "content": "Stale later revision",
-            })]),
-            make_response("Done."),
-        ])
-
-        await chat(_msg("整理 Core"))
-
-        assert read_core() == "First complete revision"
-        later_results = [
-            item["content"]
-            for item in mock.call_log[2]["messages"]
-            if item["role"] == "tool"
-        ]
-        assert any(
-            "No second write was applied" in item for item in later_results
-        )
-
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""
 

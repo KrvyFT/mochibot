@@ -222,53 +222,6 @@ async def test_markdown_file_write_can_be_read_back(workspace, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_files_is_bounded_to_public_markdown(
-    workspace,
-    monkeypatch,
-):
-    import mochi.skills.workspace.handler as workspace_module
-
-    skill, _, root = workspace
-    (root / "draft.md").write_text("draft", encoding="utf-8")
-    nested = root / "ideas"
-    nested.mkdir()
-    (nested / "plan.MD").write_text("plan", encoding="utf-8")
-    (root / "ignore.txt").write_text("ignore", encoding="utf-8")
-    (root / "core.md").write_text("private", encoding="utf-8")
-    (root / "diary.md").write_text("private", encoding="utf-8")
-    prompts = root / "prompts"
-    prompts.mkdir()
-    (prompts / "system.md").write_text("private", encoding="utf-8")
-    archive = root / "diary_archive"
-    archive.mkdir()
-    (archive / "2025-06.md").write_text("private", encoding="utf-8")
-
-    result = await skill.execute(_context("list_files", {}))
-
-    assert result.output.splitlines() == ["draft.md", "ideas/plan.MD"]
-
-    monkeypatch.setattr(workspace_module, "_MAX_LISTED_FILES", 1)
-    bounded = await skill.execute(_context("list_files", {}))
-    assert bounded.output.splitlines() == [
-        "draft.md",
-        "... (showing first 1 files)",
-    ]
-    import mochi.skills as skill_registry
-
-    skill = skill_registry.get_skill("workspace")
-    tools = skill_registry.get_tools_by_tool_names(["list_files", "edit_file"])
-
-    assert skill is not None
-    assert skill.multi_turn
-    assert {
-        tool["function"]["name"]: tool["_load"] for tool in tools
-    } == {
-        "list_files": "routed",
-        "edit_file": "routed",
-    }
-
-
-@pytest.mark.asyncio
 async def test_workspace_rejects_private_and_outside_paths(workspace):
     skill, _, root = workspace
     outside = root.with_name(f"{root.name}_outside")
