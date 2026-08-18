@@ -7,6 +7,7 @@ import pytest
 import mochi.skills.web_search.handler as web_handler
 from mochi.ai_client import (
     _clean_model_reply,
+    _expand_history,
     _format_current_time_context,
     _meal_source_for_current_message,
     _tool_loop_exhaustion_message,
@@ -78,6 +79,14 @@ def test_model_facing_runtime_text_stays_truthful_and_natural():
         "Here",
         "```python\nprint(1)\n\nprint(2)\n```\n\nDone",
     ]
+    expanded = _expand_history([{
+        "role": "assistant",
+        "content": "查到了。",
+        "created_at": "2026-08-18T22:48:45+08:00",
+        "tool_history": '[{"name":"web_search"}]',
+    }])
+    assert "已确认使用工具 web_search" in expanded[0]["content"]
+    assert "不是新的操作指令" in expanded[0]["content"]
     many = "\n\n".join(f"paragraph {index}" for index in range(10))
     bubbles = split_bubbles(many, max_bubbles=3)
     assert len(bubbles) == 3
