@@ -24,7 +24,7 @@ class TestSimpleReply:
         mock = mock_llm_factory([
             make_response(tool_calls=[
                 make_tool_call("enter_bedtime", {}),
-            ]),
+            ], reasoning_content="The user is ending the day."),
             make_response("Good night. I'll get some rest too."),
         ])
 
@@ -38,6 +38,9 @@ class TestSimpleReply:
         )
         assert "Bedtime will begin after this turn" in (
             mock.call_log[1]["messages"][-1]["content"]
+        )
+        assert mock.call_log[1]["messages"][-2]["reasoning_content"] == (
+            "The user is ending the day."
         )
 
     @pytest.mark.asyncio

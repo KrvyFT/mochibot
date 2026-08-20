@@ -1266,6 +1266,8 @@ async def chat(
 
         # Add assistant message with tool_calls to context
         assistant_msg = {"role": "assistant", "content": response.content or ""}
+        if response.reasoning_content:
+            assistant_msg["reasoning_content"] = response.reasoning_content
         if response.tool_calls:
             assistant_msg["tool_calls"] = [
                 {

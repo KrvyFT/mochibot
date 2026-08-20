@@ -57,6 +57,7 @@ def test_context_persistence_is_encrypted_and_restart_safe(monkeypatch, caplog):
     set_skill_config(
         "_transport:wechat", "owner_context_token", "gAAAAA-encrypted-context",
     )
+    set_skill_config("_transport:wechat", "owner_weixin_id", "owner")
     monkeypatch.setattr(
         "mochi.admin.admin_crypto.decrypt_api_key",
         lambda value: "decrypted-context",
@@ -117,6 +118,74 @@ async def test_stale_context_refresh_covers_chat_and_preserves_newer_inbound(
     transport._weixin_get_config = AsyncMock(side_effect=refresh)
     assert await transport.send_message(1, "second")
     assert transport._context_tokens["owner"] == "newer-inbound-context"
+
+
+@pytest.mark.asyncio
+async def test_context_rejection_waits_for_fresh_inbound(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "mochi.admin.admin_crypto.encrypt_api_key",
+        lambda value: f"gAAAAA:{value}",
+    )
+    transport = WeixinTransport()
+    transport._session = object()
+    transport.restore_owner_id(
+        "owner", context_token="exhausted-context", source="test",
+    )
+    transport._context_token_at["owner"] = time.time()
+    transport._weixin_send_message = AsyncMock(return_value={
+        "ret": -2, "errcode": 0,
+    })
+
+    assert not await transport.send_message(1, "hello")
+    assert "owner" not in transport._context_tokens
+    assert get_skill_config("_transport:wechat")["owner_context_token"] == ""
+    assert "waiting for the next inbound message" in caplog.text
+
+    transport._remember_context_token("owner", "fresh-inbound-context")
+    transport._weixin_send_message = AsyncMock(return_value={
+        "ret": 0, "errcode": 0,
+    })
+    assert await transport.send_message(1, "welcome back")
+
+
+@pytest.mark.asyncio
+async def test_refresh_rejection_does_not_attempt_send():
+    transport = WeixinTransport()
+    transport._session = object()
+    transport.restore_owner_id(
+        "owner", context_token="expired-context", source="test",
+    )
+    transport._weixin_get_config = AsyncMock(return_value={
+        "ret": -2, "errcode": 0,
+    })
+    transport._weixin_send_message = AsyncMock()
+
+    assert not await transport.send_message(1, "hello")
+    transport._weixin_send_message.assert_not_awaited()
+    assert "owner" not in transport._context_tokens
+
+
+@pytest.mark.asyncio
+async def test_send_prefers_newer_inbound_context_during_refresh():
+    transport = WeixinTransport()
+    transport._session = object()
+    transport.restore_owner_id(
+        "owner", context_token="stale-context", source="test",
+    )
+
+    async def refresh(_user_id, _context_token):
+        transport._remember_context_token("owner", "newer-inbound-context")
+        return {"ret": -2, "errcode": 0}
+
+    transport._weixin_get_config = AsyncMock(side_effect=refresh)
+    transport._weixin_send_message = AsyncMock(return_value={
+        "ret": 0, "errcode": 0,
+    })
+
+    assert await transport.send_message(1, "hello")
+    transport._weixin_send_message.assert_awaited_once_with(
+        "owner", "hello", "newer-inbound-context",
+    )
 
 
 @pytest.mark.asyncio
