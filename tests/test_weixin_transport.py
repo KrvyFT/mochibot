@@ -131,15 +131,32 @@ async def test_context_rejection_waits_for_fresh_inbound(monkeypatch, caplog):
     transport.restore_owner_id(
         "owner", context_token="exhausted-context", source="test",
     )
+    set_skill_config(
+        "_transport:wechat",
+        "owner_context_token",
+        "gAAAAA:exhausted-context",
+    )
     transport._context_token_at["owner"] = time.time()
     transport._weixin_send_message = AsyncMock(return_value={
         "ret": -2, "errcode": 0,
     })
 
     assert not await transport.send_message(1, "hello")
+    assert transport._context_tokens["owner"] == "exhausted-context"
+    assert transport._context_token_at["owner"] == 0
+    assert get_skill_config("_transport:wechat")["owner_context_token"] == (
+        "gAAAAA:exhausted-context"
+    )
+    assert "preserving context" in caplog.text
+
+    transport._weixin_get_config = AsyncMock(return_value={
+        "ret": -2, "errcode": 0,
+    })
+    transport._weixin_send_message.reset_mock()
+    assert not await transport.send_message(1, "retry after refresh")
+    transport._weixin_send_message.assert_not_awaited()
     assert "owner" not in transport._context_tokens
     assert get_skill_config("_transport:wechat")["owner_context_token"] == ""
-    assert "waiting for the next inbound message" in caplog.text
 
     transport._remember_context_token("owner", "fresh-inbound-context")
     transport._weixin_send_message = AsyncMock(return_value={
@@ -163,6 +180,33 @@ async def test_refresh_rejection_does_not_attempt_send():
     assert not await transport.send_message(1, "hello")
     transport._weixin_send_message.assert_not_awaited()
     assert "owner" not in transport._context_tokens
+
+
+@pytest.mark.asyncio
+async def test_send_restriction_can_recover_after_context_refresh():
+    transport = WeixinTransport()
+    transport._session = object()
+    transport.restore_owner_id(
+        "owner", context_token="rate-limited-context", source="test",
+    )
+    transport._context_token_at["owner"] = time.time()
+    transport._weixin_send_message = AsyncMock(side_effect=[
+        {"ret": -2, "errcode": 0},
+        {"ret": 0, "errcode": 0},
+    ])
+    transport._weixin_get_config = AsyncMock(return_value={
+        "ret": 0,
+        "errcode": 0,
+        "context_token": "rate-limited-context",
+    })
+
+    assert not await transport.send_message(1, "first")
+    assert transport._context_tokens["owner"] == "rate-limited-context"
+
+    assert await transport.send_message(1, "second")
+    transport._weixin_get_config.assert_awaited_once_with(
+        "owner", "rate-limited-context",
+    )
 
 
 @pytest.mark.asyncio

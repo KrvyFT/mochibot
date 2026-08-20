@@ -344,13 +344,10 @@ class WeixinTransport(Transport):
                         )
                         delivered = False
                         if -2 in {ret, errcode}:
-                            self._invalidate_context_token(
-                                weixin_id,
-                                context_token,
-                            )
+                            self._context_token_at[weixin_id] = 0
                             log.warning(
-                                "WeChat: owner context rejected; waiting for "
-                                "the next inbound message before sending again"
+                                "WeChat: send restricted; preserving context "
+                                "and forcing refresh before the next send"
                             )
                             return False
                 except Exception as e:
