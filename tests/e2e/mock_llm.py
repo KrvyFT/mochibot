@@ -51,10 +51,12 @@ def make_tool_call(name: str, arguments: dict, call_id: str | None = None) -> To
 def make_response(
     content: str = "",
     tool_calls: list[ToolCallDict] | None = None,
+    reasoning_content: str = "",
 ) -> LLMResponse:
     """Create an LLMResponse for scripting."""
     return LLMResponse(
         content=content,
+        reasoning_content=reasoning_content,
         tool_calls=tool_calls or [],
         prompt_tokens=10,
         completion_tokens=5,

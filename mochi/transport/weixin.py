@@ -191,11 +191,29 @@ class WeixinTransport(Transport):
             encrypted,
         )
 
+    def _invalidate_context_token(
+        self,
+        weixin_id: str,
+        rejected_token: str,
+    ) -> None:
+        """Stop using a context rejected by iLink until the next inbound message."""
+        if self._context_tokens.get(weixin_id) != rejected_token:
+            return
+        self._context_tokens.pop(weixin_id, None)
+        self._context_token_at.pop(weixin_id, None)
+        if weixin_id == self._owner_weixin_id:
+            from mochi.db import set_skill_config
+
+            set_skill_config("_transport:wechat", "owner_context_token", "")
+
     async def _refresh_context_token_if_stale(
         self,
         weixin_id: str,
         context_token: str,
     ) -> str:
+        cached = self._context_tokens.get(weixin_id, "")
+        if cached and cached != context_token:
+            context_token = cached
         if not context_token:
             return ""
         now = time.time()
@@ -214,6 +232,9 @@ class WeixinTransport(Transport):
                 ret,
                 errcode,
             )
+            if -2 in {ret, errcode}:
+                self._invalidate_context_token(weixin_id, context_token)
+                return self._context_tokens.get(weixin_id, "")
             return context_token
         cached = self._context_tokens.get(weixin_id, "")
         if cached and cached != context_token:
@@ -293,6 +314,11 @@ class WeixinTransport(Transport):
             weixin_id,
             context_token,
         )
+        if not context_token:
+            log.warning(
+                "WeChat: cannot send text — waiting for fresh inbound context"
+            )
+            return False
 
         delivered = True
         bubbles = split_bubbles(text)
@@ -300,6 +326,10 @@ class WeixinTransport(Transport):
             if i > 0:
                 await asyncio.sleep(WEIXIN_BUBBLE_DELAY_S)
             for chunk in split_text(bubble, WEIXIN_MSG_LIMIT):
+                latest_token = self._context_tokens.get(weixin_id, "")
+                if not latest_token:
+                    return False
+                context_token = latest_token
                 try:
                     response = await self._weixin_send_message(
                         weixin_id, chunk, context_token,
@@ -313,6 +343,16 @@ class WeixinTransport(Transport):
                             errcode,
                         )
                         delivered = False
+                        if -2 in {ret, errcode}:
+                            self._invalidate_context_token(
+                                weixin_id,
+                                context_token,
+                            )
+                            log.warning(
+                                "WeChat: owner context rejected; waiting for "
+                                "the next inbound message before sending again"
+                            )
+                            return False
                 except Exception as e:
                     log.error("WeChat: send error to %s: %s", weixin_id, e)
                     delivered = False
