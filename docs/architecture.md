@@ -188,7 +188,10 @@ not a new topic. Exact matched KG relationship blocks join the same candidate
 pool rather than bypassing semantic selection. One bounded personality-free
 Lite selector may abstain or choose at most three fused candidates; if Lite is
 unavailable, deterministic fallback uses current-message candidates first and
-continuity only when the current lane is empty.
+continuity only when the current lane is empty; unselected KG is not injected
+without Lite. Recalled content enters Main as explicit read-only JSON data, not
+as executable system instructions. Access/cooldown telemetry commits only
+after Main successfully accepts the recalled prompt.
 
 ## Self Reminder flow
 

@@ -1958,6 +1958,7 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
     vec_scores: dict[int, float] = {}
     bm25_scores: dict[int, float] = {}
     like_ids: set[int] = set()
+    like_relevance: dict[int, float] = {}
     fallback_ids: set[int] = set()
     query_tokens = _fts_query_tokens(query)
 
@@ -2022,12 +2023,34 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
             params.extend(f"%{term}%" for term in like_terms)
         where = " AND ".join(conditions)
         params.append(RECALL_FALLBACK_LIMIT)
+        scan_limit = RECALL_FALLBACK_LIMIT * max(
+            1, RECALL_FTS_CANDIDATE_MULTIPLIER,
+        )
+        params[-1] = scan_limit
         fb_rows = conn.execute(
-            f"SELECT id FROM memory_items WHERE {where} "
-            f"ORDER BY importance DESC, updated_at DESC LIMIT ?",
+            f"SELECT id, content FROM memory_items WHERE {where} LIMIT ?",
             params,
         ).fetchall()
-        for r in fb_rows:
+        normalized_query = query.strip().casefold()
+        ranked_like = []
+        for row in fb_rows:
+            content = str(row["content"] or "")
+            normalized_content = content.casefold()
+            if query_tokens and not _fts_match_is_relevant(
+                query_tokens,
+                content,
+            ):
+                continue
+            content_tokens = set(_fts_tokenize(content).split())
+            token_hits = len(set(query_tokens) & content_tokens)
+            overlap = token_hits / max(1, len(query_tokens))
+            if normalized_query and normalized_query in normalized_content:
+                overlap += 1.0
+            ranked_like.append((overlap, int(row["id"])))
+        ranked_like.sort(key=lambda item: (-item[0], item[1]))
+        for overlap, item_id in ranked_like[:RECALL_FALLBACK_LIMIT]:
+            like_relevance[item_id] = overlap
+            r = {"id": item_id}
             candidate_ids.add(r["id"])
             like_ids.add(r["id"])
 
@@ -2097,11 +2120,15 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
         else:
             continue
 
+        keyword_relevance = max(
+            1.0 if fts_hit else 0.0,
+            like_relevance.get(rid, 0.0),
+        )
         score = (
             RECALL_VEC_SIM_WEIGHT * vec_sim
             + RECALL_BM25_WEIGHT * bm25_norm
             + (
-                RECALL_KEYWORD_BOOST
+                RECALL_KEYWORD_BOOST * keyword_relevance
                 if (fts_hit or like_hit)
                 else 0
             )
