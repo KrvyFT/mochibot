@@ -222,10 +222,12 @@ repeated.
 
 Heartbeat keeps two independent clocks. Free Time is randomized, unassigned
 companion time; a due Free Time waits until the user's latest message has been
-quiet for 30 minutes. Attention runs periodically and can be advanced by a
-changed observer fact without moving the Free Time clock, so recent chat never
-blocks factual Attention or independent reminder delivery. Sleeping and
-long-silence pause gates run before observer or model work.
+quiet for 30 minutes. Attention runs periodically even when no Observer fact
+changed, so Main can semantically notice the current Diary status such as
+unfinished Habits, meals, and Todos. A changed observer fact may advance that
+clock without moving the Free Time clock. Recent chat never blocks Attention or
+independent reminder delivery. Sleeping and long-silence pause gates run before
+observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
 Free Time receives the last two role-true conversation turns, the rolling
@@ -237,6 +239,12 @@ Attention receives bounded unresolved facts plus Diary, conversation summary,
 temporal context, and role-true recent history. Both start with resident tools
 and may request other tools; neither inherits a sticky routed skill.
 
+Attention is periodic and context-driven; Observer changes may bring its next
+run forward and contribute bounded facts, but are not required for the run.
+While one Attention run is unfinished, newly changed facts coalesce into one
+non-executable deferred snapshot. A later period promotes that snapshot only
+after the current run is terminal, preventing both fact loss and recovery
+bursts.
 Observers own factual source state, Main owns meaning/action/expression, and
 the transport owns delivery. A Main skip does not resolve observer facts.
 Heartbeat stores prepared results before delivery for durable audit. Free Time
