@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import struct
 
 import pytest
@@ -36,6 +37,38 @@ class Pool:
         return self.embedding
 
 
+class Selector:
+    def __init__(self, memory_ids):
+        self.memory_ids = memory_ids
+        self.calls = []
+
+    def chat(self, **kwargs):
+        from mochi.llm import LLMResponse
+
+        self.calls.append(kwargs)
+        return LLMResponse(
+            content=json.dumps({"memory_ids": self.memory_ids}),
+            prompt_tokens=20,
+            completion_tokens=5,
+            total_tokens=25,
+            model="lite-selector",
+        )
+
+
+def _recalled_item(item_id, content, score):
+    return {
+        "id": item_id,
+        "content": content,
+        "score": score,
+        "vec_sim": 0.0,
+        "match_source": "fts",
+        "fts_hit": True,
+        "has_vector": False,
+        "evidence_start": "2026-08-01",
+        "evidence_end": "2026-08-01",
+    }
+
+
 @pytest.fixture(autouse=True)
 def _recall_config(monkeypatch):
     import mochi.config as config
@@ -48,6 +81,7 @@ def _recall_config(monkeypatch):
     monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_MAX_CHARS", 320)
     monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_MAX_TOKENS", 600)
     monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_COOLDOWN", 0)
+    monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_SELECTOR_MAX_TOKENS", 160)
     monkeypatch.setattr(config, "KG_ENABLED", False)
 
 
@@ -135,6 +169,308 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     assert delete_memory_items([restored_id], deleted_by="test") == 1
     assert recall_memory(1, query="beta") == []
     assert {kept_id, deleted_id, restored_id} <= set(vec_deletes)
+
+
+def test_auto_recall_fuses_current_and_continuity_lanes_for_user_zero(
+    monkeypatch,
+):
+    import mochi.ai_client as ai_client
+    import mochi.model_pool as model_pool
+
+    save_message(
+        0,
+        "user",
+        "我爸昨晚很晚还没回家。",
+        turn_id="history",
+    )
+    save_message(
+        0,
+        "assistant",
+        "等有消息告诉我。",
+        turn_id="history",
+    )
+    current_id = save_message(
+        0,
+        "user",
+        "说个新话题，网球拍怎么选？",
+        turn_id="current",
+    )
+    calls = []
+
+    def fake_recall(_user_id, query, **_kwargs):
+        calls.append(query)
+        if query == "说个新话题，网球拍怎么选？":
+            return [
+                _recalled_item(1, "用户偏好轻量网球拍", 8.0),
+                _recalled_item(2, "用户周末常打网球", 7.0),
+            ]
+        return [
+            _recalled_item(1, "用户偏好轻量网球拍", 6.0),
+            _recalled_item(3, "用户父亲昨晚未回家", 9.0),
+        ]
+
+    monkeypatch.setattr(ai_client, "recall_memory", fake_recall)
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": (_ for _ in ()).throw(RuntimeError("no lite")),
+    )
+
+    recalled = _retrieve_memories_for_turn(
+        "说个新话题，网球拍怎么选？",
+        0,
+        current_id,
+    )
+
+    assert len(calls) == 2
+    assert calls[0] == "说个新话题，网球拍怎么选？"
+    assert "我爸昨晚很晚还没回家" in calls[1]
+    assert "等有消息告诉我" in calls[1]
+    assert calls[1].endswith("[当前用户] 说个新话题，网球拍怎么选？")
+    assert [item["memory_id"] for item in recalled] == [1, 2]
+    assert recalled[0]["retrieval_lanes"] == ["current", "continuity"]
+    assert recalled[0]["lane_ranks"] == {"current": 1, "continuity": 1}
+
+
+def test_auto_recall_cooldown_only_suppresses_identical_query(
+    monkeypatch,
+):
+    import mochi.ai_client as ai_client
+    import mochi.config as config
+    import mochi.model_pool as model_pool
+
+    monkeypatch.setattr(config, "MEMORY_AUTO_RECALL_COOLDOWN", 120)
+    calls = []
+
+    def fake_recall(_user_id, query, **_kwargs):
+        calls.append(query)
+        return [_recalled_item(1, f"memory for {query}", 8.0)]
+
+    monkeypatch.setattr(ai_client, "recall_memory", fake_recall)
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": (_ for _ in ()).throw(RuntimeError("no lite")),
+    )
+
+    assert _retrieve_memories_for_turn("alpha", 0)
+    assert _retrieve_memories_for_turn("alpha", 0) == []
+    assert _retrieve_memories_for_turn("beta", 0)
+    assert calls == ["alpha", "beta"]
+
+
+def test_lite_selector_can_abstain_or_choose_continuity_memory(
+    monkeypatch,
+):
+    import mochi.ai_client as ai_client
+    import mochi.model_pool as model_pool
+
+    save_message(
+        1,
+        "user",
+        "我爸昨晚很晚还没回家。",
+        turn_id="history",
+    )
+    save_message(
+        1,
+        "assistant",
+        "等有消息告诉我。",
+        turn_id="history",
+    )
+    current_id = save_message(
+        1,
+        "user",
+        "那他后来呢？",
+        turn_id="current",
+    )
+
+    def fake_recall(_user_id, query, **_kwargs):
+        if query == "那他后来呢？":
+            return [_recalled_item(1, "用户常打网球", 4.0)]
+        return [
+            _recalled_item(1, "用户常打网球", 4.0),
+            _recalled_item(3, "用户父亲昨晚未回家", 8.0),
+        ]
+
+    selector = Selector([3])
+    monkeypatch.setattr(ai_client, "recall_memory", fake_recall)
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": selector,
+    )
+
+    recalled = _retrieve_memories_for_turn("那他后来呢？", 1, current_id)
+
+    assert [item["memory_id"] for item in recalled] == [3]
+    selector_payload = json.loads(
+        selector.calls[0]["messages"][1]["content"]
+    )
+    assert selector_payload["current_message"] == "那他后来呢？"
+    assert "我爸昨晚很晚还没回家" in selector_payload["recent_context"]
+    assert {
+        item["memory_id"] for item in selector_payload["candidates"]
+    } == {1, 3}
+
+    selector.memory_ids = []
+    _user_last_recall.clear()
+    assert _retrieve_memories_for_turn("那他后来呢？", 1, current_id) == []
+
+
+def test_invalid_selector_ids_use_topic_safe_fallback(monkeypatch):
+    import mochi.ai_client as ai_client
+    import mochi.model_pool as model_pool
+
+    selector = Selector([999])
+    monkeypatch.setattr(
+        ai_client,
+        "recall_memory",
+        lambda *_args, **_kwargs: [
+            _recalled_item(1, "current topic memory", 8.0),
+        ],
+    )
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": selector,
+    )
+
+    recalled = _retrieve_memories_for_turn("current topic", 1)
+
+    assert [item["memory_id"] for item in recalled] == [1]
+
+
+def test_continuity_query_keeps_legacy_paired_assistant():
+    from mochi.ai_client import _memory_recall_queries
+
+    save_message(1, "user", "legacy user context")
+    save_message(1, "assistant", "legacy assistant context")
+    current_id = save_message(
+        1,
+        "user",
+        "what happened next?",
+        turn_id="current",
+    )
+
+    queries = _memory_recall_queries(
+        "what happened next?",
+        1,
+        current_id,
+    )
+
+    assert len(queries) == 2
+    assert "legacy user context" in queries[1][1]
+    assert "legacy assistant context" in queries[1][1]
+
+
+def test_continuity_query_excludes_processed_events_before_turn_limit():
+    from mochi.ai_client import _memory_recall_queries
+
+    for number in range(3):
+        turn_id = f"ordinary-{number}"
+        save_message(1, "user", f"ordinary user {number}", turn_id=turn_id)
+        save_message(
+            1,
+            "assistant",
+            f"ordinary assistant {number}",
+            turn_id=turn_id,
+        )
+    for number in range(5):
+        save_message(
+            1,
+            "assistant",
+            f"processed runtime event {number}",
+            turn_id=f"runtime-{number}",
+            processed=True,
+        )
+    current_id = save_message(
+        1,
+        "user",
+        "what happened next?",
+        turn_id="current",
+    )
+
+    queries = _memory_recall_queries(
+        "what happened next?",
+        1,
+        current_id,
+    )
+
+    assert "ordinary user 0" in queries[1][1]
+    assert "ordinary assistant 2" in queries[1][1]
+    assert "processed runtime event" not in queries[1][1]
+
+
+def test_selector_abstention_suppresses_kg_injection(monkeypatch):
+    import mochi.ai_client as ai_client
+    import mochi.config as config
+    import mochi.knowledge_graph as kg
+    import mochi.model_pool as model_pool
+
+    selector = Selector([])
+    monkeypatch.setattr(config, "KG_ENABLED", True)
+    monkeypatch.setattr(
+        ai_client,
+        "recall_memory",
+        lambda *_args, **_kwargs: [
+            _recalled_item(1, "candidate memory", 8.0),
+        ],
+    )
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": selector,
+    )
+    monkeypatch.setattr(
+        kg,
+        "find_matching_entities",
+        lambda *_args, **_kwargs: ["matched"],
+    )
+    monkeypatch.setattr(
+        kg,
+        "entity_context_for_prompt",
+        lambda *_args, **_kwargs: "KG context that must not leak",
+    )
+
+    assert _retrieve_memories_for_turn("unrelated question", 1) == []
+
+
+def test_query_ranking_ignores_importance_access_and_recency():
+    first = save_memory_item(
+        1,
+        "alpha shared detail",
+        source="extracted",
+        importance=1,
+    )
+    second = save_memory_item(
+        1,
+        "alpha shared detail",
+        source="extracted",
+        importance=3,
+    )
+    conn = _connect()
+    conn.execute(
+        "UPDATE memory_items SET access_count = 100, "
+        "updated_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+        (second,),
+    )
+    conn.commit()
+    conn.close()
+
+    recalled = recall_memory(1, query="alpha", bump_access=False)
+    scores = {
+        item["id"]: item["score"]
+        for item in recalled
+        if item["id"] in {first, second}
+    }
+
+    assert set(scores) == {first, second}
+    assert scores[first] == scores[second]
 
 
 def _relationship_memory(content="Shiki lives with Mochi in Shanghai"):

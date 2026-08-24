@@ -178,6 +178,16 @@ same-user messages in that exact batch, optionally embeds candidates before the
 transaction, then commits Memory Items and its cursor atomically.
 FTS/LIKE is always the text recall path; vectors only add candidates when an
 embedding is available, and recent-only rows are never semantic recall filler.
+Ordinary chat recalls through separate current-message and bounded
+conversation-continuity queries. Stable Memory IDs fuse the lanes, with the
+current-message lane taking precedence so a subject change is not pulled back
+to the previous topic. Query ranking uses only text/vector relevance;
+importance, age, and access count remain metadata rather than self-reinforcing
+ranking signals. Recall cooldown suppresses only an identical query/context,
+not a new topic. One bounded personality-free Lite selector may abstain or
+choose at most three fused candidates; if Lite is unavailable, deterministic
+fallback uses current-message candidates first and continuity only when the
+current lane is empty.
 
 ## Self Reminder flow
 

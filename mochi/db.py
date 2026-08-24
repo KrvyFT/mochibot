@@ -5,7 +5,6 @@ Lightweight schema. Tables are created automatically on first run.
 
 import difflib
 import json
-import math
 import re
 import struct
 import sqlite3
@@ -17,7 +16,7 @@ from mochi.config import (
     DB_PATH, TZ,
     RECALL_VEC_SIM_THRESHOLD, RECALL_BM25_WEIGHT, RECALL_VEC_SIM_WEIGHT,
     RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
-    RECALL_DECAY_HALF_LIFE_DAYS, VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
+    VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
 )
 
 logger = logging.getLogger(__name__)
@@ -1359,6 +1358,7 @@ def get_conversation_context(
     *,
     include_summary: bool = True,
     current_user_message_id: int | None = None,
+    include_processed_events: bool = True,
 ) -> dict:
     """Return a history snapshot anchored to the exact current user message."""
     conn = _connect()
@@ -1388,11 +1388,12 @@ def get_conversation_context(
             )
             for turn in turns
         ]
-        timeline.extend(
-            (message["id"], [message], None)
-            for message in messages
-            if message["role"] == "assistant" and bool(message["processed"])
-        )
+        if include_processed_events:
+            timeline.extend(
+                (message["id"], [message], None)
+                for message in messages
+                if message["role"] == "assistant" and bool(message["processed"])
+            )
         timeline.sort(key=lambda item: item[0])
         recent_timeline = timeline[-max(1, int(recent_turns)):]
         recent_ids = {
@@ -2062,22 +2063,8 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
     evidence_dates = _memory_evidence_dates(conn, user_id, rows)
 
     scored: list[dict] = []
-    half_life = RECALL_DECAY_HALF_LIFE_DAYS or 30.0
-
     for r in rows:
         rid = r["id"]
-
-        try:
-            updated = datetime.fromisoformat(r["updated_at"])
-            if updated.tzinfo is None:
-                updated = updated.replace(tzinfo=TZ)
-            days_ago = max((now - updated).total_seconds() / 86400, 0)
-        except (ValueError, TypeError):
-            days_ago = 365
-        decay = math.exp(-math.log(2) * days_ago / half_life)
-
-        access_bonus = min((r["access_count"] or 0) * 0.5, 3)
-        base_score = (r["importance"] * 2 + access_bonus) * decay
 
         vec_sim = 0.0
         has_vector = bool(query_embedding and r["embedding"])
@@ -2113,8 +2100,13 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
         score = (
             RECALL_VEC_SIM_WEIGHT * vec_sim
             + RECALL_BM25_WEIGHT * bm25_norm
-            + base_score
-            + (RECALL_KEYWORD_BOOST if bm25_norm > 0 else 0)
+            + (
+                RECALL_KEYWORD_BOOST
+                if (fts_hit or like_hit)
+                else 0
+            )
+            if query
+            else float(r["importance"] or 0)
         )
 
         scored.append({

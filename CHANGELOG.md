@@ -6,6 +6,7 @@
 - 修复 DeepSeek 思考模式在自主情境历史续轮中缺失 `reasoning_content` 导致的请求中断
 - 优化 Self Reminder：使用独立 typed event 与只读对话证据，避免把旧聊天误当作待回复消息
 - 恢复周期 Attention 对 Habit 等当日状态的自主关注，并防止失败恢复时积压集中执行
+- 优化记忆召回：分离当前话题与连续上下文，支持语义筛选与主动 abstain，并修复微信 owner 无法自动召回
 
 ## v1.0.8
 - 提升天气查询稳定性，改用可靠的 Open-Meteo 数据源

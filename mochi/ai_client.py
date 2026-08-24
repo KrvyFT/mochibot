@@ -8,6 +8,7 @@ This is the "brain" that ties together:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -19,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from mochi.llm import get_client_for_tier, LLMResponse
+from mochi.llm import extract_json, get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
@@ -107,7 +108,7 @@ def _replace_current_user_with_image(
     messages.append({"role": "user", "content": content})
 
 # ── Auto-recall state (per-user cooldown) ──
-_user_last_recall: dict[int, float] = {}   # user_id → timestamp
+_user_last_recall: dict[int, tuple[float, str]] = {}  # user_id → (timestamp, query key)
 _USER_LAST_RECALL_MAX = 100                # evict oldest when exceeded
 
 
@@ -130,8 +131,178 @@ def _format_recalled_memories(memories: list[dict]) -> str:
     )
 
 
-def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
-    """Recall explicit text matches, optionally enhanced by vectors and KG."""
+def _memory_recall_queries(
+    text: str,
+    user_id: int,
+    current_user_message_id: int | None,
+) -> list[tuple[str, str]]:
+    """Build independent current-topic and conversational-continuity lanes."""
+    queries = [("current", text.strip())]
+    try:
+        context = get_conversation_context(
+            user_id,
+            3,
+            include_summary=False,
+            current_user_message_id=current_user_message_id,
+            include_processed_events=False,
+        )
+    except Exception as exc:
+        log.debug("auto-recall continuity unavailable: %s", exc)
+        return queries
+
+    recent = context.get("recent") or []
+    paired_assistants = []
+    for index, message in enumerate(recent[:-1]):
+        following = recent[index + 1]
+        if (
+            message.get("role") == "user"
+            and following.get("role") == "assistant"
+            and not following.get("processed")
+            and (
+                (
+                    message.get("turn_id")
+                    and message.get("turn_id") == following.get("turn_id")
+                )
+                or (
+                    message.get("turn_id") is None
+                    and following.get("turn_id") is None
+                )
+            )
+        ):
+            paired_assistants.append(following)
+    selected = [
+        message
+        for message in recent
+        if message.get("role") == "user"
+    ][-3:]
+    if paired_assistants:
+        selected.append(paired_assistants[-1])
+    selected.sort(key=lambda message: int(message.get("id") or 0))
+
+    role_labels = {"user": "用户", "assistant": "Mochi"}
+    history_lines = []
+    for message in selected:
+        content = " ".join(str(message.get("content") or "").split())
+        if not content:
+            continue
+        history_lines.append(
+            f"[{role_labels[message['role']]}] {content[:500]}"
+        )
+    if not history_lines:
+        return queries
+    continuity = (
+        "最近已完成对话：\n"
+        + "\n".join(history_lines)
+        + f"\n[当前用户] {text.strip()}"
+    )
+    queries.append(("continuity", continuity[:2200]))
+    return queries
+
+
+def _select_recalled_memories(
+    current_message: str,
+    continuity_query: str,
+    candidates: list[dict],
+    max_items: int,
+) -> tuple[list[dict], bool]:
+    """Let personality-free Lite select relevant candidates or abstain."""
+    if not candidates or max_items <= 0:
+        return [], False
+    fallback = [
+        candidate
+        for candidate in candidates
+        if "current" in candidate["retrieval_lanes"]
+    ][:max_items]
+    if not fallback:
+        fallback = candidates[:max_items]
+
+    prompt = get_prompt("memory_relevance_select")
+    if not prompt:
+        return fallback, False
+    payload = {
+        "current_message": current_message,
+        "recent_context": continuity_query,
+        "max_items": max_items,
+        "candidates": [
+            {
+                "memory_id": candidate["memory_id"],
+                "content": candidate["text"],
+                "evidence_start": candidate["evidence_start"],
+                "evidence_end": candidate["evidence_end"],
+                "retrieval_lanes": candidate["retrieval_lanes"],
+                "lane_ranks": candidate["lane_ranks"],
+            }
+            for candidate in candidates
+        ],
+    }
+    try:
+        from mochi.config import MEMORY_AUTO_RECALL_SELECTOR_MAX_TOKENS
+
+        response = get_client_for_tier("lite").chat(
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        payload,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                },
+            ],
+            temperature=0.0,
+            max_tokens=MEMORY_AUTO_RECALL_SELECTOR_MAX_TOKENS,
+            json_mode=True,
+        )
+        log_usage(
+            response.prompt_tokens,
+            response.completion_tokens,
+            response.total_tokens,
+            model=response.model,
+            purpose="memory_relevance",
+            reasoning_tokens=response.reasoning_tokens,
+            cached_prompt_tokens=response.cached_prompt_tokens,
+        )
+        result = json.loads(extract_json(response.content))
+        raw_ids = result.get("memory_ids")
+        if not isinstance(raw_ids, list):
+            return fallback, False
+        if (
+            len(raw_ids) > max_items
+            or any(
+                isinstance(raw_id, bool)
+                or not isinstance(raw_id, int)
+                or raw_id not in {
+                    candidate["memory_id"] for candidate in candidates
+                }
+                for raw_id in raw_ids
+            )
+            or len(raw_ids) != len(set(raw_ids))
+        ):
+            return fallback, False
+        by_id = {
+            candidate["memory_id"]: candidate
+            for candidate in candidates
+        }
+        selected = []
+        for raw_id in raw_ids:
+            selected.append(by_id[raw_id])
+        return selected, True
+    except Exception as exc:
+        log.warning(
+            "auto-recall relevance selection unavailable; "
+            "using deterministic fallback: %s",
+            exc,
+        )
+        return fallback, False
+
+
+def _retrieve_memories_for_turn(
+    text: str,
+    user_id: int,
+    current_user_message_id: int | None = None,
+) -> list[dict]:
+    """Recall current-topic and continuity candidates, then fuse deterministically."""
     from mochi.config import (
         MEMORY_AUTO_RECALL, MEMORY_AUTO_RECALL_TOP_K,
         MEMORY_AUTO_RECALL_MAX_ITEMS, MEMORY_AUTO_RECALL_MIN_VEC_SIM,
@@ -139,64 +310,122 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
         MEMORY_AUTO_RECALL_COOLDOWN,
     )
 
-    if not MEMORY_AUTO_RECALL or not user_id or not text or not text.strip():
+    if (
+        not MEMORY_AUTO_RECALL
+        or user_id is None
+        or not text
+        or not text.strip()
+    ):
         return []
 
-    # Cooldown check
+    queries = _memory_recall_queries(
+        text,
+        user_id,
+        current_user_message_id,
+    )
+    query_key = hashlib.sha256(
+        "\0".join(query for _lane, query in queries).encode("utf-8")
+    ).hexdigest()
+
+    # Repeat suppression is query-aware; a new subject always gets a fresh recall.
     if MEMORY_AUTO_RECALL_COOLDOWN > 0 and user_id in _user_last_recall:
-        elapsed = time.time() - _user_last_recall[user_id]
-        if elapsed < MEMORY_AUTO_RECALL_COOLDOWN:
+        recalled_at, previous_key = _user_last_recall[user_id]
+        elapsed = time.time() - recalled_at
+        if elapsed < MEMORY_AUTO_RECALL_COOLDOWN and previous_key == query_key:
             log.debug("auto-recall: cooldown skip (%.0fs < %ds)",
                       elapsed, MEMORY_AUTO_RECALL_COOLDOWN)
             return []
 
-    query_emb = None
+    embeddings: dict[str, bytes | None] = {}
     try:
         from mochi.model_pool import get_pool
-        query_emb = get_pool().embed(text)
+        pool = get_pool()
+        for lane, query in queries:
+            embeddings[lane] = pool.embed(query)
     except Exception as exc:
         log.warning(
             "auto-recall embedding failed; using keyword search: %s", exc,
         )
 
     try:
-        recalled = recall_memory(
-            user_id, query=text,
-            limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
-            query_embedding=query_emb,
-            bump_access=False,
-        )
-
         max_chars = max(80, MEMORY_AUTO_RECALL_MAX_CHARS)
-        candidates: list[dict] = []
-        for item in recalled:
-            vec_sim = float(item.get("vec_sim") or 0.0)
-            match_source = str(item.get("match_source") or "")
-            text_hit = bool(item.get("fts_hit")) or match_source in {
-                "fts", "like", "hybrid",
-            }
-            vector_hit = bool(item.get("has_vector")) and (
-                vec_sim >= MEMORY_AUTO_RECALL_MIN_VEC_SIM
+        fused: dict[int, dict] = {}
+        for lane, query in queries:
+            recalled = recall_memory(
+                user_id,
+                query=query,
+                limit=max(1, MEMORY_AUTO_RECALL_TOP_K),
+                query_embedding=embeddings.get(lane),
+                bump_access=False,
             )
-            if not text_hit and not vector_hit:
-                continue
+            for rank, item in enumerate(recalled, start=1):
+                vec_sim = float(item.get("vec_sim") or 0.0)
+                match_source = str(item.get("match_source") or "")
+                text_hit = bool(item.get("fts_hit")) or match_source in {
+                    "fts", "like", "hybrid",
+                }
+                vector_hit = bool(item.get("has_vector")) and (
+                    vec_sim >= MEMORY_AUTO_RECALL_MIN_VEC_SIM
+                )
+                if not text_hit and not vector_hit:
+                    continue
 
-            content = " ".join((item.get("content") or "").split())
-            if not content:
-                continue
-            if len(content) > max_chars:
-                content = content[:max_chars - 3].rstrip() + "..."
-            raw_score = float(item.get("score") or 0.0)
-            candidates.append({
-                "memory_id": item["id"],
-                "text": content,
-                "score": round(max(0.0, min(1.0, raw_score / 10.0)), 2),
-                "evidence_start": str(item.get("evidence_start") or "")[:10],
-                "evidence_end": str(item.get("evidence_end") or "")[:10],
-            })
+                content = " ".join((item.get("content") or "").split())
+                if not content:
+                    continue
+                if len(content) > max_chars:
+                    content = content[:max_chars - 3].rstrip() + "..."
+                memory_id = int(item["id"])
+                raw_score = float(item.get("score") or 0.0)
+                candidate = fused.get(memory_id)
+                if candidate is None:
+                    candidate = {
+                        "memory_id": memory_id,
+                        "text": content,
+                        "score": round(
+                            max(0.0, min(1.0, raw_score / 10.0)),
+                            2,
+                        ),
+                        "evidence_start": str(
+                            item.get("evidence_start") or ""
+                        )[:10],
+                        "evidence_end": str(
+                            item.get("evidence_end") or ""
+                        )[:10],
+                        "retrieval_lanes": [],
+                        "lane_ranks": {},
+                    }
+                    fused[memory_id] = candidate
+                candidate["score"] = max(
+                    candidate["score"],
+                    round(max(0.0, min(1.0, raw_score / 10.0)), 2),
+                )
+                candidate["retrieval_lanes"].append(lane)
+                candidate["lane_ranks"][lane] = rank
+
+        candidates = sorted(
+            fused.values(),
+            key=lambda candidate: (
+                "current" not in candidate["lane_ranks"],
+                candidate["lane_ranks"].get("current", 10_000),
+                candidate["lane_ranks"].get("continuity", 10_000),
+                -candidate["score"],
+                candidate["memory_id"],
+            ),
+        )
+        continuity_query = (
+            queries[1][1] if len(queries) > 1 else ""
+        )
+        candidates, selector_applied = _select_recalled_memories(
+            text.strip(),
+            continuity_query,
+            candidates,
+            max(1, MEMORY_AUTO_RECALL_MAX_ITEMS),
+        )
+        selector_abstained = selector_applied and not candidates
 
         from mochi.config import KG_ENABLED
-        if KG_ENABLED:
+        if KG_ENABLED and not selector_abstained:
             try:
                 from mochi.knowledge_graph import find_matching_entities, entity_context_for_prompt
                 matched = find_matching_entities(user_id, text)
@@ -236,9 +465,12 @@ def _retrieve_memories_for_turn(text: str, user_id: int) -> list[dict]:
             ],
         )
         if len(_user_last_recall) >= _USER_LAST_RECALL_MAX:
-            oldest = min(_user_last_recall, key=_user_last_recall.get)
+            oldest = min(
+                _user_last_recall,
+                key=lambda uid: _user_last_recall[uid][0],
+            )
             del _user_last_recall[oldest]
-        _user_last_recall[user_id] = time.time()
+        _user_last_recall[user_id] = (time.time(), query_key)
         log.info(
             "auto-recall: %d memories (top score=%.2f)",
             len(selected),
@@ -929,7 +1161,10 @@ async def chat(
         if not prompt_policy.auto_recall or not text.strip():
             return []
         return await asyncio.to_thread(
-            _retrieve_memories_for_turn, text, user_id,
+            _retrieve_memories_for_turn,
+            text,
+            user_id,
+            current_user_message_id,
         )
 
     # ── Skill mode: /skilloff skips router + non-core tools ──
