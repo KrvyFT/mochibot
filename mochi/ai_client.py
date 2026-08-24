@@ -225,7 +225,8 @@ def _select_recalled_memories(
         "max_items": max_items,
         "candidates": [
             {
-                "memory_id": candidate["memory_id"],
+                "candidate_id": candidate["candidate_id"],
+                "candidate_type": candidate["candidate_type"],
                 "content": candidate["text"],
                 "evidence_start": candidate["evidence_start"],
                 "evidence_end": candidate["evidence_end"],
@@ -264,24 +265,25 @@ def _select_recalled_memories(
             cached_prompt_tokens=response.cached_prompt_tokens,
         )
         result = json.loads(extract_json(response.content))
-        raw_ids = result.get("memory_ids")
+        raw_ids = result.get("candidate_ids")
         if not isinstance(raw_ids, list):
             return fallback, False
+        valid_ids = {
+            candidate["candidate_id"] for candidate in candidates
+        }
         if (
             len(raw_ids) > max_items
             or any(
-                isinstance(raw_id, bool)
-                or not isinstance(raw_id, int)
-                or raw_id not in {
-                    candidate["memory_id"] for candidate in candidates
-                }
+                not isinstance(raw_id, str)
+                or not raw_id
+                or raw_id not in valid_ids
                 for raw_id in raw_ids
             )
             or len(raw_ids) != len(set(raw_ids))
         ):
             return fallback, False
         by_id = {
-            candidate["memory_id"]: candidate
+            candidate["candidate_id"]: candidate
             for candidate in candidates
         }
         selected = []
@@ -380,6 +382,8 @@ def _retrieve_memories_for_turn(
                 candidate = fused.get(memory_id)
                 if candidate is None:
                     candidate = {
+                        "candidate_id": f"memory:{memory_id}",
+                        "candidate_type": "memory",
                         "memory_id": memory_id,
                         "text": content,
                         "score": round(
@@ -403,47 +407,52 @@ def _retrieve_memories_for_turn(
                 candidate["retrieval_lanes"].append(lane)
                 candidate["lane_ranks"][lane] = rank
 
+        candidates = list(fused.values())
+        from mochi.config import KG_ENABLED
+        if KG_ENABLED:
+            try:
+                from mochi.knowledge_graph import (
+                    entity_context_for_prompt,
+                    find_matching_entities,
+                )
+
+                matched = find_matching_entities(user_id, text)
+                for rank, ent_name in enumerate(matched[:2], start=1):
+                    kg_text = entity_context_for_prompt(user_id, ent_name)
+                    if kg_text:
+                        candidates.append({
+                            "candidate_id": f"kg:{ent_name}",
+                            "candidate_type": "relationship",
+                            "text": kg_text,
+                            "score": 0.95,
+                            "evidence_start": "",
+                            "evidence_end": "",
+                            "retrieval_lanes": ["current"],
+                            "lane_ranks": {"current": rank},
+                        })
+            except Exception:
+                pass  # non-critical, degrade gracefully
+
         candidates = sorted(
-            fused.values(),
+            candidates,
             key=lambda candidate: (
                 "current" not in candidate["lane_ranks"],
                 candidate["lane_ranks"].get("current", 10_000),
                 candidate["lane_ranks"].get("continuity", 10_000),
                 -candidate["score"],
-                candidate["memory_id"],
+                candidate["candidate_id"],
             ),
         )
         continuity_query = (
             queries[1][1] if len(queries) > 1 else ""
         )
-        candidates, selector_applied = _select_recalled_memories(
+        candidates, _selector_applied = _select_recalled_memories(
             text.strip(),
             continuity_query,
             candidates,
             max(1, MEMORY_AUTO_RECALL_MAX_ITEMS),
         )
-        selector_abstained = selector_applied and not candidates
-
-        from mochi.config import KG_ENABLED
-        if KG_ENABLED and not selector_abstained:
-            try:
-                from mochi.knowledge_graph import find_matching_entities, entity_context_for_prompt
-                matched = find_matching_entities(user_id, text)
-                kg_candidates = []
-                for ent_name in matched[:2]:
-                    kg_text = entity_context_for_prompt(user_id, ent_name)
-                    if kg_text:
-                        kg_candidates.append({
-                            "text": kg_text,
-                            "score": 0.95,
-                            "evidence_start": "",
-                            "evidence_end": "",
-                        })
-                candidates = kg_candidates + candidates
-            except Exception:
-                pass  # non-critical, degrade gracefully
-
-        max_total = max(1, MEMORY_AUTO_RECALL_MAX_ITEMS) + 2
+        max_total = max(1, MEMORY_AUTO_RECALL_MAX_ITEMS)
         max_tokens = max(1, MEMORY_AUTO_RECALL_MAX_TOKENS)
         selected: list[dict] = []
         for candidate in candidates:
@@ -456,14 +465,20 @@ def _retrieve_memories_for_turn(
 
         if not selected:
             return []
-        mark_memory_items_accessed(
-            user_id,
-            [
-                candidate["memory_id"]
-                for candidate in selected
-                if candidate.get("memory_id") is not None
-            ],
-        )
+        try:
+            mark_memory_items_accessed(
+                user_id,
+                [
+                    candidate["memory_id"]
+                    for candidate in selected
+                    if candidate.get("memory_id") is not None
+                ],
+            )
+        except Exception as exc:
+            log.warning(
+                "auto-recall access telemetry failed: %s",
+                exc,
+            )
         if len(_user_last_recall) >= _USER_LAST_RECALL_MAX:
             oldest = min(
                 _user_last_recall,

@@ -38,8 +38,8 @@ class Pool:
 
 
 class Selector:
-    def __init__(self, memory_ids):
-        self.memory_ids = memory_ids
+    def __init__(self, candidate_ids):
+        self.candidate_ids = candidate_ids
         self.calls = []
 
     def chat(self, **kwargs):
@@ -47,7 +47,7 @@ class Selector:
 
         self.calls.append(kwargs)
         return LLMResponse(
-            content=json.dumps({"memory_ids": self.memory_ids}),
+            content=json.dumps({"candidate_ids": self.candidate_ids}),
             prompt_tokens=20,
             completion_tokens=5,
             total_tokens=25,
@@ -294,7 +294,7 @@ def test_lite_selector_can_abstain_or_choose_continuity_memory(
             _recalled_item(3, "用户父亲昨晚未回家", 8.0),
         ]
 
-    selector = Selector([3])
+    selector = Selector(["memory:3"])
     monkeypatch.setattr(ai_client, "recall_memory", fake_recall)
     monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
     monkeypatch.setattr(
@@ -312,10 +312,10 @@ def test_lite_selector_can_abstain_or_choose_continuity_memory(
     assert selector_payload["current_message"] == "那他后来呢？"
     assert "我爸昨晚很晚还没回家" in selector_payload["recent_context"]
     assert {
-        item["memory_id"] for item in selector_payload["candidates"]
-    } == {1, 3}
+        item["candidate_id"] for item in selector_payload["candidates"]
+    } == {"memory:1", "memory:3"}
 
-    selector.memory_ids = []
+    selector.candidate_ids = []
     _user_last_recall.clear()
     assert _retrieve_memories_for_turn("那他后来呢？", 1, current_id) == []
 
@@ -324,7 +324,7 @@ def test_invalid_selector_ids_use_topic_safe_fallback(monkeypatch):
     import mochi.ai_client as ai_client
     import mochi.model_pool as model_pool
 
-    selector = Selector([999])
+    selector = Selector(["memory:999"])
     monkeypatch.setattr(
         ai_client,
         "recall_memory",
@@ -438,6 +438,157 @@ def test_selector_abstention_suppresses_kg_injection(monkeypatch):
     )
 
     assert _retrieve_memories_for_turn("unrelated question", 1) == []
+
+
+def test_selector_can_choose_kg_candidate(monkeypatch):
+    import mochi.ai_client as ai_client
+    import mochi.config as config
+    import mochi.knowledge_graph as kg
+    import mochi.model_pool as model_pool
+
+    selector = Selector(["kg:matched"])
+    monkeypatch.setattr(config, "KG_ENABLED", True)
+    monkeypatch.setattr(
+        ai_client,
+        "recall_memory",
+        lambda *_args, **_kwargs: [
+            _recalled_item(1, "less relevant memory", 4.0),
+        ],
+    )
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": selector,
+    )
+    monkeypatch.setattr(
+        kg,
+        "find_matching_entities",
+        lambda *_args, **_kwargs: ["matched"],
+    )
+    monkeypatch.setattr(
+        kg,
+        "entity_context_for_prompt",
+        lambda *_args, **_kwargs: "selected KG context",
+    )
+
+    recalled = _retrieve_memories_for_turn("matched", 1)
+
+    assert len(recalled) == 1
+    assert recalled[0]["candidate_id"] == "kg:matched"
+    assert recalled[0]["text"] == "selected KG context"
+    assert recalled[0].get("memory_id") is None
+
+
+def test_access_telemetry_failure_does_not_discard_selected_memory(
+    monkeypatch,
+):
+    import mochi.ai_client as ai_client
+    import mochi.model_pool as model_pool
+
+    selector = Selector(["memory:1"])
+    monkeypatch.setattr(
+        ai_client,
+        "recall_memory",
+        lambda *_args, **_kwargs: [
+            _recalled_item(1, "selected memory", 8.0),
+        ],
+    )
+    monkeypatch.setattr(model_pool, "get_pool", lambda: Pool())
+    monkeypatch.setattr(
+        ai_client,
+        "get_client_for_tier",
+        lambda _tier="main": selector,
+    )
+    monkeypatch.setattr(
+        ai_client,
+        "mark_memory_items_accessed",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("telemetry unavailable")
+        ),
+    )
+
+    recalled = _retrieve_memories_for_turn("current topic", 1)
+
+    assert [item["memory_id"] for item in recalled] == [1]
+
+
+def test_kg_prompt_budget_keeps_relationships_whole(monkeypatch):
+    import mochi.config as config
+    import mochi.knowledge_graph as kg
+
+    relationships = [
+        "Shiki 在照顾 大脸猫",
+        "Shiki 住在 苏州",
+        "Shiki 在 苏州公司 工作",
+    ]
+    monkeypatch.setattr(config, "KG_MAX_ENTITY_CONTEXT_TOKENS", 18)
+    monkeypatch.setattr(
+        kg,
+        "query_entity",
+        lambda *_args, **_kwargs: {
+            "entity": {"display_name": "Shiki", "name": "shiki"},
+            "as_subject": [
+                {
+                    "predicate": "cares_for",
+                    "object_display": "大脸猫",
+                },
+                {
+                    "predicate": "lives_in",
+                    "object_display": "苏州",
+                },
+                {
+                    "predicate": "works_at",
+                    "object_display": "苏州公司",
+                },
+            ],
+            "as_object": [],
+        },
+    )
+
+    rendered = kg.entity_context_for_prompt(1, "Shiki")
+
+    assert "..." not in rendered
+    rendered_relationships = [
+        line.removeprefix("- ")
+        for line in rendered.splitlines()
+        if line.startswith("- ") and not line.startswith("- [")
+    ]
+    assert rendered_relationships
+    assert all(item in relationships for item in rendered_relationships)
+    assert len(rendered_relationships) < len(relationships)
+
+
+def test_kg_prompt_budget_skips_oversized_fact_and_keeps_later_fact(
+    monkeypatch,
+):
+    import mochi.config as config
+    import mochi.knowledge_graph as kg
+
+    monkeypatch.setattr(config, "KG_MAX_ENTITY_CONTEXT_TOKENS", 16)
+    monkeypatch.setattr(
+        kg,
+        "query_entity",
+        lambda *_args, **_kwargs: {
+            "entity": {"display_name": "Shiki", "name": "shiki"},
+            "as_subject": [
+                {
+                    "predicate": "works_at",
+                    "object_display": "极其漫长而且完全放不进预算的公司名称" * 8,
+                },
+                {
+                    "predicate": "lives_in",
+                    "object_display": "苏州",
+                },
+            ],
+            "as_object": [],
+        },
+    )
+
+    rendered = kg.entity_context_for_prompt(1, "Shiki")
+
+    assert "Shiki 住在 苏州" in rendered
+    assert "极其漫长" not in rendered
 
 
 def test_query_ranking_ignores_importance_access_and_recency():

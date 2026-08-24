@@ -497,15 +497,29 @@ def entity_context_for_prompt(user_id: int, entity_name: str) -> str:
     if not relationships:
         return ""
 
-    text = "已知关系：\n" + "\n".join(
-        f"- {relationship}" for relationship in relationships
-    )
+    from mochi.token_estimator import estimate_tokens
 
-    max_chars = KG_MAX_ENTITY_CONTEXT_TOKENS * 2 // 3
-    if len(text) > max_chars:
-        text = text[:max_chars - 3] + "..."
+    header = "已知关系："
+    max_tokens = max(1, KG_MAX_ENTITY_CONTEXT_TOKENS)
+    selected: list[str] = []
+    for relationship in relationships:
+        proposed = "\n".join([
+            header,
+            *(f"- {item}" for item in [*selected, relationship]),
+        ])
+        if estimate_tokens(proposed) > max_tokens:
+            continue
+        selected.append(relationship)
+    if not selected:
+        return ""
 
-    return text
+    omitted = len(relationships) - len(selected)
+    lines = [header, *(f"- {item}" for item in selected)]
+    if omitted:
+        marker = f"- [另有 {omitted} 条关系因上下文预算未显示]"
+        if estimate_tokens("\n".join([*lines, marker])) <= max_tokens:
+            lines.append(marker)
+    return "\n".join(lines)
 
 
 def find_matching_entities(

@@ -184,10 +184,11 @@ current-message lane taking precedence so a subject change is not pulled back
 to the previous topic. Query ranking uses only text/vector relevance;
 importance, age, and access count remain metadata rather than self-reinforcing
 ranking signals. Recall cooldown suppresses only an identical query/context,
-not a new topic. One bounded personality-free Lite selector may abstain or
-choose at most three fused candidates; if Lite is unavailable, deterministic
-fallback uses current-message candidates first and continuity only when the
-current lane is empty.
+not a new topic. Exact matched KG relationship blocks join the same candidate
+pool rather than bypassing semantic selection. One bounded personality-free
+Lite selector may abstain or choose at most three fused candidates; if Lite is
+unavailable, deterministic fallback uses current-message candidates first and
+continuity only when the current lane is empty.
 
 ## Self Reminder flow
 
