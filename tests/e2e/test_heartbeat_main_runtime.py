@@ -530,8 +530,8 @@ async def test_free_time_reads_completed_interactions_without_active_chat_turns(
     assert [item["role"] for item in messages] == ["system", "user"]
     base_context, event = (item["content"] for item in messages)
     assert "最近已完成对话（只读证据）" in base_context
-    assert "user-2" in base_context
-    assert "assistant-2" in base_context
+    assert "user-2" not in base_context
+    assert "assistant-2" not in base_context
     assert "user-1" not in base_context
     assert "user-0" not in base_context
     assert '"kind":"completed_outreach"' in base_context

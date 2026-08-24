@@ -1400,6 +1400,11 @@ async def chat(
         if prompt_policy.recent_history
         else []
     )
+    if prompt_policy.recent_outreach_only:
+        history = [
+            item for item in history
+            if item.get("role") == "assistant" and bool(item.get("processed"))
+        ]
     conv_summary = (
         conversation_context["summary"]
         if prompt_policy.conversation_summary

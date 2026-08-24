@@ -245,14 +245,15 @@ Attention or independent reminder delivery. Sleeping and long-silence pause
 gates run before observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
-Free Time receives the last two completed interaction items as read-only
-evidence, the rolling conversation summary, today's Diary journal, and last
-contact age for lightweight life continuity. It still excludes the status panel,
-auto-recall, recent operations, and semantic routing, so this context remains
-background rather than an assigned topic. Attention receives bounded unresolved
-facts plus Diary, conversation summary, temporal context, and a bounded read-only
-interaction window. Both start with resident tools and may request other tools;
-neither inherits a sticky routed skill.
+Free Time receives last contact age plus a bounded read-only window of its own
+recent proactive outreach. It does not inherit ordinary conversation, summary,
+Diary, the status panel, auto-recall, recent operations, or semantic routing, so
+the harness does not assign a topic to unclaimed time; Main may use resident
+perception or request other tools when curiosity calls for current context.
+Attention receives bounded unresolved facts plus Diary, conversation summary,
+temporal context, and a bounded read-only interaction window. Both start with
+resident tools and may request other tools; neither inherits a sticky routed
+skill.
 
 While one Attention run is unfinished, newly changed facts coalesce into one
 non-executable deferred snapshot. The snapshot is promoted as soon as the
