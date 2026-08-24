@@ -17,6 +17,54 @@ def _msg(text: str, user_id: int = 1, channel_id: int = 100) -> IncomingMessage:
 
 class TestSimpleReply:
     @pytest.mark.asyncio
+    async def test_usage_failure_does_not_block_reply_or_recall_exposure(
+        self,
+        mock_llm_factory,
+        monkeypatch,
+    ):
+        import mochi.ai_client as ai_client
+        from mochi.db import _connect, save_memory_item
+
+        memory_id = save_memory_item(
+            1,
+            "selected memory",
+            source="extracted",
+        )
+        monkeypatch.setattr(
+            ai_client,
+            "_retrieve_memories_for_turn",
+            lambda *_args, **_kwargs: [{
+                "candidate_type": "memory",
+                "memory_id": memory_id,
+                "text": "selected memory",
+                "evidence_start": "",
+                "evidence_end": "",
+                "_recall_query_key": "exposed-query",
+            }],
+        )
+        monkeypatch.setattr(
+            ai_client,
+            "log_usage",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                RuntimeError("usage unavailable")
+            ),
+        )
+        mock_llm_factory([make_response("reply still succeeds")])
+
+        result = await chat(_msg("hello"))
+
+        assert result.text == "reply still succeeds"
+        conn = _connect()
+        access_count = conn.execute(
+            "SELECT access_count FROM memory_items WHERE id = ?",
+            (memory_id,),
+        ).fetchone()["access_count"]
+        conn.close()
+        assert access_count == 1
+        assert ai_client._user_last_recall[1][1] == "exposed-query"
+        ai_client._user_last_recall.pop(1, None)
+
+    @pytest.mark.asyncio
     async def test_main_can_request_bedtime(self, mock_llm_factory, monkeypatch):
         import mochi.heartbeat as heartbeat
 

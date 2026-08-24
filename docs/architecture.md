@@ -178,15 +178,33 @@ same-user messages in that exact batch, optionally embeds candidates before the
 transaction, then commits Memory Items and its cursor atomically.
 FTS/LIKE is always the text recall path; vectors only add candidates when an
 embedding is available, and recent-only rows are never semantic recall filler.
+Ordinary chat recalls through separate current-message and bounded
+conversation-continuity queries. Stable Memory IDs fuse the lanes, with the
+current-message lane taking precedence so a subject change is not pulled back
+to the previous topic. Query ranking uses only text/vector relevance;
+importance, age, and access count remain metadata rather than self-reinforcing
+ranking signals. Recall cooldown suppresses only an identical query/context,
+not a new topic. Exact matched KG relationship blocks join the same candidate
+pool rather than bypassing semantic selection. One bounded personality-free
+Lite selector may abstain or choose at most three fused candidates; if Lite is
+unavailable, deterministic fallback uses current-message candidates first and
+continuity only when the current lane is empty; unselected KG is not injected
+without Lite. Recalled content enters Main as explicit read-only JSON data, not
+as executable system instructions. Access/cooldown telemetry commits only
+after Main successfully accepts the recalled prompt.
 
 ## Self Reminder flow
 
 `manage_reminder(kind="self")` stores a private future intent, not a prewritten
 user notification. It may be one-time or recurring. At each scheduled time,
 the reminder scheduler claims the row and creates
-`MainRuntimeEntry(kind="self_reminder")`; Main sees current Core, conversation,
-Diary, and the capabilities available on the pinned transport, without a
-synthetic user message.
+`MainRuntimeEntry(kind="self_reminder")` containing the intent, scheduled time,
+and recurrence. Main sees current Core, Diary, and the capabilities available
+on the pinned transport. Recent completed conversation is projected as
+bounded read-only evidence rather than replayed as active user/assistant turns.
+The complete typed reminder event is the sole provider turn and explicitly
+states that no new owner message exists; no synthetic conversation row is
+created.
 
 Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
 success and skip require no transport delivery; for a recurring reminder they
@@ -218,10 +236,12 @@ repeated.
 
 Heartbeat keeps two independent clocks. Free Time is randomized, unassigned
 companion time; a due Free Time waits until the user's latest message has been
-quiet for 30 minutes. Attention runs periodically and can be advanced by a
-changed observer fact without moving the Free Time clock, so recent chat never
-blocks factual Attention or independent reminder delivery. Sleeping and
-long-silence pause gates run before observer or model work.
+quiet for 30 minutes. Attention runs periodically even when no Observer fact
+changed, so Main can semantically notice the current Diary status such as
+unfinished Habits, meals, and Todos. A changed observer fact may advance that
+clock without moving the Free Time clock. Recent chat never blocks Attention or
+independent reminder delivery. Sleeping and long-silence pause gates run before
+observer or model work.
 
 Both situations enter the standard Main personality and Agent First tool loop.
 Free Time receives the last two role-true conversation turns, the rolling
@@ -233,6 +253,12 @@ Attention receives bounded unresolved facts plus Diary, conversation summary,
 temporal context, and role-true recent history. Both start with resident tools
 and may request other tools; neither inherits a sticky routed skill.
 
+Attention is periodic and context-driven; Observer changes may bring its next
+run forward and contribute bounded facts, but are not required for the run.
+While one Attention run is unfinished, newly changed facts coalesce into one
+non-executable deferred snapshot. A later period promotes that snapshot only
+after the current run is terminal, preventing both fact loss and recovery
+bursts.
 Observers own factual source state, Main owns meaning/action/expression, and
 the transport owns delivery. A Main skip does not resolve observer facts.
 Heartbeat stores prepared results before delivery for durable audit. Free Time

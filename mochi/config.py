@@ -302,12 +302,9 @@ MEMORY_AUTO_RECALL_MIN_VEC_SIM = _env_float("MEMORY_AUTO_RECALL_MIN_VEC_SIM", 0.
 MEMORY_AUTO_RECALL_MAX_CHARS = _env_int("MEMORY_AUTO_RECALL_MAX_CHARS", 320)
 MEMORY_AUTO_RECALL_MAX_TOKENS = _env_int("MEMORY_AUTO_RECALL_MAX_TOKENS", 600)
 MEMORY_AUTO_RECALL_COOLDOWN = _env_int("MEMORY_AUTO_RECALL_COOLDOWN", 120)
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Memory Lifecycle
-# ═══════════════════════════════════════════════════════════════════════════
-
-RECALL_DECAY_HALF_LIFE_DAYS = _env_float("RECALL_DECAY_HALF_LIFE_DAYS", 30.0)
+MEMORY_AUTO_RECALL_SELECTOR_MAX_TOKENS = _env_int(
+    "MEMORY_AUTO_RECALL_SELECTOR_MAX_TOKENS", 160,
+)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Knowledge Graph
