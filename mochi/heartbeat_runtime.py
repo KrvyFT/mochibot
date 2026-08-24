@@ -18,6 +18,42 @@ _LEASE_SECONDS = 300
 _MAX_ATTENTION_FACTS = 12
 
 
+def _schedule_attention(
+    conn,
+    *,
+    due_at: str,
+    wake_reason: str,
+    updated_at: str,
+) -> None:
+    conn.execute(
+        "INSERT INTO heartbeat_schedules "
+        "(entry_kind, next_due_at, wake_reason, updated_at) "
+        "VALUES ('attention', ?, ?, ?) "
+        "ON CONFLICT(entry_kind) DO UPDATE SET "
+        "next_due_at = CASE "
+        "WHEN heartbeat_schedules.next_due_at > excluded.next_due_at "
+        "THEN excluded.next_due_at ELSE heartbeat_schedules.next_due_at END, "
+        "wake_reason = excluded.wake_reason, updated_at = excluded.updated_at",
+        (due_at, wake_reason, updated_at),
+    )
+
+
+def _retire_legacy_periodic_attention(conn, *, now_iso: str) -> int:
+    cursor = conn.execute(
+        "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'retired', "
+        "handled_at = ?, claim_token = NULL, lease_until = NULL, "
+        "next_attempt_at = NULL, last_error = '', delivery_started_at = NULL "
+        "WHERE entry_kind = 'attention' AND wake_reason = 'periodic' "
+        "AND facts_json = '[]' AND status IN ('pending', 'ready') "
+        "AND NOT EXISTS (SELECT 1 FROM tool_executions "
+        "WHERE tool_executions.turn_id = heartbeat_runs.run_key)",
+        (now_iso,),
+    )
+    if cursor.rowcount:
+        _promote_deferred_attention(conn)
+    return cursor.rowcount
+
+
 def _utc_now() -> datetime:
     return datetime.now(UTC)
 
@@ -131,6 +167,13 @@ def sync_attention_facts(
                     encoded, observed_iso,
                 ),
             )
+        if changed:
+            _schedule_attention(
+                conn,
+                due_at=observed_iso,
+                wake_reason="observer_change",
+                updated_at=observed_iso,
+            )
         conn.commit()
         return changed
     finally:
@@ -145,12 +188,21 @@ def retire_attention_facts(source: str, stable_keys: tuple[str, ...]) -> int:
     placeholders = ",".join("?" for _ in keys)
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
             "WHERE source = ? AND status = 'unresolved' "
             f"AND stable_key IN ({placeholders})",
             (_iso(_utc_now()), source, *keys),
         )
+        if cursor.rowcount:
+            now_iso = _iso(_utc_now())
+            _schedule_attention(
+                conn,
+                due_at=now_iso,
+                wake_reason="observer_change",
+                updated_at=now_iso,
+            )
         conn.commit()
         return cursor.rowcount
     finally:
@@ -161,11 +213,20 @@ def retire_attention_source(source: str) -> int:
     """Resolve every legacy fact for a source that no longer feeds Attention."""
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
             "WHERE source = ? AND status = 'unresolved'",
             (_iso(_utc_now()), source),
         )
+        if cursor.rowcount:
+            now_iso = _iso(_utc_now())
+            _schedule_attention(
+                conn,
+                due_at=now_iso,
+                wake_reason="observer_change",
+                updated_at=now_iso,
+            )
         conn.commit()
         return cursor.rowcount
     finally:
@@ -206,7 +267,6 @@ def get_unresolved_attention_facts(
 def ensure_schedules(
     *,
     now: datetime,
-    attention_interval_minutes: int,
     free_time_min_minutes: int,
     free_time_max_minutes: int,
     rng: random.Random | random.SystemRandom | None = None,
@@ -217,33 +277,36 @@ def ensure_schedules(
         min(free_time_min_minutes, free_time_max_minutes),
         max(free_time_min_minutes, free_time_max_minutes),
     )
-    rows = (
-        ("attention", now + timedelta(minutes=attention_interval_minutes)),
-        ("free_time", now + timedelta(minutes=free_delay)),
-    )
     conn = _connect()
     try:
-        for kind, due in rows:
-            conn.execute(
-                "INSERT OR IGNORE INTO heartbeat_schedules "
-                "(entry_kind, next_due_at, wake_reason, updated_at) "
-                "VALUES (?, ?, 'periodic', ?)",
-                (kind, _iso(due), _iso(now)),
-            )
+        conn.execute("BEGIN IMMEDIATE")
+        now_iso = _iso(now)
+        conn.execute(
+            "DELETE FROM heartbeat_schedules "
+            "WHERE entry_kind = 'attention' AND wake_reason = 'periodic'"
+        )
+        _retire_legacy_periodic_attention(conn, now_iso=now_iso)
+        conn.execute(
+            "INSERT OR IGNORE INTO heartbeat_schedules "
+            "(entry_kind, next_due_at, wake_reason, updated_at) "
+            "VALUES ('free_time', ?, 'periodic', ?)",
+            (_iso(now + timedelta(minutes=free_delay)), now_iso),
+        )
         conn.commit()
     finally:
         conn.close()
 
 
 def advance_attention(*, now: datetime, wake_reason: str = "observer_change") -> None:
-    now_iso = _iso(now)
+    due_iso = _iso(now)
+    updated_iso = _iso(_utc_now())
     conn = _connect()
     try:
-        conn.execute(
-            "UPDATE heartbeat_schedules SET "
-            "next_due_at = CASE WHEN next_due_at > ? THEN ? ELSE next_due_at END, "
-            "wake_reason = ?, updated_at = ? WHERE entry_kind = 'attention'",
-            (now_iso, now_iso, wake_reason, now_iso),
+        _schedule_attention(
+            conn,
+            due_at=due_iso,
+            wake_reason=wake_reason,
+            updated_at=updated_iso,
         )
         conn.commit()
     finally:
@@ -275,7 +338,6 @@ def materialize_due_runs(
     channel_id: int,
     transport: str,
     now: datetime,
-    attention_interval_minutes: int,
     free_time_min_minutes: int,
     free_time_max_minutes: int,
     free_time_not_before: datetime | None = None,
@@ -332,9 +394,13 @@ def materialize_due_runs(
             run_key = f"{kind}:{due_at}"
             payload = facts_json if kind == "attention" else "[]"
             if kind == "attention":
-                next_due = now + timedelta(minutes=attention_interval_minutes)
+                if row["wake_reason"] == "periodic":
+                    conn.execute(
+                        "DELETE FROM heartbeat_schedules WHERE entry_kind = 'attention'"
+                    )
+                    continue
                 unfinished_rows = conn.execute(
-                    "SELECT run_key, facts_json FROM heartbeat_runs "
+                    "SELECT run_key FROM heartbeat_runs "
                     "WHERE entry_kind = 'attention' "
                     "AND status IN ('pending', 'running', 'ready') "
                     "ORDER BY created_at, run_key"
@@ -344,139 +410,32 @@ def materialize_due_runs(
                     "WHERE entry_kind = 'attention' AND status = 'deferred' "
                     "ORDER BY created_at, run_key LIMIT 1"
                 ).fetchone()
-                current_fact_dicts = json.loads(facts_json)
-                current_by_key = {
-                    (item["source"], item["stable_key"]): item
-                    for item in current_fact_dicts
-                }
-                deferred_facts = []
-                if deferred is not None:
-                    stored_deferred, valid_deferred = _decode_attention_facts(
-                        deferred["facts_json"],
-                    )
-                    deferred_facts = [
-                        current_by_key[key]
-                        for item in stored_deferred
-                        if (
-                            key := (item["source"], item["stable_key"])
-                        ) in current_by_key
-                    ]
-                    reconciled_payload = json.dumps(
-                        deferred_facts,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    if (
-                        not valid_deferred
-                        or reconciled_payload != (deferred["facts_json"] or "[]")
-                    ):
-                        conn.execute(
-                            "UPDATE heartbeat_runs SET facts_json = ? "
-                            "WHERE run_key = ? AND status = 'deferred'",
-                            (reconciled_payload, deferred["run_key"]),
-                        )
-                represented = {}
-                for fact_row in unfinished_rows:
-                    stored_facts, _valid = _decode_attention_facts(
-                        fact_row["facts_json"],
-                    )
-                    for item in stored_facts:
-                        represented[
-                            (item["source"], item["stable_key"])
-                        ] = item["facts"]
-                for item in deferred_facts:
-                    represented[
-                        (item["source"], item["stable_key"])
-                    ] = item["facts"]
-                changed_facts = [
-                    item
-                    for item in facts
-                    if (
-                        (item.source, item.stable_key) not in represented
-                        or represented[(item.source, item.stable_key)] != item.facts
-                    )
-                ]
-                changed_fact_dicts = [
-                    {
-                        "source": item.source,
-                        "stable_key": item.stable_key,
-                        "observed_at": item.observed_at,
-                        "freshness": item.freshness,
-                        "status": item.status,
-                        "facts": item.facts,
-                    }
-                    for item in changed_facts
-                ]
                 if unfinished_rows:
-                    if changed_facts:
-                        existing = (
-                            {
-                                (item["source"], item["stable_key"]): item
-                                for item in deferred_facts
-                            }
-                            if deferred is not None
-                            else {}
+                    if deferred is not None:
+                        conn.execute(
+                            "UPDATE heartbeat_runs SET facts_json = ?, "
+                            "wake_reason = ? WHERE run_key = ? "
+                            "AND status = 'deferred'",
+                            (payload, row["wake_reason"], deferred["run_key"]),
                         )
-                        existing.update({
-                            (item["source"], item["stable_key"]): item
-                            for item in changed_fact_dicts
-                        })
-                        merged_payload = json.dumps(
-                            list(existing.values()),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
+                    else:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO heartbeat_runs "
+                            "(run_key, entry_kind, user_id, channel_id, transport, "
+                            "wake_reason, facts_json, status, created_at) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, 'deferred', ?)",
+                            (
+                                run_key, kind, user_id, channel_id, transport,
+                                row["wake_reason"], payload, now_iso,
+                            ),
                         )
-                        if deferred is not None:
-                            conn.execute(
-                                "UPDATE heartbeat_runs SET facts_json = ?, "
-                                "wake_reason = ? WHERE run_key = ? "
-                                "AND status = 'deferred'",
-                                (
-                                    merged_payload,
-                                    row["wake_reason"],
-                                    deferred["run_key"],
-                                ),
-                            )
-                        else:
-                            conn.execute(
-                                "INSERT OR IGNORE INTO heartbeat_runs "
-                                "(run_key, entry_kind, user_id, channel_id, transport, "
-                                "wake_reason, facts_json, status, created_at) "
-                                "VALUES (?, ?, ?, ?, ?, ?, ?, 'deferred', ?)",
-                                (
-                                    run_key, kind, user_id, channel_id, transport,
-                                    row["wake_reason"], merged_payload, now_iso,
-                                ),
-                            )
                 elif deferred is not None:
-                    merged_payload = json.dumps(
-                        deferred_facts,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    )
-                    if facts:
-                        existing = {
-                            (item["source"], item["stable_key"]): item
-                            for item in deferred_facts
-                        }
-                        existing.update({
-                            (item["source"], item["stable_key"]): item
-                            for item in json.loads(facts_json)
-                        })
-                        merged_payload = json.dumps(
-                            list(existing.values()),
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                        )
                     conn.execute(
                         "UPDATE heartbeat_runs SET status = 'pending', "
-                        "facts_json = ?, wake_reason = CASE WHEN ? THEN ? "
-                        "ELSE wake_reason END, next_attempt_at = NULL "
+                        "facts_json = ?, wake_reason = ?, next_attempt_at = NULL "
                         "WHERE run_key = ? AND status = 'deferred'",
                         (
-                            merged_payload,
-                            int(bool(facts)),
-                            row["wake_reason"],
+                            payload, row["wake_reason"],
                             deferred["run_key"],
                         ),
                     )
@@ -508,17 +467,21 @@ def materialize_due_runs(
                 )
                 if conn.execute("SELECT changes()").fetchone()[0]:
                     created.append(run_key)
-            if kind != "attention":
+            if kind == "attention":
+                conn.execute(
+                    "DELETE FROM heartbeat_schedules WHERE entry_kind = 'attention'"
+                )
+            else:
                 delay = rng.randint(
                     min(free_time_min_minutes, free_time_max_minutes),
                     max(free_time_min_minutes, free_time_max_minutes),
                 )
                 next_due = now + timedelta(minutes=delay)
-            conn.execute(
-                "UPDATE heartbeat_schedules SET next_due_at = ?, "
-                "wake_reason = 'periodic', updated_at = ? WHERE entry_kind = ?",
-                (_iso(next_due), now_iso, kind),
-            )
+                conn.execute(
+                    "UPDATE heartbeat_schedules SET next_due_at = ?, "
+                    "wake_reason = 'periodic', updated_at = ? WHERE entry_kind = ?",
+                    (_iso(next_due), now_iso, kind),
+                )
         conn.commit()
     finally:
         conn.close()
@@ -563,6 +526,25 @@ def get_schedulable_runs(*, now: datetime) -> list[dict]:
         conn.close()
 
 
+def _promote_deferred_attention(conn) -> None:
+    unfinished = conn.execute(
+        "SELECT 1 FROM heartbeat_runs WHERE entry_kind = 'attention' "
+        "AND status IN ('pending', 'running', 'ready') LIMIT 1"
+    ).fetchone()
+    if unfinished is not None:
+        return
+    deferred = conn.execute(
+        "SELECT run_key FROM heartbeat_runs WHERE entry_kind = 'attention' "
+        "AND status = 'deferred' ORDER BY created_at, run_key LIMIT 1"
+    ).fetchone()
+    if deferred is not None:
+        conn.execute(
+            "UPDATE heartbeat_runs SET status = 'pending', next_attempt_at = NULL "
+            "WHERE run_key = ? AND status = 'deferred'",
+            (deferred["run_key"],),
+        )
+
+
 def claim_run(
     run_key: str, *, now: datetime, lease_seconds: int = _LEASE_SECONDS,
 ) -> dict | None:
@@ -590,6 +572,26 @@ def claim_run(
         if status not in {"pending", "ready", "running"}:
             conn.rollback()
             return None
+        if (
+            item["entry_kind"] == "attention"
+            and item["wake_reason"] == "periodic"
+            and item.get("facts_json") == "[]"
+            and (status != "running" or lease is None or lease <= now)
+            and conn.execute(
+                "SELECT 1 FROM tool_executions WHERE turn_id = ? LIMIT 1",
+                (run_key,),
+            ).fetchone() is None
+        ):
+            conn.execute(
+                "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'retired', "
+                "handled_at = ?, claim_token = NULL, lease_until = NULL, "
+                "next_attempt_at = NULL, last_error = '', delivery_started_at = NULL "
+                "WHERE run_key = ? AND status IN ('pending', 'ready', 'running')",
+                (now_iso, run_key),
+            )
+            _promote_deferred_attention(conn)
+            conn.commit()
+            return None
         if retry_at and retry_at > now and not legacy_budget_queue:
             conn.rollback()
             return None
@@ -610,6 +612,7 @@ def claim_run(
                         run_key,
                     ),
                 )
+                _promote_deferred_attention(conn)
                 conn.commit()
                 return None
         claimed_status = "ready" if item.get("result_json") else "running"
@@ -680,6 +683,7 @@ def complete_without_delivery(
     now_iso = _iso(_utc_now())
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE heartbeat_runs SET status = 'delivered', result_json = ?, "
             "outcome = ?, handled_at = ?, claim_token = NULL, lease_until = NULL, "
@@ -690,6 +694,8 @@ def complete_without_delivery(
                 claimed["run_key"], claimed["claim_token"],
             ),
         )
+        if cursor.rowcount == 1 and claimed["entry_kind"] == "attention":
+            _promote_deferred_attention(conn)
         conn.commit()
         return cursor.rowcount == 1
     finally:
@@ -717,12 +723,12 @@ def recover_prior_tool_attempt(claimed: dict) -> DurableChatResult | None:
     )
 
 
-def delivery_wait_seconds(
+def delivery_wait(
     *,
     now: datetime,
     max_daily: int,
     cooldown_seconds: int,
-) -> int:
+) -> tuple[int, str | None]:
     from mochi.admin.admin_db import get_system_config
 
     local_now = now.astimezone(TZ)
@@ -742,15 +748,43 @@ def delivery_wait_seconds(
     finally:
         conn.close()
     if int(row["count"] or 0) >= max_daily:
-        return max(1, int((end - now.astimezone(UTC)).total_seconds()))
+        return (
+            max(1, int((end - now.astimezone(UTC)).total_seconds())),
+            "daily_limit",
+        )
     latest = _as_utc(row["latest"])
     if latest:
         remaining = cooldown_seconds - int(
             (now.astimezone(UTC) - latest).total_seconds()
         )
         if remaining > 0:
-            return remaining
-    return 0
+            return remaining, "cooldown"
+    return 0, None
+
+
+def defer_prepared_delivery(
+    claimed: dict,
+    *,
+    wait_seconds: int,
+    reason: str,
+) -> bool:
+    retry_at = _utc_now() + timedelta(seconds=max(1, wait_seconds))
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'ready', next_attempt_at = ?, "
+            "last_error = ?, claim_token = NULL, lease_until = NULL, "
+            "delivery_started_at = NULL WHERE run_key = ? AND status = 'ready' "
+            "AND claim_token = ?",
+            (
+                _iso(retry_at), reason[:1000],
+                claimed["run_key"], claimed["claim_token"],
+            ),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
 
 
 def begin_delivery(
@@ -873,6 +907,7 @@ def complete_delivery(claimed: dict) -> bool:
     now_iso = _iso(_utc_now())
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'delivered', "
             "handled_at = ?, claim_token = NULL, lease_until = NULL, "
@@ -880,6 +915,8 @@ def complete_delivery(claimed: dict) -> bool:
             "WHERE run_key = ? AND status = 'ready' AND claim_token = ?",
             (now_iso, claimed["run_key"], claimed["claim_token"]),
         )
+        if cursor.rowcount == 1 and claimed["entry_kind"] == "attention":
+            _promote_deferred_attention(conn)
         conn.commit()
         return cursor.rowcount == 1
     finally:

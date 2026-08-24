@@ -19,13 +19,15 @@ from mochi.db import (
     log_heartbeat,
 )
 from mochi.heartbeat_runtime import (
+    advance_attention,
     begin_delivery,
     checkpoint_text_delivery,
     checkpoint_visible_delivery,
     claim_run,
     complete_delivery,
     complete_without_delivery,
-    delivery_wait_seconds,
+    defer_prepared_delivery,
+    delivery_wait,
     ensure_schedules,
     entry_from_claim,
     get_schedulable_runs,
@@ -35,6 +37,7 @@ from mochi.heartbeat_runtime import (
     remove_delivered_component,
     store_delivery_progress,
     store_prepared_result,
+    sync_attention_facts,
 )
 from mochi.main_runtime import DurableChatResult
 
@@ -468,23 +471,33 @@ async def _deliver_autonomous(
         complete_without_delivery(claimed, durable, "active_chat")
         log_heartbeat(_state, "free_time_active_chat")
         return False
-    if claimed.get("last_error") == "delivery budget/cooldown":
-        complete_without_delivery(claimed, durable, "suppressed")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
-        return False
-    retrying_prepared_delivery = bool(
-        claimed.get("result_json") and claimed.get("last_error")
+    gate_now = datetime.now(TZ)
+    wait_seconds, wait_reason = delivery_wait(
+        now=gate_now,
+        max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
+        cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
     )
-    if not retrying_prepared_delivery:
-        wait_seconds = delivery_wait_seconds(
-            now=datetime.now(TZ),
-            max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-            cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
-        )
-        if (durable.text or durable.stickers) and wait_seconds:
+    if (durable.text or durable.stickers) and wait_seconds:
+        if claimed["entry_kind"] == "attention" and wait_reason == "cooldown":
+            defer_prepared_delivery(
+                claimed,
+                wait_seconds=wait_seconds,
+                reason="delivery cooldown",
+            )
+            log_heartbeat(_state, "attention_delivery_deferred")
+        else:
             complete_without_delivery(claimed, durable, "suppressed")
             log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
-            return False
+            if (
+                claimed["entry_kind"] == "attention"
+                and wait_reason == "daily_limit"
+                and not durable.successful_effects
+            ):
+                advance_attention(
+                    now=gate_now + timedelta(seconds=wait_seconds),
+                    wake_reason="daily_budget_reset",
+                )
+        return False
     if not begin_delivery(claimed):
         return False
     from mochi.ai_client import ChatResult
@@ -568,40 +581,57 @@ async def run_main_runtime_tick(
     now = now or datetime.now(TZ)
     from mochi.observers import collect_attention_facts
 
-    changed = await collect_attention_facts()
+    await collect_attention_facts()
     try:
-        from mochi.diary import refresh_diary_status
+        from mochi.diary import diary, refresh_diary_status
 
         refresh_diary_status(user_id)
+        diary_status = diary.read(section="今日状態").strip()
+        has_status = (
+            diary_status
+            and "(nothing tracked today)" not in diary_status
+        )
+        sync_attention_facts(
+            "diary_status",
+            (
+                [{
+                    "stable_key": "current",
+                    "facts": {"status": diary_status},
+                }]
+                if has_status
+                else []
+            ),
+            observed_at=now,
+            freshness_seconds=86400,
+        )
     except Exception as exc:
         log.warning("Diary status refresh failed: %s", exc)
     ensure_schedules(
         now=now,
-        attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
     )
-    if changed:
-        from mochi.heartbeat_runtime import advance_attention
-
-        advance_attention(now=now)
     free_time_not_before = _free_time_quiet_until(user_id, now)
     created = materialize_due_runs(
         user_id=user_id,
         channel_id=user_id,
         transport=_runtime_transport,
         now=now,
-        attention_interval_minutes=int(_effective("ATTENTION_INTERVAL_MINUTES")),
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
         free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
         free_time_not_before=free_time_not_before,
     )
-    for row in get_schedulable_runs(now=now):
-        if row["entry_kind"] == "free_time" and free_time_not_before is not None:
-            continue
-        claimed = claim_run(row["run_key"], now=now)
-        if claimed is not None:
-            await _run_claimed_entry(claimed)
+    for _ in range(12):
+        progressed = False
+        for row in get_schedulable_runs(now=now):
+            if row["entry_kind"] == "free_time" and free_time_not_before is not None:
+                continue
+            claimed = claim_run(row["run_key"], now=now)
+            if claimed is not None:
+                progressed = True
+                await _run_claimed_entry(claimed)
+        if not progressed:
+            break
     return created
 
 

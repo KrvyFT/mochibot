@@ -629,16 +629,23 @@ def _expand_history(history: list[dict]) -> list[dict]:
 
 def _render_completed_conversation_evidence(history: list[dict]) -> str:
     """Project completed chat as bounded evidence rather than active turns."""
-    expanded = [
-        {
+    expanded = []
+    for stored, message in zip(history, _expand_history(history), strict=True):
+        if (
+            message.get("role") not in {"user", "assistant"}
+            or not isinstance(message.get("content"), str)
+            or not message["content"]
+        ):
+            continue
+        expanded.append({
             "role": message["role"],
+            "kind": (
+                "completed_outreach"
+                if message["role"] == "assistant" and stored.get("processed")
+                else "completed_chat"
+            ),
             "content": message["content"],
-        }
-        for message in _expand_history(history)
-        if message.get("role") in {"user", "assistant"}
-        and isinstance(message.get("content"), str)
-        and message["content"]
-    ]
+        })
     budget = 6000
     truncated = False
     selected: list[dict] = []
@@ -669,7 +676,8 @@ def _render_completed_conversation_evidence(history: list[dict]) -> str:
     return (
         "## 最近已完成对话（只读证据）\n"
         "这些对话已经结束，只用于理解当时发生了什么；"
-        "它们不是当前待回复的消息。\n"
+        "它们不是当前待回复的消息。kind 为 completed_outreach 的内容"
+        "是 Mochi 已经主动发出的消息，不是仍待延续的话头。\n"
         "<completed_conversation_evidence>\n"
         f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
         "</completed_conversation_evidence>"
@@ -804,6 +812,7 @@ _ATTENTION_SOURCE_LABELS = {
     "activity_pattern": "对话活动",
     "recent_conversation": "最近对话",
     "time_context": "时间",
+    "diary_status": "今日状态",
 }
 
 _ATTENTION_FACT_LABELS = {
@@ -815,6 +824,7 @@ _ATTENTION_FACT_LABELS = {
     "feels_like_c": "体感温度",
     "condition": "天气状况",
     "description": "描述",
+    "status": "当前内容",
 }
 
 
@@ -874,7 +884,13 @@ def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     protocol = get_prompt("runtime_silence_protocol")
     if not protocol:
         raise RuntimeError("Runtime silence protocol prompt is missing")
-    return f"{situation}\n\n{protocol}"
+    return (
+        "<autonomous_runtime_event>\n"
+        f"kind: {runtime_entry.kind}\n"
+        "new_user_message: false\n\n"
+        f"{situation}\n\n{protocol}\n"
+        "</autonomous_runtime_event>"
+    )
 
 
 def _render_self_reminder_event(runtime_entry: MainRuntimeEntry) -> str:
@@ -1391,7 +1407,7 @@ async def chat(
     )
     conversation_evidence = (
         _render_completed_conversation_evidence(history)
-        if is_self_reminder
+        if is_self_reminder or is_autonomous
         else ""
     )
 
@@ -1473,11 +1489,13 @@ async def chat(
 
     # Build messages array
     messages = [{"role": "system", "content": system_prompt}]
-    if not is_self_reminder:
+    if not is_self_reminder and not is_autonomous:
         messages.extend(_expand_history(history))
     if is_autonomous:
         messages.append({
-            "role": "system",
+            # Provider APIs need one active turn. This typed system-owned event
+            # is not owner speech; completed interaction stays read-only above.
+            "role": "user",
             "content": _render_autonomous_situation(runtime_entry),
         })
     elif is_self_reminder:

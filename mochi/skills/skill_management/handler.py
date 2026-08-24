@@ -23,13 +23,6 @@ _AGENT_CONFIG_FIELDS = {
         50,
         "每天最多发送多少次主动消息。",
     ),
-    "attention_interval_minutes": (
-        "ATTENTION_INTERVAL_MINUTES",
-        "int",
-        15,
-        1440,
-        "即使没有新变化，也重新考虑未解决观察事实的间隔。",
-    ),
     "free_time_min_minutes": (
         "FREE_TIME_MIN_MINUTES",
         "int",

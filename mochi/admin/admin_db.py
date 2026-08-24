@@ -323,12 +323,12 @@ _ENV_ONLY_SYSTEM_KEYS = frozenset({
     "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
 })
+_DEPRECATED_SYSTEM_KEYS = frozenset({"ATTENTION_INTERVAL_MINUTES"})
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
     "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
     "MAX_DAILY_PROACTIVE":            ("int",   10),
-    "ATTENTION_INTERVAL_MINUTES":     ("int",   60),
     "FREE_TIME_MIN_MINUTES":          ("int",   90),
     "FREE_TIME_MAX_MINUTES":          ("int",   240),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
@@ -417,15 +417,16 @@ def seed_system_config_from_env() -> None:
     from mochi.admin.admin_env import read_env_file
 
     conn = _connect()
-    placeholders = ",".join("?" for _ in _ENV_ONLY_SYSTEM_KEYS)
+    cleared_keys = _ENV_ONLY_SYSTEM_KEYS | _DEPRECATED_SYSTEM_KEYS
+    placeholders = ",".join("?" for _ in cleared_keys)
     deleted = conn.execute(
         f"DELETE FROM skill_config WHERE skill_name = ? AND key IN ({placeholders})",
-        [_SYSTEM_SKILL_NAME] + list(_ENV_ONLY_SYSTEM_KEYS),
+        [_SYSTEM_SKILL_NAME] + list(cleared_keys),
     ).rowcount
     conn.commit()
     conn.close()
     if deleted:
-        log.info("Cleared %d env-only system overrides from DB", deleted)
+        log.info("Cleared %d retired system overrides from DB", deleted)
         invalidate_system_config_cache()
 
     existing = get_system_overrides()
