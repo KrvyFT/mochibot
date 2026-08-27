@@ -1,8 +1,4 @@
-"""Web search skill — DuckDuckGo via ddgs (no API key needed).
-
-Uses the `ddgs` package which handles TLS fingerprint impersonation
-to avoid bot-detection challenges from DuckDuckGo.
-"""
+"""Web search and bounded public web-page reading."""
 
 import asyncio
 import ipaddress
@@ -16,7 +12,6 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.request import getproxies
 
 import httpx
-from ddgs import DDGS
 
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
@@ -25,6 +20,9 @@ log = logging.getLogger(__name__)
 _MAX_QUERY_LEN = 500
 _DEFAULT_TIMEOUT_S = 20
 _DEFAULT_MAX_RESULTS = 5
+_SEARCH_TIMEOUT_S = 10
+_SEARCH_MAX_RESPONSE_BYTES = 1024 * 1024
+_BING_SEARCH_URL = "https://www.bing.com/search"
 _CACHE_TTL_S = 300
 _CACHE_SIZE = 256
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
@@ -84,37 +82,195 @@ _cache = _TtlCache(max_size=_CACHE_SIZE, ttl_s=_CACHE_TTL_S)
 
 
 # ---------------------------------------------------------------------------
-# Search via ddgs
+# Search via Bing HTML
 # ---------------------------------------------------------------------------
 
-def _ddg_search_sync(query: str, max_results: int = 5, timeout_s: int = 20) -> str:
-    """Synchronous DuckDuckGo search using ddgs. Meant to run in a thread."""
-    with DDGS(timeout=timeout_s) as ddgs:
-        results = ddgs.text(query, max_results=max_results)
+_ASCII_LETTER_RE = re.compile(r"[A-Za-z]")
+_CJK_RE = re.compile(
+    "["
+    "\u2e80-\u2eff"
+    "\u3040-\u30ff"
+    "\u3100-\u312f"
+    "\u31a0-\u31bf"
+    "\u31c0-\u31ef"
+    "\u3400-\u4dbf"
+    "\u4e00-\u9fff"
+    "\uac00-\ud7af"
+    "\uf900-\ufaff"
+    "\U00020000-\U0002fa1f"
+    "]"
+)
 
-    if not results:
+
+def _uses_english_search(query: str) -> bool:
+    return bool(_ASCII_LETTER_RE.search(query)) and not _CJK_RE.search(query)
+
+
+def _single_line(parts: list[str]) -> str:
+    return re.sub(r"\s+", " ", "".join(parts)).strip()
+
+
+class _BingSearchParser(HTMLParser):
+    """Extract organic results from Bing's li.b_algo result cards."""
+
+    def __init__(self, max_results: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.max_results = max_results
+        self.results: list[tuple[str, str, str]] = []
+        self._result_depth = 0
+        self._h2_depth = 0
+        self._in_title_link = False
+        self._in_snippet = False
+        self._snippet_finished = False
+        self._title_parts: list[str] = []
+        self._snippet_parts: list[str] = []
+        self._href = ""
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        attrs_by_name = dict(attrs)
+        if tag == "li":
+            classes = (attrs_by_name.get("class") or "").split()
+            if self._result_depth:
+                self._result_depth += 1
+            elif "b_algo" in classes and len(self.results) < self.max_results:
+                self._result_depth = 1
+            return
+        if not self._result_depth:
+            return
+        if tag == "h2":
+            self._h2_depth += 1
+        elif tag == "a" and self._h2_depth and not self._in_title_link:
+            self._in_title_link = True
+            self._href = attrs_by_name.get("href") or ""
+        elif tag == "p" and not self._snippet_finished:
+            self._in_snippet = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if not self._result_depth:
+            return
+        if tag == "a" and self._in_title_link:
+            self._in_title_link = False
+        elif tag == "h2" and self._h2_depth:
+            self._h2_depth -= 1
+        elif tag == "p" and self._in_snippet:
+            self._in_snippet = False
+            self._snippet_finished = True
+        elif tag == "li":
+            self._result_depth -= 1
+            if not self._result_depth:
+                self._finish_result()
+
+    def handle_data(self, data: str) -> None:
+        if self._in_title_link:
+            self._title_parts.append(data)
+        if self._in_snippet:
+            self._snippet_parts.append(data)
+
+    def _finish_result(self) -> None:
+        title = _single_line(self._title_parts)
+        href = self._href.strip()
+        snippet = _single_line(self._snippet_parts)[:200]
+        if title and href:
+            self.results.append((title, href, snippet))
+        self._h2_depth = 0
+        self._in_title_link = False
+        self._in_snippet = False
+        self._snippet_finished = False
+        self._title_parts = []
+        self._snippet_parts = []
+        self._href = ""
+
+
+def _extract_bing_results(
+    body: bytes,
+    encoding: str | None,
+    max_results: int,
+) -> str:
+    detected_encoding = _detect_page_encoding(body, encoding)
+    try:
+        html = body.decode(detected_encoding, errors="replace")
+    except LookupError:
+        html = body.decode("utf-8", errors="replace")
+
+    parser = _BingSearchParser(max_results)
+    parser.feed(html)
+    parser.close()
+    if not parser.results:
         return "[0 results]"
-
-    parts: list[str] = []
-    for i, r in enumerate(results, 1):
-        title = r.get("title", "")
-        url = r.get("href", "")
-        snippet = (r.get("body") or "")[:200]
-        parts.append(f"{i}. {title}\n   {url}\n   {snippet}")
-
-    return "\n\n".join(parts)
+    return "\n\n".join(
+        f"{index}. {title}\n   {href}\n   {snippet}"
+        for index, (title, href, snippet) in enumerate(parser.results, 1)
+    )
 
 
-async def _ddg_search(query: str, max_results: int = 5, timeout_s: int = 20) -> str:
-    """Async wrapper — runs ddgs in a thread to avoid blocking the event loop."""
+async def _bing_search(query: str, max_results: int = 5) -> str:
     cache_key = f"{query}|{max_results}"
     cached = _cache.get(cache_key)
     if cached is not None:
         return cached
 
-    output = await asyncio.to_thread(_ddg_search_sync, query, max_results, timeout_s)
+    try:
+        async with asyncio.timeout(_SEARCH_TIMEOUT_S):
+            output = await _bing_search_within_deadline(query, max_results)
+    except TimeoutError as exc:
+        raise ValueError(
+            f"Search timed out after {_SEARCH_TIMEOUT_S} seconds."
+        ) from exc
     _cache.put(cache_key, output)
     return output
+
+
+async def _bing_search_within_deadline(query: str, max_results: int) -> str:
+    english = _uses_english_search(query)
+    headers = {
+        "Accept-Language": "en-US,en;q=0.9" if english else "zh-CN,zh;q=0.9",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/128.0.0.0 Safari/537.36"
+        ),
+    }
+    params = {"q": query, "count": str(max_results)}
+    if english:
+        params["ensearch"] = "1"
+
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(_SEARCH_TIMEOUT_S),
+        headers=headers,
+    ) as client:
+        async with client.stream(
+            "GET",
+            _BING_SEARCH_URL,
+            params=params,
+        ) as response:
+            response.raise_for_status()
+            declared_size = response.headers.get("content-length")
+            if declared_size:
+                try:
+                    too_large = int(declared_size) > _SEARCH_MAX_RESPONSE_BYTES
+                except ValueError:
+                    too_large = False
+                if too_large:
+                    raise ValueError("Search response is larger than the 1 MB limit.")
+
+            chunks: list[bytes] = []
+            size = 0
+            async for chunk in response.aiter_bytes():
+                size += len(chunk)
+                if size > _SEARCH_MAX_RESPONSE_BYTES:
+                    raise ValueError("Search response is larger than the 1 MB limit.")
+                chunks.append(chunk)
+
+            return await asyncio.to_thread(
+                _extract_bing_results,
+                b"".join(chunks),
+                response.charset_encoding,
+                max_results,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -443,7 +599,7 @@ class WebSearchSkill(Skill):
         max_results = max(1, min(10, int(max_results)))
 
         try:
-            result = await _ddg_search(query, max_results=max_results, timeout_s=_DEFAULT_TIMEOUT_S)
+            result = await _bing_search(query, max_results=max_results)
             return SkillResult(output=result)
         except Exception as e:
             log.error("Web search failed: %s", e)
