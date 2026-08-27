@@ -52,5 +52,6 @@ def test_search_language_follows_query_content():
         5,
     )
     assert chinese_headers["Accept-Language"] == "zh-CN,zh;q=0.9"
+    assert "Chrome/" in chinese_headers["User-Agent"]
     assert "ensearch" not in chinese_params
     assert not chinese_cookies
