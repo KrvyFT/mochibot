@@ -582,8 +582,8 @@ def _clean_model_reply(content: str | None) -> str:
 
 
 def _contains_tool_protocol_markup(reply: str) -> bool:
-    return bool(re.match(
-        r"^\s*(?:```[^\n]*\n\s*)?<[^>\n]*(?:"
+    return bool(re.search(
+        r"(?m)^\s*(?:```[^\n]*\n\s*)?<[^>\n]*(?:"
         r"DSML[^>\n]*(?:tool_calls|invoke)|tool_calls\b|invoke\s+name="
         r")[^>]*>",
         reply,
@@ -1983,7 +1983,7 @@ async def chat(
                 tool_names_used.append(tc["name"])
 
             # Extract [STICKER:file_id] markers from tool result
-            if outcome["status"] == "success":
+            if outcome["status"] == "success" and tc["name"] == "send_sticker":
                 for m in STICKER_RE.finditer(result.output):
                     pending_stickers.append(m.group(1).strip())
 

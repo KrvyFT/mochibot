@@ -81,9 +81,5 @@ async def test_free_time_card_is_read_only_context_with_its_skill_available(
     assert "Earlier outreach" in messages[0]["content"]
     assert "<current_life_fact>" in messages[1]["content"]
     assert "每天背单词" in messages[1]["content"]
-    tool_names = {
-        tool["function"]["name"]
-        for tool in mock.call_log[0]["tools"]
-    }
-    assert {"query_habit", "checkin_habit", "edit_habit"} <= tool_names
+    assert mock.call_log[0]["tools"] is None
     assert result.text == "背单词了吗？"
