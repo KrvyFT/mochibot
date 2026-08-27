@@ -156,6 +156,7 @@ def build_catalog(
     user_id: int = 0,
     *,
     include_resident: bool = False,
+    excluded_skills: frozenset[str] = frozenset(),
 ) -> RequestCatalog:
     """Build the requestable catalog from the live registry and policy."""
     disabled = skill_registry._get_disabled_skills()
@@ -167,6 +168,9 @@ def build_catalog(
     denied_tools: set[str] = set()
 
     for name, skill in skill_registry.all_skills().items():
+        if name in excluded_skills:
+            unavailable[name] = "not_available_this_turn"
+            continue
         definitions = _normalized_definitions(
             skill_registry.filter_tools_for_context(
                 skill.get_tools(),
@@ -243,6 +247,7 @@ def resolve_request(
     transport: str = "",
     user_id: int = 0,
     include_resident: bool = False,
+    excluded_skills: frozenset[str] = frozenset(),
 ) -> tuple[dict, list[dict]]:
     """Resolve one request_tools call and return its result plus new definitions."""
     validation_error = _validate_arguments(arguments)
@@ -255,6 +260,7 @@ def resolve_request(
         transport,
         user_id,
         include_resident=include_resident,
+        excluded_skills=excluded_skills,
     )
     requested = args.get("skills", [])
     query = args.get("query", "").strip()

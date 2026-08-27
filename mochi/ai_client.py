@@ -581,6 +581,16 @@ def _clean_model_reply(content: str | None) -> str:
     return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
 
 
+def _contains_tool_protocol_markup(reply: str) -> bool:
+    return bool(re.match(
+        r"^\s*(?:```[^\n]*\n\s*)?<[^>\n]*(?:"
+        r"DSML[^>\n]*(?:tool_calls|invoke)|tool_calls\b|invoke\s+name="
+        r")[^>]*>",
+        reply,
+        re.IGNORECASE,
+    ))
+
+
 def _parse_runtime_reply(reply: str) -> tuple[str, bool]:
     """Consume the reserved silence marker without leaking it to the user."""
     marker = "[SKIP]"
@@ -1702,6 +1712,9 @@ async def chat(
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = _clean_model_reply(response.content)
+            if is_autonomous and _contains_tool_protocol_markup(reply):
+                log.warning("Free Time final text contained tool protocol markup")
+                return ChatResult(disposition="invalid")
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
@@ -1748,6 +1761,15 @@ async def chat(
                         transport=transport,
                         user_id=user_id,
                         include_resident=is_autonomous,
+                        excluded_skills=(
+                            frozenset({"web_search"})
+                            if (
+                                is_autonomous
+                                and runtime_entry
+                                and not runtime_entry.free_time_search_available
+                            )
+                            else frozenset()
+                        ),
                     )
                 pending_definitions.extend(additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)
@@ -1990,6 +2012,9 @@ async def chat(
 
     # If we exhausted tool rounds, return whatever we have
     reply = _clean_model_reply(response.content)
+    if is_autonomous and _contains_tool_protocol_markup(reply):
+        log.warning("Free Time exhausted with tool protocol markup")
+        return ChatResult(disposition="invalid")
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous
     ):
