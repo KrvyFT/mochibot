@@ -763,7 +763,7 @@ if HAS_FASTAPI:
 
     _PREFERENCE_RANGES = {
         "TIMEZONE_OFFSET_HOURS": (-12.0, 14.0),
-        "MAX_DAILY_FREE_TIME_OPPORTUNITIES": (0, 50),
+        "MAX_DAILY_PROACTIVE": (0, 50),
     }
 
     @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
@@ -801,7 +801,7 @@ if HAS_FASTAPI:
             if isinstance(raw_value, bool):
                 raise HTTPException(400, f"{key} must be a number")
             try:
-                if key == "MAX_DAILY_FREE_TIME_OPPORTUNITIES":
+                if key == "MAX_DAILY_PROACTIVE":
                     value = int(raw_value)
                     if isinstance(raw_value, float) and not raw_value.is_integer():
                         raise ValueError

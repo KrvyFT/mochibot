@@ -76,6 +76,7 @@ def _select_location(city: str, results: list[dict]) -> dict:
 class WeatherObserver(Observer):
     """Fetches current weather from Open-Meteo every 60 minutes."""
 
+    retired_attention_keys = ("current_conditions",)
     _VIEW_FIELDS = (
         "temperature_c",
         "feels_like_c",

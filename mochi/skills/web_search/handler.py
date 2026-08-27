@@ -512,7 +512,7 @@ async def _read_web_page_within_deadline(url: str) -> str:
                     "Host": host_header,
                     "Connection": "close",
                 }
-                extensions = {"sni_hostname": sni_hostname}
+                extensions = {"sni_hostname": sni_hostname.encode("idna")}
             async with client.stream(
                 "GET",
                 request_url,

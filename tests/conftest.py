@@ -46,7 +46,8 @@ def mock_config(monkeypatch):
     import mochi.db as db_module
     monkeypatch.setattr(db_module, "TZ", UTC)
     monkeypatch.setattr(cfg, "MAINTENANCE_HOUR", 3)
-    monkeypatch.setattr(cfg, "MAX_DAILY_FREE_TIME_OPPORTUNITIES", 10)
+    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_ENABLED", True)
+    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_MINUTE", 15)
     monkeypatch.setattr(cfg, "TOOL_ROUTER_ENABLED", False)
     monkeypatch.setattr(cfg, "TOOL_ESCALATION_ENABLED", False)
     monkeypatch.setattr(cfg, "TOOL_LOOP_MAX_ROUNDS", 5)

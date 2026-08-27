@@ -795,12 +795,3 @@ class Skill(ABC):
             List of markdown lines, or None to opt out.
         """
         return None
-
-    def free_time_cards(
-        self,
-        user_id: int,
-        today: str,
-        now: "datetime",
-    ) -> list["FreeTimeCard"]:
-        """Return current bounded facts that Free Time may optionally notice."""
-        return []

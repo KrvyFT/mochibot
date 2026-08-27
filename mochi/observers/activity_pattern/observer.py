@@ -11,6 +11,7 @@ from mochi.observers.base import DETAIL_ITEM_LIMIT, Observer
 class ActivityPatternObserver(Observer):
     """Reports conversation activity over the last 7 days. No external API."""
 
+    retire_all_attention_facts = True
     _SUMMARY_FIELDS = (
         "today_messages",
         "yesterday_messages",
@@ -35,7 +36,7 @@ class ActivityPatternObserver(Observer):
         )
 
     def has_delta(self, prev: dict, curr: dict) -> bool:
-        """Conversation volume alone does not create a Free Time card."""
+        """Conversation volume alone does not decide Attention salience."""
         return False
 
     async def observe(self) -> dict:

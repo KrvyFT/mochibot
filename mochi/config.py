@@ -113,13 +113,22 @@ def _persist_owner(user_id: int) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Free Time
+# Heartbeat
 # ═══════════════════════════════════════════════════════════════════════════
 
-MAX_DAILY_FREE_TIME_OPPORTUNITIES = _env_int(
-    "MAX_DAILY_FREE_TIME_OPPORTUNITIES",
-    10,
-)
+HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
+MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
+PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
+FREE_TIME_MIN_MINUTES = _env_int("FREE_TIME_MIN_MINUTES", 90)
+FREE_TIME_MAX_MINUTES = _env_int("FREE_TIME_MAX_MINUTES", 240)
+LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
+
+# Sleep/Wake State Machine
+WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # bedtime availability + silence checks
+SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
+SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
+FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Conversation Summary (continuous complete-turn digest)
@@ -147,7 +156,17 @@ TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 # Maintenance
 # ═══════════════════════════════════════════════════════════════════════════
 
-MAINTENANCE_HOUR = 3
+MAINTENANCE_HOUR = _env_int("MAINTENANCE_HOUR", 3)
+MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
+WEEKLY_MAINTENANCE_ENABLED = _env_bool("WEEKLY_MAINTENANCE_ENABLED", True)
+WEEKLY_MAINTENANCE_MINUTE = _env_int("WEEKLY_MAINTENANCE_MINUTE", 15)
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Bedtime Main entry
+# ═══════════════════════════════════════════════════════════════════════════
+
+BEDTIME_ENTRY_ENABLED = _env_bool("BEDTIME_ENTRY_ENABLED", True)
+BEDTIME_ENTRY_TIMEOUT_S = _env_int("BEDTIME_ENTRY_TIMEOUT_S", 60)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Diary
@@ -172,6 +191,9 @@ WEB_SEARCH_TIMEOUT_S = _env_int("WEB_SEARCH_TIMEOUT_S", 20)
 # ═══════════════════════════════════════════════════════════════════════════
 
 DB_PATH = _PROJECT_ROOT / "data" / "mochi.db"
+
+HEARTBEAT_LOG_TRIM_DAYS = _env_int("HEARTBEAT_LOG_TRIM_DAYS", 7)
+HEARTBEAT_LOG_DELETE_DAYS = _env_int("HEARTBEAT_LOG_DELETE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Timezone (default UTC, override for your locale in .env or admin portal)
@@ -218,7 +240,14 @@ TZ = _TZProxy()
 
 
 def _effective_maintenance_hour() -> int:
-    return MAINTENANCE_HOUR
+    try:
+        from mochi.admin.admin_db import get_system_config
+        v = get_system_config("MAINTENANCE_HOUR")
+        if v is None:
+            return MAINTENANCE_HOUR
+        return int(v)
+    except Exception:
+        return MAINTENANCE_HOUR
 
 
 def logical_today(now: datetime | None = None) -> str:

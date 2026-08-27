@@ -9,7 +9,6 @@ from mochi.skills.todo.queries import (
     delete_todo,
     find_todos_by_exact_match,
     get_todos,
-    get_visible_todos,
     reopen_todo,
     update_todo,
 )
@@ -262,7 +261,7 @@ class TodoSkill(Skill):
     def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
         from mochi.skills.todo.queries import get_visible_todos
 
-        todos = get_visible_todos(today, user_id)
+        todos = get_visible_todos(today)
         if not todos:
             return None
 
@@ -272,27 +271,3 @@ class TodoSkill(Skill):
             tag = " ⚠️逾期" if overdue else ""
             lines.append(f"- [ ] {t['task']} [todo_id={t['id']}]{tag}")
         return lines if lines else None
-
-    def free_time_cards(
-        self,
-        user_id: int,
-        today: str,
-        now: datetime,
-    ) -> list["FreeTimeCard"]:
-        from mochi.free_time import FreeTimeCard
-
-        cards = []
-        for todo in get_visible_todos(today, user_id):
-            due = todo.get("nudge_date")
-            cards.append(FreeTimeCard(
-                source="todo",
-                stable_key=f"todo:{todo['id']}",
-                capability_skill="todo",
-                facts={
-                    "todo_id": todo["id"],
-                    "task": todo["task"],
-                    "due": due or "unscheduled",
-                    "overdue": bool(due and due < today),
-                },
-            ))
-        return cards

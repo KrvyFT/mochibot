@@ -1410,7 +1410,7 @@ async function loadSettings() {
     const ownerBound = s.config_status.owner_user_id?.set || false;
     const preferencesConfigured = (
       prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
-      && prefs.MAX_DAILY_FREE_TIME_OPPORTUNITIES?.source === 'user'
+      && prefs.MAX_DAILY_PROACTIVE?.source === 'user'
     );
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
@@ -1534,7 +1534,7 @@ async function loadSettings() {
     const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
     const browserTimezone = -(new Date().getTimezoneOffset() / 60);
     const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
-    const proactive = prefs.MAX_DAILY_FREE_TIME_OPPORTUNITIES || {value: 10, default: 10};
+    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
     const proactiveEnabled = Number(proactive.value) > 0;
     const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
     html += `<div class="card"><div class="settings-section-head">
@@ -1550,10 +1550,10 @@ async function loadSettings() {
       </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
-        <div style="min-width:220px;flex:1;font-size:14px">Free Time</div>
+        <div style="min-width:220px;flex:1;font-size:14px">主动联系</div>
         <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
         <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
-        <span style="font-size:12px;color:var(--text-soft)">次机会</span>
+        <span style="font-size:12px;color:var(--text-soft)">次</span>
       </div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
@@ -1600,7 +1600,7 @@ async function savePreferences() {
   try {
     await api('PUT', '/preferences', {
       TIMEZONE_OFFSET_HOURS: timezone,
-      MAX_DAILY_FREE_TIME_OPPORTUNITIES: enabled ? limit : 0,
+      MAX_DAILY_PROACTIVE: enabled ? limit : 0,
     });
     showToast('✅ 偏好已保存');
     loaded.settings = false;

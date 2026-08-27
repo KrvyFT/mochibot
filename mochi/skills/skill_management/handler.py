@@ -9,12 +9,54 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 log = logging.getLogger(__name__)
 
 _AGENT_CONFIG_FIELDS = {
-    "max_daily_free_time_opportunities": (
-        "MAX_DAILY_FREE_TIME_OPPORTUNITIES",
+    "heartbeat_interval_minutes": (
+        "HEARTBEAT_INTERVAL_MINUTES",
+        "int",
+        5,
+        240,
+        "框架检查生活变化与调度任务的间隔；越短反应越及时，但不代表每次都会发消息。",
+    ),
+    "max_daily_proactive": (
+        "MAX_DAILY_PROACTIVE",
         "int",
         0,
         50,
-        "每天最多给 Free Time 多少次醒来、行动或联系你的机会；0 表示关闭。",
+        "每天最多发送多少次主动消息。",
+    ),
+    "free_time_min_minutes": (
+        "FREE_TIME_MIN_MINUTES",
+        "int",
+        30,
+        1440,
+        "两次 Free Time 之间随机等待的最短时间。",
+    ),
+    "free_time_max_minutes": (
+        "FREE_TIME_MAX_MINUTES",
+        "int",
+        30,
+        2880,
+        "两次 Free Time 之间随机等待的最长时间。",
+    ),
+    "wake_earliest_hour": (
+        "WAKE_EARLIEST_HOUR",
+        "int",
+        0,
+        23,
+        "每天最早进入清醒时段的本地小时。",
+    ),
+    "sleep_after_hour": (
+        "SLEEP_AFTER_HOUR",
+        "int",
+        1,
+        24,
+        "每天从哪个本地小时起进入休息时段；24 表示午夜。",
+    ),
+    "timezone_offset_hours": (
+        "TIMEZONE_OFFSET_HOURS",
+        "float",
+        -12,
+        14,
+        "当前所在地相对 UTC 的小时偏移，可使用 5.5 这类半小时时区。",
     ),
 }
 

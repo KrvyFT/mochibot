@@ -581,16 +581,6 @@ def _clean_model_reply(content: str | None) -> str:
     return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
 
 
-def _contains_tool_protocol_markup(reply: str) -> bool:
-    return bool(re.search(
-        r"(?m)^\s*(?:```[^\n]*\n\s*)?<[^>\n]*(?:"
-        r"DSML[^>\n]*(?:tool_calls|invoke)|tool_calls\b|invoke\s+name="
-        r")[^>]*>",
-        reply,
-        re.IGNORECASE,
-    ))
-
-
 def _parse_runtime_reply(reply: str) -> tuple[str, bool]:
     """Consume the reserved silence marker without leaking it to the user."""
     marker = "[SKIP]"
@@ -691,36 +681,6 @@ def _render_completed_conversation_evidence(history: list[dict]) -> str:
         "<completed_conversation_evidence>\n"
         f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
         "</completed_conversation_evidence>"
-    )
-
-
-def _render_recent_free_time_actions(user_id: int) -> str:
-    from mochi.db import get_recent_tool_executions
-
-    executions = [
-        item
-        for item in get_recent_tool_executions(
-            user_id,
-            hours=24,
-            limit=20,
-            state_changes_only=True,
-        )
-        if item.get("source") == "runtime:free_time"
-    ][:4]
-    if not executions:
-        return ""
-    receipts = [
-        {
-            "tool": item["tool_name"],
-            "summary": item["result_summary"],
-            "at": item["started_at"],
-        }
-        for item in reversed(executions)
-    ]
-    return (
-        "## 最近 Free Time 已完成的动作（只读回执）\n"
-        "这些动作已经发生，不需要重复执行：\n"
-        + json.dumps(receipts, ensure_ascii=False, separators=(",", ":"))
     )
 
 
@@ -845,33 +805,90 @@ def _tool_loop_exhaustion_message(
     return "处理过程出了点问题，你再说一次试试？"
 
 
-def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
-    if runtime_entry.kind != "free_time":
-        raise ValueError("runtime situation is only available for Free Time")
-    situation = get_prompt("free_time_entry")
-    if not situation:
-        raise RuntimeError("Free Time entry prompt is missing")
-    card = runtime_entry.free_time_card
-    card_context = (
-        "\n\n这段时间里，也有一件当前事实在眼前：\n"
-        "<current_life_fact>\n"
-        + json.dumps(
-            {
-                "source": card.source,
-                "facts": card.facts,
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
+_ATTENTION_SOURCE_LABELS = {
+    "reminder": "提醒",
+    "todo": "待办",
+    "weather": "天气",
+    "activity_pattern": "对话活动",
+    "recent_conversation": "最近对话",
+    "time_context": "时间",
+    "diary_status": "今日状态",
+}
+
+_ATTENTION_FACT_LABELS = {
+    "message": "内容",
+    "remind_at": "时间",
+    "active_count": "未完成数量",
+    "pending_count": "待处理数量",
+    "temperature_c": "温度",
+    "feels_like_c": "体感温度",
+    "condition": "天气状况",
+    "description": "描述",
+    "status": "当前内容",
+}
+
+
+def _format_attention_value(value) -> str:
+    if isinstance(value, dict):
+        return "，".join(
+            f"{_ATTENTION_FACT_LABELS.get(str(key), str(key).replace('_', ' '))} "
+            f"{_format_attention_value(item)}"
+            for key, item in value.items()
         )
-        + "\n</current_life_fact>"
-        if card is not None
-        else ""
+    if isinstance(value, list):
+        return "、".join(_format_attention_value(item) for item in value)
+    if isinstance(value, bool):
+        return "是" if value else "否"
+    return str(value)
+
+
+def _format_attention_fact(fact) -> str:
+    source = _ATTENTION_SOURCE_LABELS.get(
+        fact.source, fact.source.replace("_", " "),
     )
+    freshness = "新近观察" if fact.freshness == "fresh" else "较早观察"
+    try:
+        observed = datetime.fromisoformat(fact.observed_at)
+        from mochi.config import TZ
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=TZ)
+        else:
+            observed = observed.astimezone(TZ)
+        observed_label = observed.strftime("%m-%d %H:%M")
+    except (TypeError, ValueError):
+        observed_label = ""
+    details = _format_attention_value(fact.facts)
+    context = f"{freshness} {observed_label}".strip()
+    return f"- {source}（{context}）：{details}"
+
+
+def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
+    if runtime_entry.kind == "free_time":
+        situation = get_prompt("free_time_entry")
+    elif runtime_entry.kind == "attention":
+        situation = get_prompt("attention_entry")
+        fact_lines = [
+            _format_attention_fact(fact)
+            for fact in runtime_entry.attention_facts
+        ]
+        situation = situation.replace(
+            "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
+        ).replace(
+            "{{attention_facts}}",
+            "\n".join(fact_lines) if fact_lines else "- 当前没有观察事实",
+        )
+    else:
+        raise ValueError("runtime situation is only available for autonomous entries")
+    if not situation:
+        raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
+    protocol = get_prompt("runtime_silence_protocol")
+    if not protocol:
+        raise RuntimeError("Runtime silence protocol prompt is missing")
     return (
         "<autonomous_runtime_event>\n"
-        "kind: free_time\n"
+        f"kind: {runtime_entry.kind}\n"
         "new_user_message: false\n\n"
-        f"{situation}{card_context}\n"
+        f"{situation}\n\n{protocol}\n"
         "</autonomous_runtime_event>"
     )
 
@@ -918,7 +935,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind == "free_time"
+        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
     )
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
@@ -945,7 +962,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly and not is_autonomous:
+    if not is_weekly:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -1105,7 +1122,7 @@ async def chat(
     if (
         message is not None
         and runtime_entry is not None
-        and runtime_entry.kind in {"self_reminder", "free_time"}
+        and runtime_entry.kind in {"self_reminder", "free_time", "attention"}
     ):
         raise ValueError(f"{runtime_entry.kind} runtime entries are system-only")
 
@@ -1130,7 +1147,7 @@ async def chat(
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind == "free_time"
+        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
     )
     prompt_policy = context_policy(runtime_entry)
     turn_id = (
@@ -1255,11 +1272,8 @@ async def chat(
     escalation_available = (
         is_bedtime
         or is_self_reminder
-        or (
-            not is_weekly
-            and not is_autonomous
-            and turn_plan.request_tools_enabled
-        )
+        or is_autonomous
+        or (not is_weekly and turn_plan.request_tools_enabled)
     )
     _health_warning = ""
 
@@ -1281,14 +1295,8 @@ async def chat(
         habits = []
 
     elif is_autonomous:
-        tools = (
-            skill_registry.get_tools_by_names(
-                ["web_search"],
-                transport=transport,
-                loads={"routed"},
-            )
-            if runtime_entry and runtime_entry.free_time_search_available
-            else []
+        tools = skill_registry.get_tools_by_load(
+            "resident", transport=transport,
         )
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
@@ -1407,14 +1415,6 @@ async def chat(
         if is_self_reminder or is_autonomous
         else ""
     )
-    if is_autonomous:
-        action_receipts = await asyncio.to_thread(
-            _render_recent_free_time_actions,
-            user_id,
-        )
-        conversation_evidence = "\n\n".join(
-            part for part in (conversation_evidence, action_receipts) if part
-        )
 
     if (
         escalation_available
@@ -1447,7 +1447,7 @@ async def chat(
     active_tool_names = list(availability.names)
     capability_context = skill_registry.get_capability_context_for_tools(
         active_tool_names,
-        include_requestable_tools=escalation_available and not is_autonomous,
+        include_requestable_tools=escalation_available,
         transport=transport,
     )
 
@@ -1516,11 +1516,7 @@ async def chat(
         tier = "main"
 
     # ── LLM call with tool loop ──
-    max_tool_rounds = (
-        min(3, TOOL_LOOP_MAX_ROUNDS)
-        if is_autonomous
-        else TOOL_LOOP_MAX_ROUNDS
-    )
+    max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
     client = get_client_for_tier(tier)
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
@@ -1645,11 +1641,7 @@ async def chat(
         )
 
     for round_num in range(max_tool_rounds):
-        round_availability = (
-            ToolAvailability()
-            if is_autonomous and round_num == max_tool_rounds - 1
-            else availability
-        )
+        round_availability = availability
         for _attempt in range(2):
             try:
                 response = await asyncio.to_thread(
@@ -1684,30 +1676,6 @@ async def chat(
                 return ChatResult(text=f"API 报错：{e}")
 
         _log_main_usage(response)
-        if (
-            is_autonomous
-            and round_num == max_tool_rounds - 1
-            and response.tool_calls
-        ):
-            log.warning(
-                "Free Time requested tools during its final synthesis round"
-            )
-            try:
-                response = await asyncio.to_thread(
-                    client.chat,
-                    messages=messages,
-                    tools=None,
-                    max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
-                )
-            except Exception as exc:
-                log.error("Free Time final synthesis failed: %s", exc)
-                return ChatResult(disposition="invalid")
-            _log_main_usage(response)
-            if response.tool_calls:
-                log.warning(
-                    "Free Time repeated tool calls without an available tool schema"
-                )
-                return ChatResult(disposition="invalid")
         if recalled_memories and not recall_exposure_recorded:
             _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True
@@ -1715,9 +1683,6 @@ async def chat(
         # No tool calls — we have the final response
         if not response.tool_calls:
             reply = _clean_model_reply(response.content)
-            if is_autonomous and _contains_tool_protocol_markup(reply):
-                log.warning("Free Time final text contained tool protocol markup")
-                return ChatResult(disposition="invalid")
             return _final_result(reply)
 
         # Add assistant message with tool_calls to context
@@ -1763,16 +1728,6 @@ async def chat(
                         round_availability,
                         transport=transport,
                         user_id=user_id,
-                        include_resident=is_autonomous,
-                        excluded_skills=(
-                            frozenset({"web_search"})
-                            if (
-                                is_autonomous
-                                and runtime_entry
-                                and not runtime_entry.free_time_search_available
-                            )
-                            else frozenset()
-                        ),
                     )
                 pending_definitions.extend(additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)
@@ -1983,7 +1938,7 @@ async def chat(
                 tool_names_used.append(tc["name"])
 
             # Extract [STICKER:file_id] markers from tool result
-            if outcome["status"] == "success" and tc["name"] == "send_sticker":
+            if outcome["status"] == "success":
                 for m in STICKER_RE.finditer(result.output):
                     pending_stickers.append(m.group(1).strip())
 
@@ -2015,9 +1970,6 @@ async def chat(
 
     # If we exhausted tool rounds, return whatever we have
     reply = _clean_model_reply(response.content)
-    if is_autonomous and _contains_tool_protocol_markup(reply):
-        log.warning("Free Time exhausted with tool protocol markup")
-        return ChatResult(disposition="invalid")
     if not reply and not (
         is_bedtime or is_self_reminder or is_weekly or is_autonomous
     ):

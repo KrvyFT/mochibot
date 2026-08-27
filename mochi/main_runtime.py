@@ -7,8 +7,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Literal
 
-from mochi.free_time import FreeTimeCard
-
 
 BedtimeTrigger = Literal["explicit", "silence", "resleep"]
 BEDTIME_ROUTED_SKILLS = ("todo", "reminder")
@@ -17,7 +15,28 @@ RuntimeEntryKind = Literal[
     "self_reminder",
     "weekly_maintenance",
     "free_time",
+    "attention",
 ]
+
+
+@dataclass(frozen=True)
+class AttentionFact:
+    """A bounded, provenance-safe observer fact offered to Main."""
+
+    source: str
+    stable_key: str
+    observed_at: str
+    freshness: Literal["fresh", "stale"]
+    status: Literal["unresolved"]
+    facts: dict
+
+    def __post_init__(self) -> None:
+        if not self.source.strip() or not self.stable_key.strip():
+            raise ValueError("attention fact source and stable key are required")
+        datetime.fromisoformat(self.observed_at)
+        encoded = json.dumps(self.facts, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded) > 2000:
+            raise ValueError("attention fact payload exceeds 2000 characters")
 
 
 @dataclass(frozen=True)
@@ -47,13 +66,23 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             diary_journal=False,
             conversation_summary=False,
             recent_history=True,
-            recent_turns=2,
+            recent_turns=6,
             recent_outreach_only=True,
             trailing_history=False,
             auto_recall=False,
             recent_operations=False,
             prompt_sections=False,
             temporal_context=True,
+        )
+    if entry.kind == "attention":
+        return ContextPolicy(
+            early_runtime_situation=True,
+            diary_status=True,
+            conversation_summary=True,
+            recent_history=True,
+            auto_recall=False,
+            recent_operations=False,
+            prompt_sections=False,
         )
     if entry.kind == "weekly_maintenance":
         return ContextPolicy(
@@ -87,8 +116,7 @@ class MainRuntimeEntry:
     lease_until: str | None = None
     run_key: str | None = None
     wake_reason: str | None = None
-    free_time_card: FreeTimeCard | None = None
-    free_time_search_available: bool = False
+    attention_facts: tuple[AttentionFact, ...] = ()
 
     @classmethod
     def bedtime(
@@ -202,10 +230,9 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
-        card: FreeTimeCard | None = None,
-        search_available: bool = False,
     ) -> "MainRuntimeEntry":
         return cls._autonomous(
+            kind="free_time",
             run_key=run_key,
             wake_reason=wake_reason,
             user_id=user_id,
@@ -213,14 +240,38 @@ class MainRuntimeEntry:
             transport=transport,
             claim_token=claim_token,
             lease_until=lease_until,
-            card=card,
-            search_available=search_available,
+        )
+
+    @classmethod
+    def attention(
+        cls,
+        *,
+        run_key: str,
+        wake_reason: str,
+        facts: tuple[AttentionFact, ...],
+        user_id: int,
+        channel_id: int,
+        transport: str,
+        claim_token: str,
+        lease_until: str,
+    ) -> "MainRuntimeEntry":
+        return cls._autonomous(
+            kind="attention",
+            run_key=run_key,
+            wake_reason=wake_reason,
+            user_id=user_id,
+            channel_id=channel_id,
+            transport=transport,
+            claim_token=claim_token,
+            lease_until=lease_until,
+            attention_facts=facts,
         )
 
     @classmethod
     def _autonomous(
         cls,
         *,
+        kind: Literal["free_time", "attention"],
         run_key: str,
         wake_reason: str,
         user_id: int,
@@ -228,8 +279,7 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
-        card: FreeTimeCard | None = None,
-        search_available: bool = False,
+        attention_facts: tuple[AttentionFact, ...] = (),
     ) -> "MainRuntimeEntry":
         for label, value in (
             ("run key", run_key),
@@ -238,10 +288,10 @@ class MainRuntimeEntry:
             ("lease", lease_until),
         ):
             if not isinstance(value, str) or not value.strip():
-                raise ValueError(f"free_time {label} must not be empty")
+                raise ValueError(f"{kind} {label} must not be empty")
         datetime.fromisoformat(lease_until)
         return cls(
-            kind="free_time",
+            kind=kind,
             user_id=user_id,
             channel_id=channel_id,
             transport=transport,
@@ -250,8 +300,7 @@ class MainRuntimeEntry:
             wake_reason=wake_reason.strip(),
             claim_token=claim_token.strip(),
             lease_until=lease_until.strip(),
-            free_time_card=card,
-            free_time_search_available=bool(search_available),
+            attention_facts=attention_facts,
         )
 
 

@@ -151,13 +151,7 @@ def error_result(code: str, message: str) -> dict:
     }
 
 
-def build_catalog(
-    transport: str = "",
-    user_id: int = 0,
-    *,
-    include_resident: bool = False,
-    excluded_skills: frozenset[str] = frozenset(),
-) -> RequestCatalog:
+def build_catalog(transport: str = "", user_id: int = 0) -> RequestCatalog:
     """Build the requestable catalog from the live registry and policy."""
     disabled = skill_registry._get_disabled_skills()
     eligible: dict[str, RequestableNamespace] = {}
@@ -168,9 +162,6 @@ def build_catalog(
     denied_tools: set[str] = set()
 
     for name, skill in skill_registry.all_skills().items():
-        if name in excluded_skills:
-            unavailable[name] = "not_available_this_turn"
-            continue
         definitions = _normalized_definitions(
             skill_registry.filter_tools_for_context(
                 skill.get_tools(),
@@ -219,7 +210,7 @@ def build_catalog(
         requestable_definitions = tuple(
             definition
             for definition in visible_definitions
-            if include_resident or _tool_load(definition) != "resident"
+            if _tool_load(definition) != "resident"
         )
         if not requestable_definitions:
             continue
@@ -246,8 +237,6 @@ def resolve_request(
     *,
     transport: str = "",
     user_id: int = 0,
-    include_resident: bool = False,
-    excluded_skills: frozenset[str] = frozenset(),
 ) -> tuple[dict, list[dict]]:
     """Resolve one request_tools call and return its result plus new definitions."""
     validation_error = _validate_arguments(arguments)
@@ -256,12 +245,7 @@ def resolve_request(
 
     args = arguments
     assert isinstance(args, dict)
-    catalog = build_catalog(
-        transport,
-        user_id,
-        include_resident=include_resident,
-        excluded_skills=excluded_skills,
-    )
+    catalog = build_catalog(transport, user_id)
     requested = args.get("skills", [])
     query = args.get("query", "").strip()
 
@@ -297,7 +281,6 @@ def resolve_request(
         elif (
             exact in catalog.tool_loads
             and catalog.tool_loads[exact] == "resident"
-            and not include_resident
         ):
             if exact not in seen_resident_tools:
                 already_loaded.append({
