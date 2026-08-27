@@ -47,7 +47,7 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             diary_journal=False,
             conversation_summary=False,
             recent_history=True,
-            recent_turns=6,
+            recent_turns=2,
             recent_outreach_only=True,
             trailing_history=False,
             auto_recall=False,

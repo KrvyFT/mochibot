@@ -684,6 +684,36 @@ def _render_completed_conversation_evidence(history: list[dict]) -> str:
     )
 
 
+def _render_recent_free_time_actions(user_id: int) -> str:
+    from mochi.db import get_recent_tool_executions
+
+    executions = [
+        item
+        for item in get_recent_tool_executions(
+            user_id,
+            hours=24,
+            limit=20,
+            state_changes_only=True,
+        )
+        if item.get("source") == "runtime:free_time"
+    ][:4]
+    if not executions:
+        return ""
+    receipts = [
+        {
+            "tool": item["tool_name"],
+            "summary": item["result_summary"],
+            "at": item["started_at"],
+        }
+        for item in reversed(executions)
+    ]
+    return (
+        "## 最近 Free Time 已完成的动作（只读回执）\n"
+        "这些动作已经发生，不需要重复执行：\n"
+        + json.dumps(receipts, ensure_ascii=False, separators=(",", ":"))
+    )
+
+
 def _schedule_continuous_memory(user_id: int) -> None:
     """Wake both non-blocking Layer 2 coordinators after one eligible turn."""
     from mochi.conversation_summary import schedule_conversation_summary
@@ -1241,19 +1271,6 @@ async def chat(
         tools = skill_registry.get_tools_by_load(
             "resident", transport=transport,
         )
-        card_skill = runtime_entry.free_time_card.capability_skill if (
-            runtime_entry and runtime_entry.free_time_card
-        ) else ""
-        if card_skill:
-            tools.extend(skill_registry.get_tools_by_names(
-                [card_skill],
-                transport=transport,
-                loads={"routed", "on_demand"},
-            ))
-            tools = list({
-                tool["function"]["name"]: tool
-                for tool in tools
-            }.values())
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
@@ -1371,6 +1388,14 @@ async def chat(
         if is_self_reminder or is_autonomous
         else ""
     )
+    if is_autonomous:
+        action_receipts = await asyncio.to_thread(
+            _render_recent_free_time_actions,
+            user_id,
+        )
+        conversation_evidence = "\n\n".join(
+            part for part in (conversation_evidence, action_receipts) if part
+        )
 
     if (
         escalation_available
@@ -1472,7 +1497,11 @@ async def chat(
         tier = "main"
 
     # ── LLM call with tool loop ──
-    max_tool_rounds = TOOL_LOOP_MAX_ROUNDS
+    max_tool_rounds = (
+        min(3, TOOL_LOOP_MAX_ROUNDS)
+        if is_autonomous
+        else TOOL_LOOP_MAX_ROUNDS
+    )
     client = get_client_for_tier(tier)
     tool_names_used: list[str] = []  # track for tool_history persistence
     tool_audit: list[dict] = []
