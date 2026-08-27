@@ -113,7 +113,15 @@ def _bing_request_options(
     english = _uses_english_search(query)
     headers = {
         "Accept-Language": "en-US,en;q=0.9" if english else "zh-CN,zh;q=0.9",
-        "User-Agent": "Mozilla/5.0",
+        "User-Agent": (
+            "Mozilla/5.0"
+            if english
+            else (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/128.0.0.0 Safari/537.36"
+            )
+        ),
     }
     params = {"q": query, "count": str(max_results)}
     cookies: dict[str, str] = {}
