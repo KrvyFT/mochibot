@@ -9,7 +9,10 @@ from datetime import datetime, time, timedelta, timezone
 
 from mochi.config import TZ
 from mochi.db import _connect, get_tool_executions_for_turn
-from mochi.free_time import card_from_run_payload
+from mochi.free_time import (
+    card_from_run_payload,
+    search_available_from_run_payload,
+)
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
@@ -284,6 +287,9 @@ def entry_from_claim(claimed: dict) -> MainRuntimeEntry:
         claim_token=claimed["claim_token"],
         lease_until=claimed["lease_until"],
         card=card_from_run_payload(claimed.get("facts_json")),
+        search_available=search_available_from_run_payload(
+            claimed.get("facts_json")
+        ),
     )
 
 

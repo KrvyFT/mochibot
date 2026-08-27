@@ -14,6 +14,7 @@ from mochi.db import _connect
 
 _MAX_CARDS = 24
 _CARD_CHANCE = 0.5
+_SEARCH_CHANCE = 0.2
 
 
 @dataclass(frozen=True)
@@ -144,6 +145,7 @@ def choose_card_for_run(
         payload = {
             "card_selected": True,
             "card": selected.to_payload() if selected else None,
+            "search_available": rng.random() < _SEARCH_CHANCE,
         }
         conn.execute(
             "UPDATE heartbeat_runs SET facts_json = ? "
@@ -164,6 +166,18 @@ def choose_card_for_run(
 
 def card_from_run_payload(value: str | None) -> FreeTimeCard | None:
     return _decode_selection(value)
+
+
+def search_available_from_run_payload(value: str | None) -> bool:
+    try:
+        payload = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return False
+    return (
+        isinstance(payload, dict)
+        and payload.get("card_selected") is True
+        and payload.get("search_available") is True
+    )
 
 
 def _selection_decided(value: str | None) -> bool:

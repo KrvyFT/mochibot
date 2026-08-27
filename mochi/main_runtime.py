@@ -88,6 +88,7 @@ class MainRuntimeEntry:
     run_key: str | None = None
     wake_reason: str | None = None
     free_time_card: FreeTimeCard | None = None
+    free_time_search_available: bool = False
 
     @classmethod
     def bedtime(
@@ -202,6 +203,7 @@ class MainRuntimeEntry:
         claim_token: str,
         lease_until: str,
         card: FreeTimeCard | None = None,
+        search_available: bool = False,
     ) -> "MainRuntimeEntry":
         return cls._autonomous(
             run_key=run_key,
@@ -212,6 +214,7 @@ class MainRuntimeEntry:
             claim_token=claim_token,
             lease_until=lease_until,
             card=card,
+            search_available=search_available,
         )
 
     @classmethod
@@ -226,6 +229,7 @@ class MainRuntimeEntry:
         claim_token: str,
         lease_until: str,
         card: FreeTimeCard | None = None,
+        search_available: bool = False,
     ) -> "MainRuntimeEntry":
         for label, value in (
             ("run key", run_key),
@@ -247,6 +251,7 @@ class MainRuntimeEntry:
             claim_token=claim_token.strip(),
             lease_until=lease_until.strip(),
             free_time_card=card,
+            free_time_search_available=bool(search_available),
         )
 
 
