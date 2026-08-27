@@ -1268,7 +1268,11 @@ async def chat(
         habits = []
 
     elif is_autonomous:
-        tools = []
+        tools = skill_registry.get_tools_by_names(
+            ["web_search"],
+            transport=transport,
+            loads={"routed"},
+        )
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
