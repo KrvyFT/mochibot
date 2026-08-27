@@ -1268,9 +1268,7 @@ async def chat(
         habits = []
 
     elif is_autonomous:
-        tools = skill_registry.get_tools_by_load(
-            "resident", transport=transport,
-        )
+        tools = []
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
@@ -1713,6 +1711,7 @@ async def chat(
                         round_availability,
                         transport=transport,
                         user_id=user_id,
+                        include_resident=is_autonomous,
                     )
                 pending_definitions.extend(additions)
                 result_text = json.dumps(request_result, ensure_ascii=False)

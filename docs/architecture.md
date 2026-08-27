@@ -237,8 +237,9 @@ opportunities end without retry or catch-up.
 Each activated opportunity receives Core, current time, last-contact age, and a
 bounded read-only window of prior Free Time outreach. It does not inherit
 ordinary conversation, summary, Diary, status panels, auto-recall, recent
-operations, Observer facts, or sticky routed skills. Main starts with resident
-tools and may use `look_around` or request other tools by its own judgment.
+operations, Observer facts, or preloaded feature tools. Main may request
+perception, Diary, or other abilities by its own judgment; the initial tool
+surface does not suggest a workflow.
 
 Feature skills and Observers may expose small factual Free Time cards. Habit
 contributes currently applicable incomplete habits; Todo contributes due,
