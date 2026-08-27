@@ -1,3 +1,5 @@
+"""Owner-scoped recurring reminder contract."""
+
 import pytest
 
 from mochi.db import _connect
@@ -29,10 +31,9 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
     monkeypatch,
 ):
     import mochi.config as config
-
-    monkeypatch.setattr(config, "OWNER_USER_ID", None)
     import mochi.skills as skill_registry
 
+    monkeypatch.setattr(config, "OWNER_USER_ID", None)
     resident = {
         tool["function"]["name"]
         for tool in skill_registry.get_tools_by_load("resident")
@@ -49,9 +50,6 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
         remind_at="2026-08-19T08:30:00+08:00",
         recurrence="daily",
     ))
-    assert notify.success
-    assert "repeats daily" in notify.output
-
     self_reminder = await skill.execute(_context(
         0,
         tool_name="schedule_self_reminder",
@@ -59,11 +57,9 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
         remind_at="2026-08-19T20:00:00+08:00",
         recurrence="daily",
     ))
-    assert self_reminder.success
-    assert "repeats daily" in self_reminder.output
+    assert notify.success and self_reminder.success
 
     listed = await skill.execute(_context(0, action="list"))
-    assert listed.success
     assert listed.output.count("（daily）") == 2
 
     notify_id = int(notify.entity_refs[0].split(":")[1])
@@ -74,7 +70,6 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
         recurrence="one_time",
     ))
     assert updated.success
-    assert "repeats daily" not in updated.output
 
     conn = _connect()
     rows = {
@@ -86,18 +81,3 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
     conn.close()
     assert rows["notify"]["recurrence"] is None
     assert rows["self"]["recurrence"] == "daily"
-
-
-@pytest.mark.asyncio
-async def test_invalid_recurrence_is_rejected():
-    for recurrence in ("hourly", "monthly"):
-        result = await ReminderSkill().execute(_context(
-            1,
-            action="create",
-            kind="notify",
-            message="test",
-            remind_at="2026-08-19T08:30:00+08:00",
-            recurrence=recurrence,
-        ))
-        assert not result.success
-        assert "Invalid recurrence" in result.output

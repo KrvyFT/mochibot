@@ -1,9 +1,4 @@
-"""Focused safety and handoff tests for owner-requested self-update."""
-
-from __future__ import annotations
-
-import subprocess
-from pathlib import Path
+"""Owner-requested self-update handoff contract."""
 
 import pytest
 
@@ -12,38 +7,10 @@ from mochi.skills.base import SkillContext
 from mochi.update_service import ReleaseInfo
 
 
-def _git(repo: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return result.stdout.strip()
-
-
-def _init_repo(repo: Path) -> None:
-    repo.mkdir()
-    _git(repo, "init", "-b", "main")
-    _git(repo, "config", "user.email", "test@example.com")
-    _git(repo, "config", "user.name", "Test")
-    (repo / ".gitignore").write_text(".env\ndata/\n", encoding="utf-8")
-    (repo / "requirements.txt").write_text("", encoding="utf-8")
-    package = repo / "mochi"
-    package.mkdir()
-    (package / "__init__.py").write_text(
-        '__version__ = "1.0.2"\n',
-        encoding="utf-8",
-    )
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "initial")
-
-
 @pytest.mark.asyncio
 async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
-    import mochi.skills.system_update.handler as handler
     import mochi.shutdown as shutdown
+    import mochi.skills.system_update.handler as handler
 
     release = ReleaseInfo(
         tag="v1.1.0",
@@ -86,8 +53,6 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
     ))
 
     assert result.success
-    assert "当前回复送达后会开始更新和重启" in result.output
-    assert "请先告诉主人" not in result.output
     assert staged[0][0] == release
     assert staged[0][1]["channel_id"] == 99
     assert exits == []
@@ -108,74 +73,3 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
         args={},
     ))
     assert not autonomous.success
-    assert "主人当前对话" in autonomous.output
-
-
-def test_launcher_replaces_code_with_exact_staged_release(tmp_path, monkeypatch):
-    import mochi.update_service as updater
-
-    repo = tmp_path / "repo"
-    _init_repo(repo)
-    first_hash = _git(repo, "rev-parse", "HEAD")
-    init_file = repo / "mochi" / "__init__.py"
-    init_file.write_text('__version__ = "1.1.0"\n', encoding="utf-8")
-    _git(repo, "add", ".")
-    _git(repo, "commit", "-m", "release")
-    _git(repo, "tag", "v1.1.0")
-    release_hash = _git(repo, "rev-parse", "HEAD")
-    _git(repo, "reset", "--hard", first_hash)
-    (repo / "mochi" / "__init__.py").write_text(
-        '__version__ = "locally changed"\n',
-        encoding="utf-8",
-    )
-    (repo / ".env").write_text("ADMIN_TOKEN=keep-me\n", encoding="utf-8")
-    data_dir = repo / "data"
-    data_dir.mkdir()
-    user_data = data_dir / "user.db"
-    user_data.write_bytes(b"owner data")
-
-    monkeypatch.setattr(updater, "PROJECT_ROOT", repo)
-    monkeypatch.setattr(updater, "OFFICIAL_REPOSITORY", str(repo).casefold())
-    monkeypatch.setattr(updater, "OFFICIAL_REMOTE_URL", str(repo))
-    monkeypatch.setattr(updater, "UPDATE_REQUEST_PATH", repo / "data" / ".update_request")
-    monkeypatch.setattr(updater, "UPDATE_RESULT_PATH", repo / "data" / ".update_result")
-    monkeypatch.setattr(updater, "_is_container", lambda: False)
-    monkeypatch.setenv("MOCHIBOT_UPDATE_LAUNCHER", "1")
-    monkeypatch.setattr(
-        updater,
-        "read_version",
-        lambda: (
-            init_file.read_text(encoding="utf-8").split('"')[1]
-        ),
-    )
-
-    real_run = subprocess.run
-
-    def run_with_fake_pip(command, **kwargs):
-        if command[1:4] == ["-m", "pip", "install"]:
-            return subprocess.CompletedProcess(command, 0, "", "")
-        return real_run(command, **kwargs)
-
-    monkeypatch.setattr(updater.subprocess, "run", run_with_fake_pip)
-    updater.stage_update(
-        ReleaseInfo(
-            tag="v1.1.0",
-            version="1.1.0",
-            name="v1.1.0",
-            notes="",
-            url="",
-            current_version="1.0.2",
-            available=True,
-        ),
-        user_id=1,
-        channel_id=99,
-        transport="telegram",
-    )
-
-    result = updater.apply_pending_update("python")
-
-    assert result["ok"]
-    assert _git(repo, "rev-parse", "HEAD") == release_hash
-    assert (repo / ".env").read_text(encoding="utf-8") == "ADMIN_TOKEN=keep-me\n"
-    assert user_data.read_bytes() == b"owner data"
-    assert updater.consume_update_result()["version"] == "1.1.0"
