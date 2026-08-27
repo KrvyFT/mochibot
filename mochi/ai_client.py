@@ -1632,7 +1632,11 @@ async def chat(
         )
 
     for round_num in range(max_tool_rounds):
-        round_availability = availability
+        round_availability = (
+            ToolAvailability()
+            if is_autonomous and round_num == max_tool_rounds - 1
+            else availability
+        )
         for _attempt in range(2):
             try:
                 response = await asyncio.to_thread(
@@ -1667,6 +1671,30 @@ async def chat(
                 return ChatResult(text=f"API 报错：{e}")
 
         _log_main_usage(response)
+        if (
+            is_autonomous
+            and round_num == max_tool_rounds - 1
+            and response.tool_calls
+        ):
+            log.warning(
+                "Free Time requested tools during its final synthesis round"
+            )
+            try:
+                response = await asyncio.to_thread(
+                    client.chat,
+                    messages=messages,
+                    tools=None,
+                    max_tokens=AI_CHAT_MAX_COMPLETION_TOKENS,
+                )
+            except Exception as exc:
+                log.error("Free Time final synthesis failed: %s", exc)
+                return ChatResult(disposition="invalid")
+            _log_main_usage(response)
+            if response.tool_calls:
+                log.warning(
+                    "Free Time repeated tool calls without an available tool schema"
+                )
+                return ChatResult(disposition="invalid")
         if recalled_memories and not recall_exposure_recorded:
             _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True

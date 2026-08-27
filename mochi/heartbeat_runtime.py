@@ -20,6 +20,7 @@ UTC = timezone.utc
 FREE_TIME_AWAKE_START = time(6, 0)
 FREE_TIME_AWAKE_END = time(21, 0)
 FREE_TIME_ACTIVATION_CHANCE = 0.5
+FREE_TIME_SEARCH_SHARE = 0.2
 FREE_TIME_MISSED_GRACE = timedelta(minutes=10)
 _LEASE_SECONDS = 300
 
@@ -48,6 +49,15 @@ def _as_utc(value: str | None) -> datetime | None:
 
 def _day_prefix(local_date: str) -> str:
     return f"free_time:{local_date}:%"
+
+
+def select_search_run_keys(
+    run_keys: list[str],
+    rng: random.Random | random.SystemRandom,
+) -> set[str]:
+    """Randomly allocate about one fifth of today's actual opportunities."""
+    count = min(len(run_keys), int(len(run_keys) * FREE_TIME_SEARCH_SHARE + 0.5))
+    return set(rng.sample(run_keys, count)) if count else set()
 
 
 def ensure_daily_free_time_plan(
@@ -97,6 +107,7 @@ def ensure_daily_free_time_plan(
             )
             if max_daily and local_now < end:
                 slot_seconds = (end - start).total_seconds() / max_daily
+                planned: list[tuple[str, datetime]] = []
                 for ordinal in range(max_daily):
                     if rng.random() >= FREE_TIME_ACTIVATION_CHANCE:
                         continue
@@ -112,17 +123,31 @@ def ensure_daily_free_time_plan(
                         f"free_time:{local_date}:{ordinal}:"
                         f"{due_utc.isoformat()}"
                     )
+                    planned.append((run_key, due_utc))
+                search_run_keys = select_search_run_keys(
+                    [run_key for run_key, _due in planned],
+                    rng,
+                )
+                for run_key, due_utc in planned:
                     conn.execute(
                         "INSERT OR IGNORE INTO heartbeat_runs "
                         "(run_key, entry_kind, user_id, channel_id, transport, "
                         "wake_reason, facts_json, status, next_attempt_at, created_at) "
-                        "VALUES (?, 'free_time', ?, ?, ?, 'random_slot', '{}', "
+                        "VALUES (?, 'free_time', ?, ?, ?, 'random_slot', ?, "
                         "'pending', ?, ?)",
                         (
                             run_key,
                             user_id,
                             channel_id,
                             transport,
+                            json.dumps(
+                                {
+                                    "search_available": (
+                                        run_key in search_run_keys
+                                    ),
+                                },
+                                separators=(",", ":"),
+                            ),
                             _iso(due_utc),
                             now_iso,
                         ),
