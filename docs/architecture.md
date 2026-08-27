@@ -237,9 +237,10 @@ opportunities end without retry or catch-up.
 Each activated opportunity receives Core, current time, last-contact age, and a
 bounded read-only window of prior Free Time outreach. It does not inherit
 ordinary conversation, summary, Diary, status panels, auto-recall, recent
-operations, Observer facts, or preloaded feature tools. Main may request
-perception, Diary, or other abilities by its own judgment; the initial tool
-surface does not suggest a workflow.
+operations, Observer facts, or a generic tool-discovery surface. Pure Free Time
+has no tools. A search opportunity exposes only search and page reading; a
+concerned opportunity exposes one fact card without tools, so the three forms
+remain distinct rather than collapsing back into a dashboard workflow.
 
 Feature skills and Observers may expose small factual Free Time cards. Habit
 contributes currently applicable incomplete habits; Todo contributes due,

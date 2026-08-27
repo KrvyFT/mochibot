@@ -1255,8 +1255,11 @@ async def chat(
     escalation_available = (
         is_bedtime
         or is_self_reminder
-        or is_autonomous
-        or (not is_weekly and turn_plan.request_tools_enabled)
+        or (
+            not is_weekly
+            and not is_autonomous
+            and turn_plan.request_tools_enabled
+        )
     )
     _health_warning = ""
 

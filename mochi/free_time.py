@@ -141,11 +141,13 @@ def choose_card_for_run(
                 offered.add(offered_card.revision)
 
         eligible = [card for card in candidates if card.revision not in offered]
-        selected = (
-            rng.choice(eligible)
-            if eligible and rng.random() < _CARD_CHANCE
-            else None
-        )
+        selected = None
+        if (
+            not search_available
+            and eligible
+            and rng.random() < _CARD_CHANCE
+        ):
+            selected = rng.choice(eligible)
         payload = {
             "card_selected": True,
             "card": selected.to_payload() if selected else None,
