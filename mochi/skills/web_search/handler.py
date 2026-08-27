@@ -106,6 +106,23 @@ def _uses_english_search(query: str) -> bool:
     return bool(_ASCII_LETTER_RE.search(query)) and not _CJK_RE.search(query)
 
 
+def _bing_request_options(
+    query: str,
+    max_results: int,
+) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
+    english = _uses_english_search(query)
+    headers = {
+        "Accept-Language": "en-US,en;q=0.9" if english else "zh-CN,zh;q=0.9",
+        "User-Agent": "Mozilla/5.0",
+    }
+    params = {"q": query, "count": str(max_results)}
+    cookies: dict[str, str] = {}
+    if english:
+        params["ensearch"] = "1"
+        cookies["SRCHHPGUSR"] = "SRCHLANG=EN"
+    return headers, params, cookies
+
+
 def _single_line(parts: list[str]) -> str:
     return re.sub(r"\s+", " ", "".join(parts)).strip()
 
@@ -225,22 +242,13 @@ async def _bing_search(query: str, max_results: int = 5) -> str:
 
 
 async def _bing_search_within_deadline(query: str, max_results: int) -> str:
-    english = _uses_english_search(query)
-    headers = {
-        "Accept-Language": "en-US,en;q=0.9" if english else "zh-CN,zh;q=0.9",
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/128.0.0.0 Safari/537.36"
-        ),
-    }
-    params = {"q": query, "count": str(max_results)}
-    if english:
-        params["ensearch"] = "1"
+    headers, params, cookies = _bing_request_options(query, max_results)
 
     async with httpx.AsyncClient(
         timeout=httpx.Timeout(_SEARCH_TIMEOUT_S),
         headers=headers,
+        cookies=cookies,
+        follow_redirects=True,
     ) as client:
         async with client.stream(
             "GET",
