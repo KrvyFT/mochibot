@@ -1,4 +1,5 @@
 from mochi.skills.web_search.handler import (
+    _bing_request_options,
     _extract_bing_results,
     _uses_english_search,
 )
@@ -37,3 +38,19 @@ def test_search_language_follows_query_content():
     assert not _uses_english_search("Python 𠀀")
     assert not _uses_english_search("Python カタカナ")
     assert not _uses_english_search("Python 한국어")
+
+    english_headers, english_params, english_cookies = _bing_request_options(
+        "word of the day Merriam-Webster",
+        5,
+    )
+    assert english_headers["Accept-Language"] == "en-US,en;q=0.9"
+    assert english_params["ensearch"] == "1"
+    assert english_cookies == {"SRCHHPGUSR": "SRCHLANG=EN"}
+
+    chinese_headers, chinese_params, chinese_cookies = _bing_request_options(
+        "2026年8月27日 今日新闻",
+        5,
+    )
+    assert chinese_headers["Accept-Language"] == "zh-CN,zh;q=0.9"
+    assert "ensearch" not in chinese_params
+    assert not chinese_cookies
