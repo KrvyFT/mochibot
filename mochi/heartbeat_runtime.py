@@ -1,57 +1,24 @@
-"""Durable scheduling, observer facts, and delivery state for Main heartbeat entries."""
+"""Durable one-shot scheduling and delivery state for Free Time."""
 
 from __future__ import annotations
 
 import json
 import random
 import uuid
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
-from mochi.config import TZ, logical_today
+from mochi.config import TZ
 from mochi.db import _connect, get_tool_executions_for_turn
-from mochi.main_runtime import AttentionFact, DurableChatResult, MainRuntimeEntry
+from mochi.free_time import card_from_run_payload
+from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
 UTC = timezone.utc
+FREE_TIME_AWAKE_START = time(6, 0)
+FREE_TIME_AWAKE_END = time(21, 0)
+FREE_TIME_ACTIVATION_CHANCE = 0.5
+FREE_TIME_MISSED_GRACE = timedelta(minutes=10)
 _LEASE_SECONDS = 300
-_MAX_ATTENTION_FACTS = 12
-
-
-def _schedule_attention(
-    conn,
-    *,
-    due_at: str,
-    wake_reason: str,
-    updated_at: str,
-) -> None:
-    conn.execute(
-        "INSERT INTO heartbeat_schedules "
-        "(entry_kind, next_due_at, wake_reason, updated_at) "
-        "VALUES ('attention', ?, ?, ?) "
-        "ON CONFLICT(entry_kind) DO UPDATE SET "
-        "next_due_at = CASE "
-        "WHEN heartbeat_schedules.next_due_at > excluded.next_due_at "
-        "THEN excluded.next_due_at ELSE heartbeat_schedules.next_due_at END, "
-        "wake_reason = excluded.wake_reason, updated_at = excluded.updated_at",
-        (due_at, wake_reason, updated_at),
-    )
-
-
-def _retire_legacy_periodic_attention(conn, *, now_iso: str) -> int:
-    cursor = conn.execute(
-        "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'retired', "
-        "handled_at = ?, claim_token = NULL, lease_until = NULL, "
-        "next_attempt_at = NULL, last_error = '', delivery_started_at = NULL "
-        "WHERE entry_kind = 'attention' AND wake_reason = 'periodic' "
-        "AND facts_json = '[]' AND status IN ('pending', 'ready') "
-        "AND NOT EXISTS (SELECT 1 FROM tool_executions "
-        "WHERE tool_executions.turn_id = heartbeat_runs.run_key)",
-        (now_iso,),
-    )
-    if cursor.rowcount:
-        _promote_deferred_attention(conn)
-    return cursor.rowcount
 
 
 def _utc_now() -> datetime:
@@ -76,559 +43,229 @@ def _as_utc(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def _decode_attention_facts(value: str | None) -> tuple[list[dict], bool]:
-    try:
-        payload = json.loads(value or "[]")
-    except (TypeError, json.JSONDecodeError):
-        return [], False
-    if not isinstance(payload, list):
-        return [], False
-    decoded = []
-    for item in payload:
-        if not isinstance(item, dict):
-            return [], False
-        if (
-            not isinstance(item.get("source"), str)
-            or not item["source"].strip()
-            or not isinstance(item.get("stable_key"), str)
-            or not item["stable_key"].strip()
-            or not isinstance(item.get("observed_at"), str)
-            or item.get("freshness") not in {"fresh", "stale"}
-            or item.get("status") != "unresolved"
-            or not isinstance(item.get("facts"), dict)
-        ):
-            return [], False
-        try:
-            AttentionFact(**item)
-        except (AttributeError, TypeError, ValueError):
-            return [], False
-        decoded.append(item)
-    return decoded, True
+def _day_prefix(local_date: str) -> str:
+    return f"free_time:{local_date}:%"
 
 
-def sync_attention_facts(
-    source: str,
-    facts: list[dict],
-    *,
-    observed_at: datetime,
-    freshness_seconds: int,
-) -> bool:
-    """Replace one source's unresolved fact set after a truthful fresh observation."""
-    observed_iso = _iso(observed_at)
-    fresh_until = _iso(observed_at + timedelta(seconds=max(60, freshness_seconds)))
-    normalized: dict[str, str] = {}
-    for fact in facts[:_MAX_ATTENTION_FACTS]:
-        stable_key = str(fact.get("stable_key") or "").strip()
-        payload = fact.get("facts")
-        if not stable_key or not isinstance(payload, dict):
-            continue
-        encoded = json.dumps(
-            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True,
-        )
-        if len(encoded) > 2000:
-            continue
-        normalized[stable_key] = encoded
-
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        prior_rows = conn.execute(
-            "SELECT stable_key, facts_json FROM attention_facts "
-            "WHERE source = ? AND status = 'unresolved'",
-            (source,),
-        ).fetchall()
-        prior = {row["stable_key"]: row["facts_json"] for row in prior_rows}
-        changed = prior != normalized
-        if normalized:
-            placeholders = ",".join("?" for _ in normalized)
-            conn.execute(
-                "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
-                f"WHERE source = ? AND status = 'unresolved' "
-                f"AND stable_key NOT IN ({placeholders})",
-                (observed_iso, source, *normalized),
-            )
-        else:
-            conn.execute(
-                "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
-                "WHERE source = ? AND status = 'unresolved'",
-                (observed_iso, source),
-            )
-        for stable_key, encoded in normalized.items():
-            conn.execute(
-                "INSERT INTO attention_facts "
-                "(source, stable_key, observed_at, fresh_until, status, facts_json, updated_at) "
-                "VALUES (?, ?, ?, ?, 'unresolved', ?, ?) "
-                "ON CONFLICT(source, stable_key) DO UPDATE SET "
-                "observed_at = excluded.observed_at, fresh_until = excluded.fresh_until, "
-                "status = 'unresolved', facts_json = excluded.facts_json, "
-                "updated_at = excluded.updated_at",
-                (
-                    source, stable_key, observed_iso, fresh_until,
-                    encoded, observed_iso,
-                ),
-            )
-        if changed:
-            _schedule_attention(
-                conn,
-                due_at=observed_iso,
-                wake_reason="observer_change",
-                updated_at=observed_iso,
-            )
-        conn.commit()
-        return changed
-    finally:
-        conn.close()
-
-
-def retire_attention_facts(source: str, stable_keys: tuple[str, ...]) -> int:
-    """Resolve attention facts removed from an observer's current contract."""
-    keys = tuple(dict.fromkeys(key for key in stable_keys if key))
-    if not keys:
-        return 0
-    placeholders = ",".join("?" for _ in keys)
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        cursor = conn.execute(
-            "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
-            "WHERE source = ? AND status = 'unresolved' "
-            f"AND stable_key IN ({placeholders})",
-            (_iso(_utc_now()), source, *keys),
-        )
-        if cursor.rowcount:
-            now_iso = _iso(_utc_now())
-            _schedule_attention(
-                conn,
-                due_at=now_iso,
-                wake_reason="observer_change",
-                updated_at=now_iso,
-            )
-        conn.commit()
-        return cursor.rowcount
-    finally:
-        conn.close()
-
-
-def retire_attention_source(source: str) -> int:
-    """Resolve every legacy fact for a source that no longer feeds Attention."""
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        cursor = conn.execute(
-            "UPDATE attention_facts SET status = 'resolved', updated_at = ? "
-            "WHERE source = ? AND status = 'unresolved'",
-            (_iso(_utc_now()), source),
-        )
-        if cursor.rowcount:
-            now_iso = _iso(_utc_now())
-            _schedule_attention(
-                conn,
-                due_at=now_iso,
-                wake_reason="observer_change",
-                updated_at=now_iso,
-            )
-        conn.commit()
-        return cursor.rowcount
-    finally:
-        conn.close()
-
-
-def get_unresolved_attention_facts(
-    *, now: datetime | None = None, limit: int = _MAX_ATTENTION_FACTS,
-) -> tuple[AttentionFact, ...]:
-    now = (now or _utc_now()).astimezone(UTC)
-    conn = _connect()
-    try:
-        rows = conn.execute(
-            "SELECT source, stable_key, observed_at, fresh_until, facts_json "
-            "FROM attention_facts WHERE status = 'unresolved' "
-            "ORDER BY observed_at DESC, source, stable_key LIMIT ?",
-            (max(1, min(limit, _MAX_ATTENTION_FACTS)),),
-        ).fetchall()
-    finally:
-        conn.close()
-    return tuple(
-        AttentionFact(
-            source=row["source"],
-            stable_key=row["stable_key"],
-            observed_at=row["observed_at"],
-            freshness=(
-                "fresh"
-                if (_as_utc(row["fresh_until"]) or now) >= now
-                else "stale"
-            ),
-            status="unresolved",
-            facts=json.loads(row["facts_json"]),
-        )
-        for row in rows
-    )
-
-
-def ensure_schedules(
-    *,
-    now: datetime,
-    free_time_min_minutes: int,
-    free_time_max_minutes: int,
-    rng: random.Random | random.SystemRandom | None = None,
-) -> None:
-    rng = rng or random.SystemRandom()
-    now = now.astimezone(UTC)
-    free_delay = rng.randint(
-        min(free_time_min_minutes, free_time_max_minutes),
-        max(free_time_min_minutes, free_time_max_minutes),
-    )
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        now_iso = _iso(now)
-        conn.execute(
-            "DELETE FROM heartbeat_schedules "
-            "WHERE entry_kind = 'attention' AND wake_reason = 'periodic'"
-        )
-        _retire_legacy_periodic_attention(conn, now_iso=now_iso)
-        conn.execute(
-            "INSERT OR IGNORE INTO heartbeat_schedules "
-            "(entry_kind, next_due_at, wake_reason, updated_at) "
-            "VALUES ('free_time', ?, 'periodic', ?)",
-            (_iso(now + timedelta(minutes=free_delay)), now_iso),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def advance_attention(*, now: datetime, wake_reason: str = "observer_change") -> None:
-    due_iso = _iso(now)
-    updated_iso = _iso(_utc_now())
-    conn = _connect()
-    try:
-        _schedule_attention(
-            conn,
-            due_at=due_iso,
-            wake_reason=wake_reason,
-            updated_at=updated_iso,
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def set_schedule_due(
-    kind: str, due_at: datetime, *, wake_reason: str = "periodic",
-) -> None:
-    """Set one clock directly; primarily useful for deterministic tests."""
-    now_iso = _iso(_utc_now())
-    conn = _connect()
-    try:
-        conn.execute(
-            "INSERT INTO heartbeat_schedules "
-            "(entry_kind, next_due_at, wake_reason, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(entry_kind) DO UPDATE SET next_due_at = excluded.next_due_at, "
-            "wake_reason = excluded.wake_reason, updated_at = excluded.updated_at",
-            (kind, _iso(due_at), wake_reason, now_iso),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def materialize_due_runs(
+def ensure_daily_free_time_plan(
     *,
     user_id: int,
     channel_id: int,
     transport: str,
     now: datetime,
-    free_time_min_minutes: int,
-    free_time_max_minutes: int,
-    free_time_not_before: datetime | None = None,
+    max_daily: int,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> list[str]:
-    """Snapshot all due independent clocks and advance each one atomically."""
+    """Create today's bounded random opportunities once, without calling Main."""
     rng = rng or random.SystemRandom()
-    now = now.astimezone(UTC)
-    free_time_not_before = (
-        free_time_not_before.astimezone(UTC)
-        if free_time_not_before is not None
-        else None
+    local_now = now.astimezone(TZ)
+    local_date = local_now.date().isoformat()
+    now_utc = local_now.astimezone(UTC)
+    now_iso = _iso(now_utc)
+    max_daily = max(0, min(50, int(max_daily)))
+    start = datetime.combine(
+        local_now.date(), FREE_TIME_AWAKE_START, tzinfo=TZ,
     )
-    now_iso = _iso(now)
-    facts = get_unresolved_attention_facts(now=now)
-    facts_json = json.dumps(
-        [
-            {
-                "source": fact.source,
-                "stable_key": fact.stable_key,
-                "observed_at": fact.observed_at,
-                "freshness": fact.freshness,
-                "status": fact.status,
-                "facts": fact.facts,
-            }
-            for fact in facts
-        ],
-        ensure_ascii=False,
-        separators=(",", ":"),
+    end = datetime.combine(
+        local_now.date(), FREE_TIME_AWAKE_END, tzinfo=TZ,
     )
+    marker = f"{local_date}"
     created: list[str] = []
+
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        due_rows = conn.execute(
-            "SELECT entry_kind, next_due_at, wake_reason FROM heartbeat_schedules "
-            "WHERE next_due_at <= ? ORDER BY next_due_at, entry_kind",
-            (now_iso,),
-        ).fetchall()
-        for row in due_rows:
-            kind = row["entry_kind"]
-            if (
-                kind == "free_time"
-                and free_time_not_before is not None
-                and free_time_not_before > now
-            ):
-                conn.execute(
-                    "UPDATE heartbeat_schedules SET next_due_at = ?, "
-                    "updated_at = ? WHERE entry_kind = 'free_time'",
-                    (_iso(free_time_not_before), now_iso),
-                )
-                continue
-            due_at = row["next_due_at"]
-            run_key = f"{kind}:{due_at}"
-            payload = facts_json if kind == "attention" else "[]"
-            if kind == "attention":
-                if row["wake_reason"] == "periodic":
-                    conn.execute(
-                        "DELETE FROM heartbeat_schedules WHERE entry_kind = 'attention'"
+        conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'expired', "
+            "handled_at = ?, claim_token = NULL, lease_until = NULL, "
+            "next_attempt_at = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' AND status IN ('pending', 'running', 'ready') "
+            "AND run_key NOT LIKE ?",
+            (now_iso, _day_prefix(local_date)),
+        )
+        plan = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'"
+        ).fetchone()
+
+        if plan is None or plan["wake_reason"] != marker:
+            conn.execute(
+                "DELETE FROM heartbeat_schedules WHERE entry_kind = 'free_time_plan'"
+            )
+            if max_daily and local_now < end:
+                slot_seconds = (end - start).total_seconds() / max_daily
+                for ordinal in range(max_daily):
+                    if rng.random() >= FREE_TIME_ACTIVATION_CHANCE:
+                        continue
+                    slot_start = start + timedelta(seconds=slot_seconds * ordinal)
+                    slot_end = start + timedelta(seconds=slot_seconds * (ordinal + 1))
+                    due = slot_start + timedelta(
+                        seconds=rng.random() * (slot_end - slot_start).total_seconds()
                     )
-                    continue
-                unfinished_rows = conn.execute(
-                    "SELECT run_key FROM heartbeat_runs "
-                    "WHERE entry_kind = 'attention' "
-                    "AND status IN ('pending', 'running', 'ready') "
-                    "ORDER BY created_at, run_key"
-                ).fetchall()
-                deferred = conn.execute(
-                    "SELECT run_key, facts_json FROM heartbeat_runs "
-                    "WHERE entry_kind = 'attention' AND status = 'deferred' "
-                    "ORDER BY created_at, run_key LIMIT 1"
-                ).fetchone()
-                if unfinished_rows:
-                    if deferred is not None:
-                        conn.execute(
-                            "UPDATE heartbeat_runs SET facts_json = ?, "
-                            "wake_reason = ? WHERE run_key = ? "
-                            "AND status = 'deferred'",
-                            (payload, row["wake_reason"], deferred["run_key"]),
-                        )
-                    else:
-                        conn.execute(
-                            "INSERT OR IGNORE INTO heartbeat_runs "
-                            "(run_key, entry_kind, user_id, channel_id, transport, "
-                            "wake_reason, facts_json, status, created_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?, ?, 'deferred', ?)",
-                            (
-                                run_key, kind, user_id, channel_id, transport,
-                                row["wake_reason"], payload, now_iso,
-                            ),
-                        )
-                elif deferred is not None:
-                    conn.execute(
-                        "UPDATE heartbeat_runs SET status = 'pending', "
-                        "facts_json = ?, wake_reason = ?, next_attempt_at = NULL "
-                        "WHERE run_key = ? AND status = 'deferred'",
-                        (
-                            payload, row["wake_reason"],
-                            deferred["run_key"],
-                        ),
+                    if due <= local_now:
+                        continue
+                    due_utc = due.astimezone(UTC)
+                    run_key = (
+                        f"free_time:{local_date}:{ordinal}:"
+                        f"{due_utc.isoformat()}"
                     )
-                    if conn.execute("SELECT changes()").fetchone()[0]:
-                        created.append(deferred["run_key"])
-                else:
                     conn.execute(
                         "INSERT OR IGNORE INTO heartbeat_runs "
-                        "(run_key, entry_kind, user_id, channel_id, transport, wake_reason, "
-                        "facts_json, status, created_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
+                        "(run_key, entry_kind, user_id, channel_id, transport, "
+                        "wake_reason, facts_json, status, next_attempt_at, created_at) "
+                        "VALUES (?, 'free_time', ?, ?, ?, 'random_slot', '{}', "
+                        "'pending', ?, ?)",
                         (
-                            run_key, kind, user_id, channel_id, transport,
-                            row["wake_reason"], payload, now_iso,
+                            run_key,
+                            user_id,
+                            channel_id,
+                            transport,
+                            _iso(due_utc),
+                            now_iso,
                         ),
                     )
                     if conn.execute("SELECT changes()").fetchone()[0]:
                         created.append(run_key)
-            else:
-                conn.execute(
-                    "INSERT OR IGNORE INTO heartbeat_runs "
-                    "(run_key, entry_kind, user_id, channel_id, transport, wake_reason, "
-                    "facts_json, status, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                    (
-                        run_key, kind, user_id, channel_id, transport,
-                        row["wake_reason"], payload, now_iso,
-                    ),
-                )
-                if conn.execute("SELECT changes()").fetchone()[0]:
-                    created.append(run_key)
-            if kind == "attention":
-                conn.execute(
-                    "DELETE FROM heartbeat_schedules WHERE entry_kind = 'attention'"
-                )
-            else:
-                delay = rng.randint(
-                    min(free_time_min_minutes, free_time_max_minutes),
-                    max(free_time_min_minutes, free_time_max_minutes),
-                )
-                next_due = now + timedelta(minutes=delay)
-                conn.execute(
-                    "UPDATE heartbeat_schedules SET next_due_at = ?, "
-                    "wake_reason = 'periodic', updated_at = ? WHERE entry_kind = ?",
-                    (_iso(next_due), now_iso, kind),
-                )
+            conn.execute(
+                "INSERT INTO heartbeat_schedules "
+                "(entry_kind, next_due_at, wake_reason, updated_at) "
+                "VALUES ('free_time_plan', ?, ?, ?)",
+                (_iso(end.astimezone(UTC)), marker, now_iso),
+            )
+
+        _apply_daily_cap(
+            conn,
+            local_date=local_date,
+            max_daily=max_daily,
+            now_iso=now_iso,
+        )
         conn.commit()
+        return created
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-    return created
+
+
+def _apply_daily_cap(
+    conn,
+    *,
+    local_date: str,
+    max_daily: int,
+    now_iso: str,
+) -> None:
+    rows = conn.execute(
+        "SELECT run_key, status FROM heartbeat_runs "
+        "WHERE entry_kind = 'free_time' AND run_key LIKE ? "
+        "ORDER BY next_attempt_at, run_key",
+        (_day_prefix(local_date),),
+    ).fetchall()
+    consumed = sum(row["status"] != "pending" for row in rows)
+    pending = [row for row in rows if row["status"] == "pending"]
+    keep = max(0, max_daily - consumed)
+    for row in pending[keep:]:
+        conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'quota_reduced', "
+            "handled_at = ?, next_attempt_at = NULL WHERE run_key = ? "
+            "AND status = 'pending'",
+            (now_iso, row["run_key"]),
+        )
+
+
+def expire_unusable_free_time_runs(
+    *,
+    now: datetime,
+    active_chat: bool = False,
+    awake: bool = True,
+) -> int:
+    """End missed or currently unsuitable opportunities without invoking Main."""
+    now_utc = now.astimezone(UTC)
+    cutoff = _iso(now_utc - FREE_TIME_MISSED_GRACE)
+    now_iso = _iso(now_utc)
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = CASE "
+            "WHEN ? THEN 'active_chat' WHEN ? = 0 THEN 'asleep' ELSE 'expired' END, "
+            "handled_at = ?, next_attempt_at = NULL, claim_token = NULL, "
+            "lease_until = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' AND status = 'pending' "
+            "AND next_attempt_at <= ?",
+            (int(active_chat), int(awake), now_iso, now_iso if active_chat or not awake else cutoff),
+        )
+        stale = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'interrupted', "
+            "handled_at = ?, next_attempt_at = NULL, claim_token = NULL, "
+            "lease_until = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' AND status IN ('running', 'ready') "
+            "AND (lease_until IS NULL OR lease_until <= ?)",
+            (now_iso, now_iso),
+        ).rowcount
+        conn.commit()
+        return cursor.rowcount + stale
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_schedulable_runs(*, now: datetime) -> list[dict]:
     now_iso = _iso(now)
+    cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
     conn = _connect()
     try:
-        oldest_attention = conn.execute(
-            "SELECT run_key FROM heartbeat_runs "
-            "WHERE entry_kind = 'attention' "
-            "AND status IN ('pending', 'running', 'ready') "
-            "ORDER BY created_at, run_key LIMIT 1"
-        ).fetchone()
-        oldest_attention_key = (
-            oldest_attention["run_key"] if oldest_attention is not None else None
-        )
         rows = conn.execute(
-            "SELECT * FROM heartbeat_runs WHERE "
-            "(status = 'ready' AND last_error = 'delivery budget/cooldown' AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status IN ('pending', 'ready') AND "
-            "(next_attempt_at IS NULL OR next_attempt_at <= ?) AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status = 'running' AND lease_until <= ?) "
-            "ORDER BY created_at, run_key",
-            (now_iso, now_iso, now_iso, now_iso),
+            "SELECT * FROM heartbeat_runs WHERE entry_kind = 'free_time' "
+            "AND status = 'pending' AND next_attempt_at > ? AND next_attempt_at <= ? "
+            "ORDER BY next_attempt_at, run_key",
+            (cutoff, now_iso),
         ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            if (
-                item["entry_kind"] == "attention"
-                and item["run_key"] != oldest_attention_key
-            ):
-                continue
-            result.append(item)
-        return result
+        return [dict(row) for row in rows]
     finally:
         conn.close()
 
 
-def _promote_deferred_attention(conn) -> None:
-    unfinished = conn.execute(
-        "SELECT 1 FROM heartbeat_runs WHERE entry_kind = 'attention' "
-        "AND status IN ('pending', 'running', 'ready') LIMIT 1"
-    ).fetchone()
-    if unfinished is not None:
-        return
-    deferred = conn.execute(
-        "SELECT run_key FROM heartbeat_runs WHERE entry_kind = 'attention' "
-        "AND status = 'deferred' ORDER BY created_at, run_key LIMIT 1"
-    ).fetchone()
-    if deferred is not None:
-        conn.execute(
-            "UPDATE heartbeat_runs SET status = 'pending', next_attempt_at = NULL "
-            "WHERE run_key = ? AND status = 'deferred'",
-            (deferred["run_key"],),
-        )
-
-
 def claim_run(
-    run_key: str, *, now: datetime, lease_seconds: int = _LEASE_SECONDS,
+    run_key: str,
+    *,
+    now: datetime,
+    lease_seconds: int = _LEASE_SECONDS,
 ) -> dict | None:
-    now = now.astimezone(UTC)
-    now_iso = _iso(now)
+    now_utc = now.astimezone(UTC)
+    now_iso = _iso(now_utc)
     claim_token = f"{now_iso}:{uuid.uuid4().hex}"
-    lease_until = _iso(now + timedelta(seconds=lease_seconds))
+    lease_until = _iso(now_utc + timedelta(seconds=lease_seconds))
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT * FROM heartbeat_runs WHERE run_key = ?", (run_key,),
+            "SELECT * FROM heartbeat_runs WHERE run_key = ? "
+            "AND entry_kind = 'free_time' AND status = 'pending' "
+            "AND next_attempt_at <= ?",
+            (run_key, now_iso),
         ).fetchone()
         if row is None:
             conn.rollback()
             return None
-        item = dict(row)
-        status = item["status"]
-        retry_at = _as_utc(item.get("next_attempt_at"))
-        lease = _as_utc(item.get("lease_until"))
-        legacy_budget_queue = (
-            status == "ready"
-            and item.get("last_error") == "delivery budget/cooldown"
-        )
-        if status not in {"pending", "ready", "running"}:
-            conn.rollback()
-            return None
-        if (
-            item["entry_kind"] == "attention"
-            and item["wake_reason"] == "periodic"
-            and item.get("facts_json") == "[]"
-            and (status != "running" or lease is None or lease <= now)
-            and conn.execute(
-                "SELECT 1 FROM tool_executions WHERE turn_id = ? LIMIT 1",
-                (run_key,),
-            ).fetchone() is None
-        ):
-            conn.execute(
-                "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'retired', "
-                "handled_at = ?, claim_token = NULL, lease_until = NULL, "
-                "next_attempt_at = NULL, last_error = '', delivery_started_at = NULL "
-                "WHERE run_key = ? AND status IN ('pending', 'ready', 'running')",
-                (now_iso, run_key),
-            )
-            _promote_deferred_attention(conn)
-            conn.commit()
-            return None
-        if retry_at and retry_at > now and not legacy_budget_queue:
-            conn.rollback()
-            return None
-        if lease and lease > now:
-            conn.rollback()
-            return None
-        if item["entry_kind"] == "attention" and not item.get("result_json"):
-            _facts, valid_facts = _decode_attention_facts(item.get("facts_json"))
-            if not valid_facts:
-                conn.execute(
-                    "UPDATE heartbeat_runs SET status = 'delivered', "
-                    "outcome = 'invalid', handled_at = ?, last_error = ?, "
-                    "claim_token = NULL, lease_until = NULL, next_attempt_at = NULL "
-                    "WHERE run_key = ? AND status IN ('pending', 'running', 'ready')",
-                    (
-                        now_iso,
-                        "invalid attention facts_json",
-                        run_key,
-                    ),
-                )
-                _promote_deferred_attention(conn)
-                conn.commit()
-                return None
-        claimed_status = "ready" if item.get("result_json") else "running"
         cursor = conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, claim_token = ?, lease_until = ?, "
-            "delivery_started_at = NULL WHERE run_key = ? AND status = ?",
-            (claimed_status, claim_token, lease_until, run_key, status),
+            "UPDATE heartbeat_runs SET status = 'running', claim_token = ?, "
+            "lease_until = ?, next_attempt_at = NULL, delivery_started_at = NULL "
+            "WHERE run_key = ? AND status = 'pending'",
+            (claim_token, lease_until, run_key),
         )
         if cursor.rowcount != 1:
             conn.rollback()
             return None
         conn.commit()
+        item = dict(row)
         item.update(
-            status=claimed_status,
+            status="running",
             claim_token=claim_token,
             lease_until=lease_until,
+            next_attempt_at=None,
         )
         return item
     finally:
@@ -636,20 +273,18 @@ def claim_run(
 
 
 def entry_from_claim(claimed: dict) -> MainRuntimeEntry:
-    common = {
-        "run_key": claimed["run_key"],
-        "wake_reason": claimed["wake_reason"],
-        "user_id": claimed["user_id"],
-        "channel_id": claimed["channel_id"],
-        "transport": claimed["transport"],
-        "claim_token": claimed["claim_token"],
-        "lease_until": claimed["lease_until"],
-    }
-    if claimed["entry_kind"] == "free_time":
-        return MainRuntimeEntry.free_time(**common)
-    raw_facts = json.loads(claimed.get("facts_json") or "[]")
-    facts = tuple(AttentionFact(**item) for item in raw_facts)
-    return MainRuntimeEntry.attention(facts=facts, **common)
+    if claimed["entry_kind"] != "free_time":
+        raise ValueError("Only Free Time enters the generic autonomous runtime")
+    return MainRuntimeEntry.free_time(
+        run_key=claimed["run_key"],
+        wake_reason=claimed["wake_reason"],
+        user_id=claimed["user_id"],
+        channel_id=claimed["channel_id"],
+        transport=claimed["transport"],
+        claim_token=claimed["claim_token"],
+        lease_until=claimed["lease_until"],
+        card=card_from_run_payload(claimed.get("facts_json")),
+    )
 
 
 def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
@@ -668,34 +303,39 @@ def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
 
 
 def complete_without_delivery(
-    claimed: dict, durable: DurableChatResult, outcome: str,
+    claimed: dict,
+    durable: DurableChatResult,
+    outcome: str,
 ) -> bool:
-    if outcome not in {
-        "skip",
+    allowed = {
+        "no_effect",
         "tools_only",
-        "suppressed",
         "active_chat",
-        "stale",
+        "expired",
+        "asleep",
+        "timeout",
+        "failure",
         "delivery_failed",
         "delivery_unknown",
-    }:
-        raise ValueError("invalid autonomous Main outcome")
-    now_iso = _iso(_utc_now())
+        "interrupted",
+    }
+    if outcome not in allowed:
+        raise ValueError("invalid Free Time outcome")
     conn = _connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE heartbeat_runs SET status = 'delivered', result_json = ?, "
             "outcome = ?, handled_at = ?, claim_token = NULL, lease_until = NULL, "
             "next_attempt_at = NULL, last_error = '' WHERE run_key = ? "
             "AND status IN ('running', 'ready') AND claim_token = ?",
             (
-                durable.to_json(), outcome, now_iso,
-                claimed["run_key"], claimed["claim_token"],
+                durable.to_json(),
+                outcome,
+                _iso(_utc_now()),
+                claimed["run_key"],
+                claimed["claim_token"],
             ),
         )
-        if cursor.rowcount == 1 and claimed["entry_kind"] == "attention":
-            _promote_deferred_attention(conn)
         conn.commit()
         return cursor.rowcount == 1
     finally:
@@ -723,76 +363,11 @@ def recover_prior_tool_attempt(claimed: dict) -> DurableChatResult | None:
     )
 
 
-def delivery_wait(
-    *,
-    now: datetime,
-    max_daily: int,
-    cooldown_seconds: int,
-) -> tuple[int, str | None]:
-    from mochi.admin.admin_db import get_system_config
-
-    local_now = now.astimezone(TZ)
-    day = logical_today(local_now)
-    start = datetime.strptime(day, "%Y-%m-%d").replace(
-        hour=get_system_config("MAINTENANCE_HOUR"), tzinfo=TZ,
-    ).astimezone(UTC)
-    end = start + timedelta(days=1)
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS count, MAX(text_delivered_at) AS latest "
-            "FROM heartbeat_runs WHERE text_delivered_at >= ? "
-            "AND text_delivered_at < ?",
-            (_iso(start), _iso(end)),
-        ).fetchone()
-    finally:
-        conn.close()
-    if int(row["count"] or 0) >= max_daily:
-        return (
-            max(1, int((end - now.astimezone(UTC)).total_seconds())),
-            "daily_limit",
-        )
-    latest = _as_utc(row["latest"])
-    if latest:
-        remaining = cooldown_seconds - int(
-            (now.astimezone(UTC) - latest).total_seconds()
-        )
-        if remaining > 0:
-            return remaining, "cooldown"
-    return 0, None
-
-
-def defer_prepared_delivery(
-    claimed: dict,
-    *,
-    wait_seconds: int,
-    reason: str,
-) -> bool:
-    retry_at = _utc_now() + timedelta(seconds=max(1, wait_seconds))
-    conn = _connect()
-    try:
-        cursor = conn.execute(
-            "UPDATE heartbeat_runs SET status = 'ready', next_attempt_at = ?, "
-            "last_error = ?, claim_token = NULL, lease_until = NULL, "
-            "delivery_started_at = NULL WHERE run_key = ? AND status = 'ready' "
-            "AND claim_token = ?",
-            (
-                _iso(retry_at), reason[:1000],
-                claimed["run_key"], claimed["claim_token"],
-            ),
-        )
-        conn.commit()
-        return cursor.rowcount == 1
-    finally:
-        conn.close()
-
-
 def begin_delivery(
     claimed: dict,
     *,
     now: datetime | None = None,
 ) -> bool:
-    now_iso = _iso(now or _utc_now())
     conn = _connect()
     try:
         cursor = conn.execute(
@@ -800,24 +375,7 @@ def begin_delivery(
             "WHERE run_key = ? AND status = 'ready' AND claim_token = ? "
             "AND delivery_started_at IS NULL",
             (
-                now_iso,
-                claimed["run_key"],
-                claimed["claim_token"],
-            ),
-        )
-        conn.commit()
-        return cursor.rowcount == 1
-    finally:
-        conn.close()
-def store_delivery_progress(claimed: dict, remaining: DurableChatResult) -> bool:
-    conn = _connect()
-    try:
-        cursor = conn.execute(
-            "UPDATE heartbeat_runs SET result_json = ? WHERE run_key = ? "
-            "AND status = 'ready' AND claim_token = ? "
-            "AND delivery_started_at IS NOT NULL",
-            (
-                remaining.to_json(),
+                _iso(now or _utc_now()),
                 claimed["run_key"],
                 claimed["claim_token"],
             ),
@@ -828,8 +386,10 @@ def store_delivery_progress(claimed: dict, remaining: DurableChatResult) -> bool
         conn.close()
 
 
-def checkpoint_text_delivery(
-    claimed: dict, *, content: str, entry_kind: str,
+def checkpoint_delivery(
+    claimed: dict,
+    *,
+    content: str,
 ) -> bool:
     now_iso = _iso(_utc_now())
     conn = _connect()
@@ -844,90 +404,33 @@ def checkpoint_text_delivery(
         if cursor.rowcount == 1:
             conn.execute(
                 "INSERT INTO proactive_log (type, content, created_at) "
-                "VALUES (?, ?, ?)",
-                (entry_kind, content, now_iso),
+                "VALUES ('free_time', ?, ?)",
+                (content, now_iso),
             )
         conn.commit()
         return cursor.rowcount == 1
-    finally:
-        conn.close()
-
-
-def checkpoint_visible_delivery(claimed: dict) -> bool:
-    """Count a sticker-only delivery without creating text history or logs."""
-    conn = _connect()
-    try:
-        cursor = conn.execute(
-            "UPDATE heartbeat_runs SET text_delivered_at = "
-            "COALESCE(text_delivered_at, ?) WHERE run_key = ? "
-            "AND status = 'ready' AND claim_token = ? "
-            "AND delivery_started_at IS NOT NULL",
-            (_iso(_utc_now()), claimed["run_key"], claimed["claim_token"]),
-        )
-        conn.commit()
-        return cursor.rowcount == 1
-    finally:
-        conn.close()
-
-
-def record_failure(claimed: dict, error: str) -> datetime | None:
-    now = _utc_now()
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT attempt_count, result_json FROM heartbeat_runs "
-            "WHERE run_key = ? AND claim_token = ? "
-            "AND status IN ('running', 'ready')",
-            (claimed["run_key"], claimed["claim_token"]),
-        ).fetchone()
-        if row is None:
-            conn.rollback()
-            return None
-        attempt = int(row["attempt_count"] or 0) + 1
-        retry_at = now + timedelta(seconds=min(60 * (2 ** min(attempt - 1, 6)), 3600))
-        status = "ready" if row["result_json"] else "pending"
-        conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, attempt_count = ?, "
-            "next_attempt_at = ?, last_error = ?, claim_token = NULL, "
-            "lease_until = NULL, delivery_started_at = NULL "
-            "WHERE run_key = ? AND claim_token = ?",
-            (
-                status, attempt, _iso(retry_at), error[:1000],
-                claimed["run_key"], claimed["claim_token"],
-            ),
-        )
-        conn.commit()
-        return retry_at
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
 def complete_delivery(claimed: dict) -> bool:
-    now_iso = _iso(_utc_now())
     conn = _connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
         cursor = conn.execute(
             "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'delivered', "
             "handled_at = ?, claim_token = NULL, lease_until = NULL, "
             "next_attempt_at = NULL, last_error = '', delivery_started_at = NULL "
             "WHERE run_key = ? AND status = 'ready' AND claim_token = ?",
-            (now_iso, claimed["run_key"], claimed["claim_token"]),
+            (
+                _iso(_utc_now()),
+                claimed["run_key"],
+                claimed["claim_token"],
+            ),
         )
-        if cursor.rowcount == 1 and claimed["entry_kind"] == "attention":
-            _promote_deferred_attention(conn)
         conn.commit()
         return cursor.rowcount == 1
     finally:
         conn.close()
-
-
-def remove_delivered_component(
-    durable: DurableChatResult, kind: str, value: str,
-) -> DurableChatResult:
-    if kind == "text":
-        return replace(durable, text="")
-    stickers = list(durable.stickers)
-    stickers.remove(value)
-    return replace(durable, stickers=tuple(stickers))

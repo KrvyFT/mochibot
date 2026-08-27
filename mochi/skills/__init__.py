@@ -217,6 +217,28 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     return all_lines
 
 
+def collect_free_time_cards(
+    user_id: int,
+    today: str,
+    now: datetime,
+) -> list["FreeTimeCard"]:
+    """Collect current feature-owned facts without assigning them meaning."""
+    from mochi.free_time import FreeTimeCard
+
+    if not _skills:
+        return []
+    disabled = _get_disabled_skills()
+    cards: list[FreeTimeCard] = []
+    for skill in _skills.values():
+        if skill.name in disabled or get_missing_config(skill):
+            continue
+        try:
+            cards.extend(skill.free_time_cards(user_id, today, now))
+        except Exception:
+            log.exception("free_time_cards failed for skill %s", skill.name)
+    return cards
+
+
 def get_tools(transport: str = "") -> list[dict]:
     """Get every eligible registered tool definition."""
     disabled = _get_disabled_skills()

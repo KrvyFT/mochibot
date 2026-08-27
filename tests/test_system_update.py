@@ -103,7 +103,7 @@ async def test_install_is_armed_only_after_reply_delivery(monkeypatch):
         trigger="tool_call",
         user_id=1,
         actor="main",
-        source="runtime:attention",
+        source="runtime:free_time",
         tool_name="install_system_update",
         args={},
     ))

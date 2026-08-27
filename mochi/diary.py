@@ -16,6 +16,7 @@ from threading import Lock
 
 from mochi.config import (
     TZ,
+    MAINTENANCE_HOUR,
     DIARY_STATUS_MAX_LINES,
     DIARY_ENTRY_MAX_LINES,
     OWNER_USER_ID,
@@ -71,9 +72,8 @@ def _atomic_replace_text(path: Path, content: str) -> None:
 
 def _diary_date() -> datetime:
     """Effective date in TZ (rolls over at maintenance hour, not midnight)."""
-    from mochi.admin.admin_db import get_system_config
     now = datetime.now(TZ)
-    if now.hour < get_system_config("MAINTENANCE_HOUR"):
+    if now.hour < MAINTENANCE_HOUR:
         now = now - timedelta(days=1)
     return now
 

@@ -580,3 +580,43 @@ class HabitSkill(Skill):
                 lines.append(f"- {imp}{name} ({done}/{target}){ctx_tag}{last_tag} ⏳")
 
         return lines if lines else None
+
+    def free_time_cards(
+        self,
+        user_id: int,
+        today: str,
+        now: datetime,
+    ) -> list["FreeTimeCard"]:
+        from mochi.free_time import FreeTimeCard
+
+        this_week = now.strftime("%G-W%V")
+        weekday = now.weekday()
+        cards: list[FreeTimeCard] = []
+        for habit in list_habits(user_id, active_only=True):
+            if _is_paused(habit):
+                continue
+            parsed = parse_frequency(habit["frequency"])
+            if not parsed:
+                continue
+            cycle, target = parsed
+            allowed = get_allowed_days(habit["frequency"])
+            if allowed is not None and weekday not in allowed:
+                continue
+            period = today if cycle == "daily" else this_week
+            done = len(get_habit_checkins(habit["id"], period))
+            if done >= target:
+                continue
+            cards.append(FreeTimeCard(
+                source="habit",
+                stable_key=f"habit:{habit['id']}",
+                capability_skill="habit",
+                facts={
+                    "habit_id": habit["id"],
+                    "name": habit["name"],
+                    "progress": f"{done}/{target}",
+                    "period": period,
+                    "context": habit.get("context") or "",
+                    "importance": habit.get("importance") or "normal",
+                },
+            ))
+        return cards

@@ -186,50 +186,24 @@ async def collect_all() -> dict[str, dict]:
     return results
 
 
-async def collect_attention_facts() -> bool:
-    """Refresh canonical bounded facts for sources that are actually due."""
+def collect_free_time_cards(now: datetime) -> list["FreeTimeCard"]:
+    """Read current bounded alert cards from observer caches."""
     from mochi.db import get_disabled_skills
-    from mochi.heartbeat_runtime import (
-        retire_attention_source,
-        retire_attention_facts,
-        sync_attention_facts,
-    )
 
     disabled_skills = get_disabled_skills()
-    now = datetime.now(TZ)
-    changed = False
+    cards = []
     for name, obs in _observers.items():
-        if obs.retire_all_attention_facts:
-            retire_attention_source(name)
-        else:
-            retire_attention_facts(name, obs.retired_attention_keys)
         if not obs.meta.enabled or obs._consecutive_errors >= 5:
             continue
         if obs.meta.skill_name and obs.meta.skill_name in disabled_skills:
             continue
-        if not obs.should_collect(now):
+        if obs._last_collected_at is None or not obs._last_data:
             continue
-        previous = dict(obs._last_data)
-        before_errors = obs._consecutive_errors
-        data = await obs.safe_observe()
-        if obs._consecutive_errors > before_errors:
-            continue
-        projected = obs.attention_facts(data)
-        freshness = max(
-            [fact.freshness_seconds for fact in projected]
-            or [obs.effective_interval * 180],
-        )
-        sync_attention_facts(
-            name,
-            [
-                {"stable_key": fact.stable_key, "facts": fact.facts}
-                for fact in projected
-            ],
-            observed_at=now,
-            freshness_seconds=freshness,
-        )
-        changed = obs.has_delta(previous, data) or changed
-    return changed
+        try:
+            cards.extend(obs.free_time_cards(deepcopy(obs._last_data)))
+        except Exception:
+            log.exception("free_time_cards failed for observer %s", name)
+    return cards
 
 
 def get_observer(name: str) -> Observer | None:

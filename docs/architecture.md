@@ -14,17 +14,15 @@ setup, not broad provider or multi-user infrastructure.
 - **Runtime entries** (`mochi/main_runtime.py`) describe system-owned
   situations, such as bedtime and Weekly curation, that need Main's semantic
   judgment without inventing a user message.
-- **Heartbeat** (`mochi/heartbeat.py`) owns sleep gates, the randomized Free Time
-  clock, and durable change-driven Attention scheduling. It creates runtime
-  entries but does not interpret observer facts or author companion responses.
+- **Heartbeat** (`mochi/heartbeat.py`) owns sleep gates and bounded randomized
+  Free Time opportunities. It creates runtime entries but does not interpret
+  life facts or author companion responses.
 - **Skills** (`mochi/skills/`) contain feature behavior and deterministic tool
   operations. Transports and heartbeat call them only through Main or the skill
   registry.
 - **Observers** (`mochi/observers/`) are read-only factual producers. Each
-  source projects only bounded, provenance-safe unresolved facts; omission on
-  a later successful source scan resolves them. Their cached safe views expose
-  only allowlisted, bounded fields and can be read without collecting again or
-  consuming Attention state.
+  source maintains an allowlisted, bounded cache that can be read without
+  collecting again. Observer refresh never invokes Main.
 - **Persistence** (`mochi/db.py`) stores conversation, memory, configuration,
   usage, and tool execution facts.
 
@@ -32,8 +30,8 @@ Dependency direction is transport/heartbeat -> Main -> skills and persistence.
 Skills do not import transports or orchestration.
 
 Main 可通过 resident `look_around` 读取 Observer 已有缓存的安全视图。
-该工具只读，不触发采集、外部请求或 Attention 状态变化；Free Time 默认
-仍不注入生活上下文，只有 Main 主动查看时才获得有界事实。
+该工具只读，不触发采集或外部请求；Free Time 默认不注入 Observer
+上下文，只有 Main 主动查看时才获得有界事实。
 
 Main is the semantic judge and author of its actions. The harness gives Main a
 lived situation, relevant facts and relationship context, available
@@ -226,53 +224,37 @@ outbox. SQLite claims and leases prevent concurrent workers, while the external
 send boundary remains at-least-once because transport and SQLite cannot commit
 atomically.
 
-Free Time is ephemeral: its text is generated only when the random clock is
-claimed, and any transport failure, uncertain delivery, active chat, or recovery
-of previously prepared text ends that opportunity without retry. Attention is
-fact-driven and may retain a prepared result across retry so tool effects are not
-repeated.
+## Free Time flow
 
-## Free Time and Attention flow
+Free Time is the only generic autonomous Main situation. The owner controls one
+preference: the maximum number of daily Free Time opportunities. A fixed
+zero-model scheduler divides the 06:00–21:00 local window into that many slots
+and randomly activates some of them. The maximum bounds both Main invocations
+and visible generic proactive messages; it is a ceiling, not a delivery target.
+Missed, sleeping, recently-chatting, interrupted, failed, and no-effect
+opportunities end without retry or catch-up.
 
-Free Time uses a randomized durable clock and waits until the user's latest
-message has been quiet for 30 minutes. Attention has no periodic speaking clock:
-bounded Observer facts and deterministic Diary status revisions schedule it only
-when their semantic content changes. Those revisions are persisted with the
-source update, and concurrent changes coalesce behind an unfinished Attention
-run. A Main skip acknowledges that captured situation without resolving source
-facts; a later source revision may wake Attention again. Recent chat never blocks
-Attention or independent reminder delivery. Sleeping and long-silence pause
-gates run before observer or model work.
+Each activated opportunity receives Core, current time, last-contact age, and a
+bounded read-only window of prior Free Time outreach. It does not inherit
+ordinary conversation, summary, Diary, status panels, auto-recall, recent
+operations, Observer facts, or sticky routed skills. Main starts with resident
+tools and may use `look_around` or request other tools by its own judgment.
 
-Both situations enter the standard Main personality and Agent First tool loop.
-Free Time receives last contact age plus a bounded read-only window of its own
-recent proactive outreach. It does not inherit ordinary conversation, summary,
-Diary, the status panel, auto-recall, recent operations, or semantic routing, so
-the harness does not assign a topic to unclaimed time; Main may use resident
-perception or request other tools when curiosity calls for current context.
-Attention receives bounded unresolved facts plus Diary, conversation summary,
-temporal context, and a bounded read-only interaction window. Both start with
-resident tools and may request other tools; neither inherits a sticky routed
-skill.
+Feature skills and Observers may expose small factual Free Time cards. Habit
+contributes currently applicable incomplete habits; Todo contributes due,
+overdue, or unscheduled active items. The framework derives a revision from
+canonical fact fields, samples at most one unseen revision, and may leave an
+opportunity entirely unassigned even when cards exist. A card is offered at
+most once per local day and gives Main the owning skill's relevant tools. It
+does not prescribe urgency, wording, or action.
 
-While one Attention run is unfinished, newly changed facts coalesce into one
-non-executable deferred snapshot. The snapshot is promoted as soon as the
-current run is terminal, preventing both fact loss and recovery bursts.
-Observers own factual source state, Main owns meaning/action/expression, and
-the transport owns delivery. A Main skip does not resolve observer facts.
-Heartbeat stores prepared results before delivery for durable audit. Free Time
-never replays that text on another attempt; Attention can reuse it so tool
-effects do not repeat after a transport failure. History and proactive delivery
-logs are written only after successful text delivery. SQLite cannot commit
-atomically with an external transport, so Attention can still duplicate one
-component after a crash at that boundary. Daily limits and cooldowns constrain
-delivery only; they do not filter topics or decide what facts mean.
-Cooldown-delayed Attention retains its prepared delivery; when the daily cap
-expires an unsent text-only result, the latest still-current context is
-reconsidered in the next budget window rather than replaying stale wording.
+A Free Time turn may contact the owner, complete a durable tool action for
+itself, or end with no effect. Tool state changes are accepted only from the
+authoritative execution ledger. Every outcome consumes the already-claimed
+opportunity and is never retried. One transport call carries the complete
+visible result, while delivery history is persisted only after confirmed
+success.
 
-Autonomous entries receive recent owner conversation and prior proactive
-outreach as one bounded, timestamped read-only evidence block. Those completed
-interactions remain available to Main's judgment but are not replayed as active
-provider chat turns; the typed Free Time or Attention situation is the sole
-active event.
+Guaranteed timing remains outside Free Time. Authorized reminders and Self
+Reminders use their own deterministic schedules and do not consume the generic
+Free Time limit. Observer refresh is likewise independent and never wakes Main.

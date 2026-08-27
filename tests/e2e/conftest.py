@@ -41,15 +41,7 @@ def mock_config(monkeypatch):
     monkeypatch.setattr(cfg, "TOOL_LOOP_MAX_ROUNDS", 5)
     monkeypatch.setattr(cfg, "AI_CHAT_MAX_COMPLETION_TOKENS", 1024)
     monkeypatch.setattr(cfg, "TIMEZONE_OFFSET_HOURS", 0)
-    monkeypatch.setattr(cfg, "HEARTBEAT_INTERVAL_MINUTES", 20)
-    monkeypatch.setattr(cfg, "MAX_DAILY_PROACTIVE", 10)
-    monkeypatch.setattr(cfg, "PROACTIVE_COOLDOWN_SECONDS", 0)
-    monkeypatch.setattr(cfg, "FREE_TIME_MIN_MINUTES", 90)
-    monkeypatch.setattr(cfg, "FREE_TIME_MAX_MINUTES", 240)
-    monkeypatch.setattr(cfg, "BEDTIME_ENTRY_ENABLED", True)
-    monkeypatch.setattr(cfg, "BEDTIME_ENTRY_TIMEOUT_S", 60)
-    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_ENABLED", True)
-    monkeypatch.setattr(cfg, "WEEKLY_MAINTENANCE_MINUTE", 15)
+    monkeypatch.setattr(cfg, "MAX_DAILY_FREE_TIME_OPPORTUNITIES", 10)
 
 
 # ── Mock LLM factory ──

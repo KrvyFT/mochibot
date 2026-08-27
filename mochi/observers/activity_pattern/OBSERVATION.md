@@ -23,5 +23,5 @@ deciding what they mean or whether they deserve a proactive message.
 
 ## Notes
 - interval=60: patterns don't change minute-to-minute, hourly check is enough
-- Conversation volume does not create Attention facts by itself
+- Conversation volume does not create Free Time cards by itself
 - Main may inspect the raw trend through `look_around`

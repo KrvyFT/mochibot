@@ -805,90 +805,33 @@ def _tool_loop_exhaustion_message(
     return "处理过程出了点问题，你再说一次试试？"
 
 
-_ATTENTION_SOURCE_LABELS = {
-    "reminder": "提醒",
-    "todo": "待办",
-    "weather": "天气",
-    "activity_pattern": "对话活动",
-    "recent_conversation": "最近对话",
-    "time_context": "时间",
-    "diary_status": "今日状态",
-}
-
-_ATTENTION_FACT_LABELS = {
-    "message": "内容",
-    "remind_at": "时间",
-    "active_count": "未完成数量",
-    "pending_count": "待处理数量",
-    "temperature_c": "温度",
-    "feels_like_c": "体感温度",
-    "condition": "天气状况",
-    "description": "描述",
-    "status": "当前内容",
-}
-
-
-def _format_attention_value(value) -> str:
-    if isinstance(value, dict):
-        return "，".join(
-            f"{_ATTENTION_FACT_LABELS.get(str(key), str(key).replace('_', ' '))} "
-            f"{_format_attention_value(item)}"
-            for key, item in value.items()
-        )
-    if isinstance(value, list):
-        return "、".join(_format_attention_value(item) for item in value)
-    if isinstance(value, bool):
-        return "是" if value else "否"
-    return str(value)
-
-
-def _format_attention_fact(fact) -> str:
-    source = _ATTENTION_SOURCE_LABELS.get(
-        fact.source, fact.source.replace("_", " "),
-    )
-    freshness = "新近观察" if fact.freshness == "fresh" else "较早观察"
-    try:
-        observed = datetime.fromisoformat(fact.observed_at)
-        from mochi.config import TZ
-        if observed.tzinfo is None:
-            observed = observed.replace(tzinfo=TZ)
-        else:
-            observed = observed.astimezone(TZ)
-        observed_label = observed.strftime("%m-%d %H:%M")
-    except (TypeError, ValueError):
-        observed_label = ""
-    details = _format_attention_value(fact.facts)
-    context = f"{freshness} {observed_label}".strip()
-    return f"- {source}（{context}）：{details}"
-
-
 def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
-    if runtime_entry.kind == "free_time":
-        situation = get_prompt("free_time_entry")
-    elif runtime_entry.kind == "attention":
-        situation = get_prompt("attention_entry")
-        fact_lines = [
-            _format_attention_fact(fact)
-            for fact in runtime_entry.attention_facts
-        ]
-        situation = situation.replace(
-            "{{wake_reason}}", runtime_entry.wake_reason or "periodic",
-        ).replace(
-            "{{attention_facts}}",
-            "\n".join(fact_lines) if fact_lines else "- 当前没有观察事实",
-        )
-    else:
-        raise ValueError("runtime situation is only available for autonomous entries")
+    if runtime_entry.kind != "free_time":
+        raise ValueError("runtime situation is only available for Free Time")
+    situation = get_prompt("free_time_entry")
     if not situation:
-        raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
-    protocol = get_prompt("runtime_silence_protocol")
-    if not protocol:
-        raise RuntimeError("Runtime silence protocol prompt is missing")
+        raise RuntimeError("Free Time entry prompt is missing")
+    card = runtime_entry.free_time_card
+    card_context = (
+        "\n\n这段时间里，也有一件当前事实在眼前：\n"
+        "<current_life_fact>\n"
+        + json.dumps(
+            {
+                "source": card.source,
+                "facts": card.facts,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        + "\n</current_life_fact>"
+        if card is not None
+        else ""
+    )
     return (
         "<autonomous_runtime_event>\n"
-        f"kind: {runtime_entry.kind}\n"
+        "kind: free_time\n"
         "new_user_message: false\n\n"
-        f"{situation}\n\n{protocol}\n"
+        f"{situation}{card_context}\n"
         "</autonomous_runtime_event>"
     )
 
@@ -935,7 +878,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
+        runtime_entry and runtime_entry.kind == "free_time"
     )
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
@@ -962,7 +905,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly:
+    if not is_weekly and not is_autonomous:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -1122,7 +1065,7 @@ async def chat(
     if (
         message is not None
         and runtime_entry is not None
-        and runtime_entry.kind in {"self_reminder", "free_time", "attention"}
+        and runtime_entry.kind in {"self_reminder", "free_time"}
     ):
         raise ValueError(f"{runtime_entry.kind} runtime entries are system-only")
 
@@ -1147,7 +1090,7 @@ async def chat(
         runtime_entry and runtime_entry.kind == "weekly_maintenance"
     )
     is_autonomous = bool(
-        runtime_entry and runtime_entry.kind in {"free_time", "attention"}
+        runtime_entry and runtime_entry.kind == "free_time"
     )
     prompt_policy = context_policy(runtime_entry)
     turn_id = (
@@ -1298,6 +1241,19 @@ async def chat(
         tools = skill_registry.get_tools_by_load(
             "resident", transport=transport,
         )
+        card_skill = runtime_entry.free_time_card.capability_skill if (
+            runtime_entry and runtime_entry.free_time_card
+        ) else ""
+        if card_skill:
+            tools.extend(skill_registry.get_tools_by_names(
+                [card_skill],
+                transport=transport,
+                loads={"routed", "on_demand"},
+            ))
+            tools = list({
+                tool["function"]["name"]: tool
+                for tool in tools
+            }.values())
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
@@ -1447,7 +1403,7 @@ async def chat(
     active_tool_names = list(availability.names)
     capability_context = skill_registry.get_capability_context_for_tools(
         active_tool_names,
-        include_requestable_tools=escalation_available,
+        include_requestable_tools=escalation_available and not is_autonomous,
         transport=transport,
     )
 

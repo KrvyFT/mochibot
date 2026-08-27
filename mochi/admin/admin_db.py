@@ -311,40 +311,35 @@ def are_required_tiers_ready(
 
 _SYSTEM_SKILL_NAME = "_system"
 
-# Runtime configuration registry with (type, default_value).
-# Only a small preference subset is user-facing; the rest remain here so legacy
-# DB overrides keep their original types and behavior.
-# Environment-only keys:
-#   PROACTIVE_COOLDOWN_SECONDS, THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
-#   BEDTIME_ENTRY_ENABLED, BEDTIME_ENTRY_TIMEOUT_S — no dedicated settings page
-#   Autonomous Main Runtime output tuning
-_ENV_ONLY_SYSTEM_KEYS = frozenset({
-    "PROACTIVE_COOLDOWN_SECONDS",
-    "THINK_FALLBACK_MINUTES",
+_RETIRED_HEARTBEAT_KEYS = frozenset({
+    "ATTENTION_INTERVAL_MINUTES",
+    "BEDTIME_ENTRY_ENABLED",
+    "BEDTIME_ENTRY_TIMEOUT_S",
+    "FALLBACK_WAKE_HOUR",
+    "FREE_TIME_MAX_MINUTES",
+    "FREE_TIME_MIN_MINUTES",
+    "HEARTBEAT_INTERVAL_MINUTES",
+    "HEARTBEAT_LOG_DELETE_DAYS",
+    "HEARTBEAT_LOG_TRIM_DAYS",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
+    "MAINTENANCE_ENABLED",
+    "MAINTENANCE_HOUR",
+    "MAX_DAILY_PROACTIVE",
+    "PROACTIVE_COOLDOWN_SECONDS",
+    "SILENCE_PAUSE_DAYS",
+    "SILENCE_THRESHOLD_HOURS",
+    "SLEEP_AFTER_HOUR",
+    "THINK_FALLBACK_MINUTES",
+    "WAKE_EARLIEST_HOUR",
+    "WEEKLY_MAINTENANCE_ENABLED",
+    "WEEKLY_MAINTENANCE_MINUTE",
 })
-_DEPRECATED_SYSTEM_KEYS = frozenset({"ATTENTION_INTERVAL_MINUTES"})
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
-    # ── Heartbeat ──
-    "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
-    "MAX_DAILY_PROACTIVE":            ("int",   10),
-    "FREE_TIME_MIN_MINUTES":          ("int",   90),
-    "FREE_TIME_MAX_MINUTES":          ("int",   240),
-    "FALLBACK_WAKE_HOUR":             ("int",   10),
-    "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
-    "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
-    # ── Sleep/Wake ──
-    "WAKE_EARLIEST_HOUR":             ("int",   6),
-    "SLEEP_AFTER_HOUR":               ("int",   21),
-    "SILENCE_PAUSE_DAYS":             ("float", 3.0),
+    "MAX_DAILY_FREE_TIME_OPPORTUNITIES": ("int", 10),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),
     "AI_CHAT_MAX_COMPLETION_TOKENS":  ("int",   4096),
-    "MAINTENANCE_HOUR":               ("int",   3),
-    "MAINTENANCE_ENABLED":            ("bool",  True),
-    "WEEKLY_MAINTENANCE_ENABLED":     ("bool",  True),
-    "WEEKLY_MAINTENANCE_MINUTE":      ("int",   15),
 }
 
 
@@ -395,8 +390,7 @@ def get_system_config(key: str):
         return SYSTEM_DEFAULTS[key][1]
 
     import mochi.config as _cfg
-    if key not in _ENV_ONLY_SYSTEM_KEYS:
-        log.warning("get_system_config: unknown key %r, falling back to config module", key)
+    log.warning("get_system_config: unknown key %r, falling back to config module", key)
     return getattr(_cfg, key, None)
 
 
@@ -409,39 +403,94 @@ def invalidate_system_config_cache() -> None:
 # ── Seed system config from .env ─────────────────────────────────────────
 
 def seed_system_config_from_env() -> None:
-    """Import explicit .env values only when the DB setting is missing.
-
-    Existing DB values are authoritative. Hardcoded defaults stay in code
-    rather than being copied into the database.
-    """
+    """Migrate the one Free Time preference, then seed remaining setup values."""
     from mochi.admin.admin_env import read_env_file
 
-    conn = _connect()
-    cleared_keys = _ENV_ONLY_SYSTEM_KEYS | _DEPRECATED_SYSTEM_KEYS
-    placeholders = ",".join("?" for _ in cleared_keys)
-    deleted = conn.execute(
-        f"DELETE FROM skill_config WHERE skill_name = ? AND key IN ({placeholders})",
-        [_SYSTEM_SKILL_NAME] + list(cleared_keys),
-    ).rowcount
-    conn.commit()
-    conn.close()
-    if deleted:
-        log.info("Cleared %d retired system overrides from DB", deleted)
-        invalidate_system_config_cache()
-
-    existing = get_system_overrides()
     env_file = read_env_file()
-    seeded = 0
-    for key in SYSTEM_DEFAULTS:
-        env_raw = env_file.get(key)
-        if env_raw is None and key in os.environ:
-            env_raw = os.environ[key]
-        if key not in existing and env_raw is not None:
-            set_system_override(key, env_raw)
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(
+            "SELECT key, value FROM skill_config WHERE skill_name = ?",
+            (_SYSTEM_SKILL_NAME,),
+        ).fetchall()
+        existing = {row["key"]: row["value"] for row in rows}
+        target = "MAX_DAILY_FREE_TIME_OPPORTUNITIES"
+        seeded = 0
+        if target not in existing:
+            raw = (
+                existing.get("MAX_DAILY_PROACTIVE")
+                or env_file.get(target)
+                or os.environ.get(target)
+                or env_file.get("MAX_DAILY_PROACTIVE")
+                or os.environ.get("MAX_DAILY_PROACTIVE")
+                or str(SYSTEM_DEFAULTS[target][1])
+            )
+            try:
+                migrated_limit = max(0, min(50, int(raw)))
+            except (TypeError, ValueError):
+                migrated_limit = int(SYSTEM_DEFAULTS[target][1])
+                log.warning("Invalid legacy Free Time limit %r; using %d", raw, migrated_limit)
+            conn.execute(
+                "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    _SYSTEM_SKILL_NAME,
+                    target,
+                    str(migrated_limit),
+                    datetime.now(TZ).isoformat(),
+                ),
+            )
+            existing[target] = str(migrated_limit)
             seeded += 1
 
-    if seeded:
-        log.info("Config seed: %d explicit value(s) imported", seeded)
+        placeholders = ",".join("?" for _ in _RETIRED_HEARTBEAT_KEYS)
+        deleted = conn.execute(
+            f"DELETE FROM skill_config WHERE skill_name = ? "
+            f"AND key IN ({placeholders})",
+            [_SYSTEM_SKILL_NAME, *_RETIRED_HEARTBEAT_KEYS],
+        ).rowcount
+
+        for key in SYSTEM_DEFAULTS:
+            if key in existing:
+                continue
+            raw = env_file.get(key) or os.environ.get(key)
+            if raw is None:
+                continue
+            conn.execute(
+                "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    _SYSTEM_SKILL_NAME,
+                    key,
+                    raw,
+                    datetime.now(TZ).isoformat(),
+                ),
+            )
+            seeded += 1
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+    ignored = sorted(
+        key for key in _RETIRED_HEARTBEAT_KEYS
+        if key in env_file or key in os.environ
+    )
+    if ignored:
+        log.warning(
+            "Ignored retired Heartbeat settings: %s",
+            ", ".join(ignored),
+        )
+    if deleted or seeded:
+        log.info(
+            "Free Time config migration: seeded=%d retired=%d",
+            seeded,
+            deleted,
+        )
+        invalidate_system_config_cache()
 
 
 def get_system_overrides() -> dict[str, str]:

@@ -15,7 +15,6 @@ async def run_maintenance(user_id: int = 0) -> dict:
     """Execute deterministic Nightly work without any model calls."""
     uid = user_id or OWNER_USER_ID
     from mochi.config import (
-        HEARTBEAT_LOG_DELETE_DAYS,
         TRASH_PURGE_DAYS,
         logical_today,
     )
@@ -40,7 +39,7 @@ async def run_maintenance(user_id: int = 0) -> dict:
     )
     results["trash_purge"] = cleanup_old_trash(TRASH_PURGE_DAYS)
     results["proactive_log"] = cleanup_proactive_log(30)
-    results["heartbeat_log"] = cleanup_heartbeat_log(HEARTBEAT_LOG_DELETE_DAYS)
+    results["heartbeat_log"] = cleanup_heartbeat_log(30)
     results["kg_cleanup"] = cleanup_expired_triples(days=90)
     log.info("Deterministic Nightly complete: %s", results)
     return results
@@ -50,10 +49,6 @@ class MaintenanceSkill(Skill):
     """Deterministic Nightly automation."""
 
     async def execute(self, context: SkillContext) -> SkillResult:
-        from mochi.admin.admin_db import get_system_config
-        if not get_system_config("MAINTENANCE_ENABLED"):
-            return SkillResult(output="Maintenance disabled.", success=True)
-
         results = await run_maintenance(context.user_id)
         output = "\n".join(f"{k}: {v}" for k, v in results.items())
         return SkillResult(output=output)

@@ -77,15 +77,6 @@ class ObserverMeta:
     skill_name: str = ""        # owning skill (empty = standalone observer)
 
 
-@dataclass(frozen=True)
-class ObservedFact:
-    """One bounded unresolved fact; omission on a fresh scan resolves it."""
-
-    stable_key: str
-    facts: dict[str, Any]
-    freshness_seconds: int = 3600
-
-
 def _parse_observation_md(md_path: str) -> ObserverMeta:
     """Parse OBSERVATION.md front matter into ObserverMeta.
 
@@ -141,9 +132,6 @@ class Observer(ABC):
     Subclass and implement observe() — return a flat dict of data.
     Everything else (caching, interval, error handling) is handled here.
     """
-    retired_attention_keys: tuple[str, ...] = ()
-    retire_all_attention_facts: bool = False
-
     def __init__(self) -> None:
         self._meta: ObserverMeta | None = None
         self._last_collected_at: datetime | None = None
@@ -378,6 +366,6 @@ class Observer(ABC):
         """
         return prev != curr
 
-    def attention_facts(self, data: dict) -> list[ObservedFact]:
-        """Project observer data into safe facts; raw plugin payloads stay private."""
+    def free_time_cards(self, data: dict) -> list["FreeTimeCard"]:
+        """Project cached alerts that Free Time may optionally notice."""
         return []
