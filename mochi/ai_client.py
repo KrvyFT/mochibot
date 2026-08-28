@@ -811,14 +811,11 @@ def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
     situation = get_prompt("free_time_entry")
     if not situation:
         raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
-    protocol = get_prompt("runtime_silence_protocol")
-    if not protocol:
-        raise RuntimeError("Runtime silence protocol prompt is missing")
     return (
         "<autonomous_runtime_event>\n"
         f"kind: {runtime_entry.kind}\n"
         "new_user_message: false\n\n"
-        f"{situation}\n\n{protocol}\n"
+        f"{situation}\n"
         "</autonomous_runtime_event>"
     )
 
