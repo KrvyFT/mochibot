@@ -158,19 +158,6 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_heartbeat_runs_due
             ON heartbeat_runs(status, next_attempt_at, lease_until);
 
-        CREATE TABLE IF NOT EXISTS attention_facts (
-            source       TEXT NOT NULL,
-            stable_key   TEXT NOT NULL,
-            observed_at  TEXT NOT NULL,
-            fresh_until  TEXT NOT NULL,
-            status       TEXT NOT NULL DEFAULT 'unresolved',
-            facts_json   TEXT NOT NULL,
-            updated_at   TEXT NOT NULL,
-            PRIMARY KEY(source, stable_key)
-        );
-        CREATE INDEX IF NOT EXISTS idx_attention_facts_status
-            ON attention_facts(status, observed_at DESC);
-
         CREATE TABLE IF NOT EXISTS weekly_curation_batches (
             user_id            INTEGER NOT NULL,
             period_key        TEXT    NOT NULL,
@@ -336,6 +323,24 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         if not _has_col(table, col):
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typedef}")
             logger.info("Migrated %s: added %s", table, col)
+
+    # Attention was removed as a runtime concept. Preserve old run rows as
+    # terminal audit records, but ensure none can enter Main after upgrade.
+    retired_at = datetime.now(TZ).isoformat()
+    retired = conn.execute(
+        "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'retired', "
+        "handled_at = COALESCE(handled_at, ?), claim_token = NULL, "
+        "lease_until = NULL, next_attempt_at = NULL, delivery_started_at = NULL "
+        "WHERE entry_kind = 'attention' AND status != 'delivered'",
+        (retired_at,),
+    ).rowcount
+    conn.execute(
+        "DELETE FROM heartbeat_schedules WHERE entry_kind = 'attention'"
+    )
+    conn.execute("DROP INDEX IF EXISTS idx_attention_facts_status")
+    conn.execute("DROP TABLE IF EXISTS attention_facts")
+    if retired:
+        logger.info("Retired %d legacy Attention heartbeat runs", retired)
 
     # messages
     _add_col("messages", "processed", "INTEGER NOT NULL DEFAULT 0")

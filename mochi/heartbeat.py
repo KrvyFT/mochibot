@@ -19,14 +19,12 @@ from mochi.db import (
     log_heartbeat,
 )
 from mochi.heartbeat_runtime import (
-    advance_attention,
     begin_delivery,
     checkpoint_text_delivery,
     checkpoint_visible_delivery,
     claim_run,
     complete_delivery,
     complete_without_delivery,
-    defer_prepared_delivery,
     delivery_wait,
     ensure_schedules,
     entry_from_claim,
@@ -37,7 +35,6 @@ from mochi.heartbeat_runtime import (
     remove_delivered_component,
     store_delivery_progress,
     store_prepared_result,
-    sync_attention_facts,
 )
 from mochi.main_runtime import DurableChatResult
 
@@ -401,11 +398,9 @@ async def _run_weekly_if_due(
 async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
     if claimed.get("result_json"):
         durable = DurableChatResult.from_json(claimed["result_json"])
-        if claimed["entry_kind"] == "free_time":
-            complete_without_delivery(claimed, durable, "stale")
-            log_heartbeat(_state, "free_time_stale")
-            return None
-        return durable
+        complete_without_delivery(claimed, durable, "stale")
+        log_heartbeat(_state, "free_time_stale")
+        return None
     recovered = recover_prior_tool_attempt(claimed)
     if recovered is not None:
         complete_without_delivery(claimed, recovered, "tools_only")
@@ -457,15 +452,11 @@ async def _deliver_autonomous(
     durable: DurableChatResult,
 ) -> bool:
     if _runtime_delivery_callback is None:
-        if claimed["entry_kind"] == "free_time":
-            complete_without_delivery(claimed, durable, "delivery_failed")
-            log_heartbeat(_state, "free_time_delivery_failed")
-        else:
-            record_failure(claimed, "Runtime delivery callback is not registered")
+        complete_without_delivery(claimed, durable, "delivery_failed")
+        log_heartbeat(_state, "free_time_delivery_failed")
         return False
     if (
-        claimed["entry_kind"] == "free_time"
-        and _free_time_quiet_until(claimed["user_id"], datetime.now(TZ))
+        _free_time_quiet_until(claimed["user_id"], datetime.now(TZ))
         is not None
     ):
         complete_without_delivery(claimed, durable, "active_chat")
@@ -478,25 +469,8 @@ async def _deliver_autonomous(
         cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
     )
     if (durable.text or durable.stickers) and wait_seconds:
-        if claimed["entry_kind"] == "attention" and wait_reason == "cooldown":
-            defer_prepared_delivery(
-                claimed,
-                wait_seconds=wait_seconds,
-                reason="delivery cooldown",
-            )
-            log_heartbeat(_state, "attention_delivery_deferred")
-        else:
-            complete_without_delivery(claimed, durable, "suppressed")
-            log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_suppressed")
-            if (
-                claimed["entry_kind"] == "attention"
-                and wait_reason == "daily_limit"
-                and not durable.successful_effects
-            ):
-                advance_attention(
-                    now=gate_now + timedelta(seconds=wait_seconds),
-                    wake_reason="daily_budget_reset",
-                )
+        complete_without_delivery(claimed, durable, "suppressed")
+        log_heartbeat(_state, "free_time_delivery_suppressed", wait_reason or "")
         return False
     if not begin_delivery(claimed):
         return False
@@ -518,24 +492,12 @@ async def _deliver_autonomous(
                 claimed["channel_id"], component,
             )
         except Exception as exc:
-            if claimed["entry_kind"] == "free_time":
-                complete_without_delivery(claimed, durable, "delivery_unknown")
-                log_heartbeat(_state, "free_time_delivery_unknown", str(exc)[:200])
-            else:
-                record_failure(claimed, f"transport exception: {exc}")
-                log_heartbeat(
-                    _state,
-                    f"{claimed['entry_kind']}_delivery_failure",
-                    str(exc)[:200],
-                )
+            complete_without_delivery(claimed, durable, "delivery_unknown")
+            log_heartbeat(_state, "free_time_delivery_unknown", str(exc)[:200])
             return False
         if not delivered:
-            if claimed["entry_kind"] == "free_time":
-                complete_without_delivery(claimed, durable, "delivery_failed")
-                log_heartbeat(_state, "free_time_delivery_failed")
-            else:
-                record_failure(claimed, "transport reported delivery failure")
-                log_heartbeat(_state, f"{claimed['entry_kind']}_delivery_failure")
+            complete_without_delivery(claimed, durable, "delivery_failed")
+            log_heartbeat(_state, "free_time_delivery_failed")
             return False
         if kind == "text":
             checkpointed = checkpoint_text_delivery(
@@ -575,37 +537,13 @@ async def run_main_runtime_tick(
     *,
     now: datetime | None = None,
 ) -> list[str]:
-    """Collect facts, advance independent clocks, and run each durable claim."""
+    """Refresh observer caches and run due Free Time claims."""
     if _state != AWAKE or _silent_pause:
         return []
     now = now or datetime.now(TZ)
-    from mochi.observers import collect_attention_facts
+    from mochi.observers import collect_all
 
-    await collect_attention_facts()
-    try:
-        from mochi.diary import diary, refresh_diary_status
-
-        refresh_diary_status(user_id)
-        diary_status = diary.read(section="今日状態").strip()
-        has_status = (
-            diary_status
-            and "(nothing tracked today)" not in diary_status
-        )
-        sync_attention_facts(
-            "diary_status",
-            (
-                [{
-                    "stable_key": "current",
-                    "facts": {"status": diary_status},
-                }]
-                if has_status
-                else []
-            ),
-            observed_at=now,
-            freshness_seconds=86400,
-        )
-    except Exception as exc:
-        log.warning("Diary status refresh failed: %s", exc)
+    await collect_all()
     ensure_schedules(
         now=now,
         free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
