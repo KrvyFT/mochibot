@@ -315,22 +315,25 @@ _SYSTEM_SKILL_NAME = "_system"
 # Only a small preference subset is user-facing; the rest remain here so legacy
 # DB overrides keep their original types and behavior.
 # Environment-only keys:
-#   PROACTIVE_COOLDOWN_SECONDS, THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
+#   THINK_FALLBACK_MINUTES, LLM_HEARTBEAT_TIMEOUT_SECONDS — internal heartbeat tuning
 #   BEDTIME_ENTRY_ENABLED, BEDTIME_ENTRY_TIMEOUT_S — no dedicated settings page
 #   Autonomous Main Runtime output tuning
 _ENV_ONLY_SYSTEM_KEYS = frozenset({
-    "PROACTIVE_COOLDOWN_SECONDS",
     "THINK_FALLBACK_MINUTES",
     "LLM_HEARTBEAT_TIMEOUT_SECONDS",
 })
-_DEPRECATED_SYSTEM_KEYS = frozenset({"ATTENTION_INTERVAL_MINUTES"})
+_DEPRECATED_SYSTEM_KEYS = frozenset({
+    "ATTENTION_INTERVAL_MINUTES",
+    "HEARTBEAT_INTERVAL_MINUTES",
+    "MAX_DAILY_PROACTIVE",
+    "FREE_TIME_MIN_MINUTES",
+    "FREE_TIME_MAX_MINUTES",
+    "PROACTIVE_COOLDOWN_SECONDS",
+})
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
-    "HEARTBEAT_INTERVAL_MINUTES":     ("int",   20),
-    "MAX_DAILY_PROACTIVE":            ("int",   10),
-    "FREE_TIME_MIN_MINUTES":          ("int",   90),
-    "FREE_TIME_MAX_MINUTES":          ("int",   240),
+    "MAX_DAILY_FREE_TIME":            ("int",   10),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
@@ -417,6 +420,31 @@ def seed_system_config_from_env() -> None:
     from mochi.admin.admin_env import read_env_file
 
     conn = _connect()
+    env_file = read_env_file()
+    existing_new = conn.execute(
+        "SELECT 1 FROM skill_config WHERE skill_name = ? "
+        "AND key = 'MAX_DAILY_FREE_TIME'",
+        (_SYSTEM_SKILL_NAME,),
+    ).fetchone()
+    legacy = conn.execute(
+        "SELECT value FROM skill_config WHERE skill_name = ? "
+        "AND key = 'MAX_DAILY_PROACTIVE'",
+        (_SYSTEM_SKILL_NAME,),
+    ).fetchone()
+    legacy_value = (
+        legacy["value"]
+        if legacy is not None
+        else env_file.get("MAX_DAILY_PROACTIVE")
+        if env_file.get("MAX_DAILY_PROACTIVE") is not None
+        else os.environ.get("MAX_DAILY_PROACTIVE")
+    )
+    if existing_new is None and str(legacy_value or "").strip() == "0":
+        now = datetime.now(TZ).isoformat()
+        conn.execute(
+            "INSERT INTO skill_config (skill_name, key, value, updated_at) "
+            "VALUES (?, 'MAX_DAILY_FREE_TIME', '0', ?)",
+            (_SYSTEM_SKILL_NAME, now),
+        )
     cleared_keys = _ENV_ONLY_SYSTEM_KEYS | _DEPRECATED_SYSTEM_KEYS
     placeholders = ",".join("?" for _ in cleared_keys)
     deleted = conn.execute(
@@ -430,7 +458,6 @@ def seed_system_config_from_env() -> None:
         invalidate_system_config_cache()
 
     existing = get_system_overrides()
-    env_file = read_env_file()
     seeded = 0
     for key in SYSTEM_DEFAULTS:
         env_raw = env_file.get(key)

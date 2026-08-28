@@ -25,11 +25,10 @@ from mochi.heartbeat_runtime import (
     claim_run,
     complete_delivery,
     complete_without_delivery,
-    delivery_wait,
-    ensure_schedules,
+    ensure_daily_free_time_plan,
     entry_from_claim,
+    expire_unusable_free_time_runs,
     get_schedulable_runs,
-    materialize_due_runs,
     record_failure,
     recover_prior_tool_attempt,
     remove_delivered_component,
@@ -46,7 +45,7 @@ SLEEPING = "SLEEPING"
 AWAKE = "AWAKE"
 TRANSITIONING = "TRANSITIONING"
 RESLEEP_WINDOW_HOURS = 6
-FREE_TIME_CHAT_QUIET_MINUTES = 30
+HEARTBEAT_TICK_SECONDS = 30
 
 
 def _effective(key: str):
@@ -117,6 +116,8 @@ _weekly_callback = None
 _runtime_prepare_callback = None
 _runtime_delivery_callback = None
 _runtime_transport = ""
+_active_chat_tasks: set[asyncio.Task] = set()
+_chat_activity_generation = 0
 
 
 def set_bedtime_callback(callback) -> None:
@@ -134,6 +135,33 @@ def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: s
     _runtime_prepare_callback = prepare_callback
     _runtime_delivery_callback = delivery_callback
     _runtime_transport = transport
+
+
+def track_active_chat_task() -> None:
+    """Mark the current owner-message task active through its final delivery."""
+    global _chat_activity_generation
+    task = asyncio.current_task()
+    if task is None or task in _active_chat_tasks:
+        return
+    _active_chat_tasks.add(task)
+    _chat_activity_generation += 1
+    task.add_done_callback(_active_chat_tasks.discard)
+
+
+def has_active_chat() -> bool:
+    return any(not task.done() for task in _active_chat_tasks)
+
+
+def chat_activity_generation() -> int:
+    return _chat_activity_generation
+
+
+def free_time_turn_available(chat_generation: int) -> bool:
+    return (
+        _state == AWAKE
+        and not has_active_chat()
+        and chat_generation == _chat_activity_generation
+    )
 
 
 def wake_up(reason: str = "unknown") -> None:
@@ -256,20 +284,6 @@ def clear_silent_pause() -> None:
     _silent_pause = False
 
 
-def _free_time_quiet_until(user_id: int, now: datetime) -> datetime | None:
-    raw = get_last_user_message_time(user_id)
-    if not raw:
-        return None
-    try:
-        last = datetime.fromisoformat(raw)
-        if last.tzinfo is None:
-            last = last.replace(tzinfo=TZ)
-    except (TypeError, ValueError):
-        return None
-    quiet_until = last + timedelta(minutes=FREE_TIME_CHAT_QUIET_MINUTES)
-    return quiet_until if quiet_until > now else None
-
-
 def _check_silence_pause() -> None:
     from mochi.config import OWNER_USER_ID as user_id
 
@@ -293,25 +307,26 @@ def _check_silence_pause() -> None:
 
 def get_stats() -> dict:
     now = datetime.now(TZ)
-    day = logical_today(now)
-    start = datetime.strptime(day, "%Y-%m-%d").replace(
-        hour=_effective("MAINTENANCE_HOUR"), tzinfo=TZ,
-    ).astimezone(timezone.utc)
+    start = datetime.combine(now.date(), datetime.min.time(), tzinfo=TZ).astimezone(
+        timezone.utc,
+    )
     end = start + timedelta(days=1)
     conn = _connect()
     try:
-        count = conn.execute(
-            "SELECT COUNT(*) FROM heartbeat_runs WHERE text_delivered_at >= ? "
-            "AND text_delivered_at < ?",
+        row = conn.execute(
+            "SELECT COUNT(*) AS count, MAX(handled_at) AS last_think_at "
+            "FROM heartbeat_runs WHERE entry_kind = 'free_time' "
+            "AND attempt_count > 0 AND created_at >= ? AND created_at < ?",
             (start.isoformat(), end.isoformat()),
-        ).fetchone()[0]
+        ).fetchone()
     finally:
         conn.close()
     return {
         "state": _state,
         "state_changed_at": _state_changed_at.isoformat(),
-        "proactive_today": count,
-        "proactive_limit": _effective("MAX_DAILY_PROACTIVE"),
+        "free_time_thoughts_today": int(row["count"] or 0),
+        "free_time_thought_limit": _effective("MAX_DAILY_FREE_TIME"),
+        "last_think_at": row["last_think_at"],
         "wake_reason": _wake_reason,
     }
 
@@ -426,8 +441,8 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
         )
         return None
     if durable.disposition == "skip" and not durable.successful_effects:
-        complete_without_delivery(claimed, durable, "skip")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_skip")
+        complete_without_delivery(claimed, durable, "no_effect")
+        log_heartbeat(_state, "free_time_no_effect")
         return None
     if durable.disposition == "handled" and durable.successful_effects:
         complete_without_delivery(claimed, durable, "tools_only")
@@ -436,8 +451,8 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
     if durable.disposition != "deliver" or not (
         durable.text or durable.stickers
     ):
-        record_failure(claimed, "Main returned no valid outcome")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_failure", "invalid")
+        complete_without_delivery(claimed, durable, "no_effect")
+        log_heartbeat(_state, "free_time_no_effect")
         return None
     if not store_prepared_result(claimed, durable):
         return None
@@ -456,21 +471,12 @@ async def _deliver_autonomous(
         log_heartbeat(_state, "free_time_delivery_failed")
         return False
     if (
-        _free_time_quiet_until(claimed["user_id"], datetime.now(TZ))
-        is not None
+        _state != AWAKE
+        or has_active_chat()
+        or claimed.get("_chat_activity_generation") != chat_activity_generation()
     ):
         complete_without_delivery(claimed, durable, "active_chat")
         log_heartbeat(_state, "free_time_active_chat")
-        return False
-    gate_now = datetime.now(TZ)
-    wait_seconds, wait_reason = delivery_wait(
-        now=gate_now,
-        max_daily=int(_effective("MAX_DAILY_PROACTIVE")),
-        cooldown_seconds=int(_effective("PROACTIVE_COOLDOWN_SECONDS")),
-    )
-    if (durable.text or durable.stickers) and wait_seconds:
-        complete_without_delivery(claimed, durable, "suppressed")
-        log_heartbeat(_state, "free_time_delivery_suppressed", wait_reason or "")
         return False
     if not begin_delivery(claimed):
         return False
@@ -482,6 +488,12 @@ async def _deliver_autonomous(
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
     for kind, value in components:
+        if not free_time_turn_available(
+            int(claimed.get("_chat_activity_generation") or 0)
+        ):
+            complete_without_delivery(claimed, remaining, "active_chat")
+            log_heartbeat(_state, "free_time_active_chat")
+            return False
         component = (
             ChatResult(text=value)
             if kind == "text"
@@ -544,43 +556,46 @@ async def run_main_runtime_tick(
     from mochi.observers import collect_all
 
     await collect_all()
-    ensure_schedules(
-        now=now,
-        free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
-        free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
-    )
-    free_time_not_before = _free_time_quiet_until(user_id, now)
-    created = materialize_due_runs(
+    created = ensure_daily_free_time_plan(
         user_id=user_id,
         channel_id=user_id,
         transport=_runtime_transport,
         now=now,
-        free_time_min_minutes=int(_effective("FREE_TIME_MIN_MINUTES")),
-        free_time_max_minutes=int(_effective("FREE_TIME_MAX_MINUTES")),
-        free_time_not_before=free_time_not_before,
+        max_daily=int(_effective("MAX_DAILY_FREE_TIME")),
     )
-    for _ in range(12):
-        progressed = False
-        for row in get_schedulable_runs(now=now):
-            if row["entry_kind"] == "free_time" and free_time_not_before is not None:
-                continue
-            claimed = claim_run(row["run_key"], now=now)
-            if claimed is not None:
-                progressed = True
-                await _run_claimed_entry(claimed)
-        if not progressed:
+    active_chat = has_active_chat()
+    expire_unusable_free_time_runs(
+        now=now,
+        active_chat=active_chat,
+        awake=True,
+    )
+    if active_chat:
+        return created
+    for row in get_schedulable_runs(now=now):
+        current_now = datetime.now(TZ)
+        expire_unusable_free_time_runs(
+            now=current_now,
+            active_chat=has_active_chat(),
+            awake=_state == AWAKE,
+        )
+        if _state != AWAKE or has_active_chat():
+            break
+        claimed = claim_run(row["run_key"], now=current_now)
+        if claimed is not None:
+            claimed["_chat_activity_generation"] = chat_activity_generation()
+            await _run_claimed_entry(claimed)
             break
     return created
 
 
 async def heartbeat_loop() -> None:
     log.info(
-        "Heartbeat started: interval=%dm, state=%s",
-        _effective("HEARTBEAT_INTERVAL_MINUTES"),
+        "Heartbeat started: internal_tick=%ds, state=%s",
+        HEARTBEAT_TICK_SECONDS,
         _state,
     )
     while True:
-        interval = int(_effective("HEARTBEAT_INTERVAL_MINUTES")) * 60
+        interval = HEARTBEAT_TICK_SECONDS
         try:
             from mochi.config import OWNER_USER_ID as user_id
 
@@ -590,11 +605,23 @@ async def heartbeat_loop() -> None:
             now = datetime.now(TZ)
             await _run_maintenance_if_due(user_id, now)
             await _run_weekly_if_due(user_id, now)
+            ensure_daily_free_time_plan(
+                user_id=user_id,
+                channel_id=user_id,
+                transport=_runtime_transport,
+                now=now,
+                max_daily=int(_effective("MAX_DAILY_FREE_TIME")),
+            )
             if _state == TRANSITIONING:
                 log_heartbeat(_state, "sleep_transition")
                 await asyncio.sleep(interval)
                 continue
             if _state == SLEEPING:
+                expire_unusable_free_time_runs(
+                    now=now,
+                    active_chat=has_active_chat(),
+                    awake=False,
+                )
                 fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
                 if fallback_hour <= now.hour < _sleep_after_hour():
                     wake_up(f"fallback_{fallback_hour}:00")

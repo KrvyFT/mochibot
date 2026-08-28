@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import json
 import random
 import uuid
 from dataclasses import replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
-from mochi.config import TZ, logical_today
+from mochi.config import TZ
 from mochi.db import _connect, get_tool_executions_for_turn
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
 UTC = timezone.utc
+FREE_TIME_AWAKE_START = time(6, 0)
+FREE_TIME_AWAKE_END = time(21, 0)
+FREE_TIME_ACTIVATION_CHANCE = 0.6
+FREE_TIME_SEARCH_SHARE = 0.2
+FREE_TIME_MISSED_GRACE = timedelta(seconds=45)
 _LEASE_SECONDS = 300
 
 
@@ -38,142 +44,189 @@ def _as_utc(value: str | None) -> datetime | None:
     return parsed.astimezone(UTC)
 
 
-def ensure_schedules(
-    *,
-    now: datetime,
-    free_time_min_minutes: int,
-    free_time_max_minutes: int,
-    rng: random.Random | random.SystemRandom | None = None,
-) -> None:
-    rng = rng or random.SystemRandom()
-    now = now.astimezone(UTC)
-    free_delay = rng.randint(
-        min(free_time_min_minutes, free_time_max_minutes),
-        max(free_time_min_minutes, free_time_max_minutes),
-    )
-    conn = _connect()
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute(
-            "INSERT OR IGNORE INTO heartbeat_schedules "
-            "(entry_kind, next_due_at, wake_reason, updated_at) "
-            "VALUES ('free_time', ?, 'periodic', ?)",
-            (_iso(now + timedelta(minutes=free_delay)), _iso(now)),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+def _day_prefix(local_date: str) -> str:
+    return f"free_time:{local_date}:%"
 
 
-def set_schedule_due(
-    kind: str, due_at: datetime, *, wake_reason: str = "periodic",
-) -> None:
-    """Set one clock directly; primarily useful for deterministic tests."""
-    if kind != "free_time":
-        raise ValueError("only the Free Time schedule is supported")
-    now_iso = _iso(_utc_now())
-    conn = _connect()
-    try:
-        conn.execute(
-            "INSERT INTO heartbeat_schedules "
-            "(entry_kind, next_due_at, wake_reason, updated_at) VALUES (?, ?, ?, ?) "
-            "ON CONFLICT(entry_kind) DO UPDATE SET next_due_at = excluded.next_due_at, "
-            "wake_reason = excluded.wake_reason, updated_at = excluded.updated_at",
-            (kind, _iso(due_at), wake_reason, now_iso),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+def _select_search_run_keys(
+    run_keys: list[str],
+    rng: random.Random | random.SystemRandom,
+) -> set[str]:
+    count = min(len(run_keys), int(len(run_keys) * FREE_TIME_SEARCH_SHARE + 0.5))
+    return set(rng.sample(run_keys, count)) if count else set()
 
 
-def materialize_due_runs(
+def ensure_daily_free_time_plan(
     *,
     user_id: int,
     channel_id: int,
     transport: str,
     now: datetime,
-    free_time_min_minutes: int,
-    free_time_max_minutes: int,
-    free_time_not_before: datetime | None = None,
+    max_daily: int,
     rng: random.Random | random.SystemRandom | None = None,
 ) -> list[str]:
-    """Snapshot a due Free Time clock and advance it atomically."""
+    """Persist today's random Free Time opportunities exactly once."""
     rng = rng or random.SystemRandom()
-    now = now.astimezone(UTC)
-    free_time_not_before = (
-        free_time_not_before.astimezone(UTC)
-        if free_time_not_before is not None
-        else None
+    local_now = now.astimezone(TZ)
+    local_date = local_now.date().isoformat()
+    now_iso = _iso(local_now)
+    max_daily = max(0, min(10, int(max_daily)))
+    start = datetime.combine(
+        local_now.date(), FREE_TIME_AWAKE_START, tzinfo=TZ,
     )
-    now_iso = _iso(now)
+    end = datetime.combine(local_now.date(), FREE_TIME_AWAKE_END, tzinfo=TZ)
+    marker = (
+        f"{local_date}:{max_daily}:{user_id}:{channel_id}:{transport}"
+    )
     created: list[str] = []
+
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        due_rows = conn.execute(
-            "SELECT entry_kind, next_due_at, wake_reason FROM heartbeat_schedules "
-            "WHERE next_due_at <= ? ORDER BY next_due_at, entry_kind",
-            (now_iso,),
-        ).fetchall()
-        for row in due_rows:
-            kind = row["entry_kind"]
-            if kind != "free_time":
-                continue
-            if (
-                free_time_not_before is not None
-                and free_time_not_before > now
-            ):
-                conn.execute(
-                    "UPDATE heartbeat_schedules SET next_due_at = ?, "
-                    "updated_at = ? WHERE entry_kind = 'free_time'",
-                    (_iso(free_time_not_before), now_iso),
-                )
-                continue
-            due_at = row["next_due_at"]
-            run_key = f"{kind}:{due_at}"
+        conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'expired', "
+            "handled_at = ?, claim_token = NULL, lease_until = NULL, "
+            "next_attempt_at = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' "
+            "AND status IN ('pending', 'running', 'ready') "
+            "AND run_key NOT LIKE ?",
+            (now_iso, _day_prefix(local_date)),
+        )
+        conn.execute(
+            "DELETE FROM heartbeat_schedules WHERE entry_kind = 'free_time'"
+        )
+        plan = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'"
+        ).fetchone()
+        if plan is not None and plan["wake_reason"] == marker:
+            conn.commit()
+            return created
+
+        conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', "
+            "outcome = 'plan_replaced', handled_at = ?, next_attempt_at = NULL "
+            "WHERE entry_kind = 'free_time' AND run_key LIKE ? "
+            "AND status = 'pending'",
+            (now_iso, _day_prefix(local_date)),
+        )
+        conn.execute(
+            "DELETE FROM heartbeat_schedules WHERE entry_kind = 'free_time_plan'"
+        )
+
+        consumed = conn.execute(
+            "SELECT COUNT(*) FROM heartbeat_runs "
+            "WHERE entry_kind = 'free_time' AND run_key LIKE ? "
+            "AND attempt_count > 0",
+            (_day_prefix(local_date),),
+        ).fetchone()[0]
+        remaining = max(0, max_daily - int(consumed))
+        planned: list[tuple[str, datetime]] = []
+        if remaining and local_now < end:
+            window_seconds = (end - start).total_seconds()
+            for ordinal in range(remaining):
+                if rng.random() >= FREE_TIME_ACTIVATION_CHANCE:
+                    continue
+                due = start + timedelta(seconds=rng.random() * window_seconds)
+                if due <= local_now:
+                    continue
+                due_utc = due.astimezone(UTC)
+                run_key = f"free_time:{local_date}:{ordinal}:{due_utc.isoformat()}"
+                planned.append((run_key, due_utc))
+            planned.sort(key=lambda item: item[1])
+
+        search_keys = _select_search_run_keys(
+            [run_key for run_key, _due in planned],
+            rng,
+        )
+        for run_key, due in planned:
             conn.execute(
                 "INSERT OR IGNORE INTO heartbeat_runs "
-                "(run_key, entry_kind, user_id, channel_id, transport, wake_reason, "
-                "facts_json, status, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, '[]', 'pending', ?)",
+                "(run_key, entry_kind, user_id, channel_id, transport, "
+                "wake_reason, facts_json, status, next_attempt_at, created_at) "
+                "VALUES (?, 'free_time', ?, ?, ?, 'daily_random', ?, "
+                "'pending', ?, ?)",
                 (
-                    run_key, kind, user_id, channel_id, transport,
-                    row["wake_reason"], now_iso,
+                    run_key,
+                    user_id,
+                    channel_id,
+                    transport,
+                    json.dumps(
+                        {"direct_search": run_key in search_keys},
+                        separators=(",", ":"),
+                    ),
+                    _iso(due),
+                    now_iso,
                 ),
             )
             if conn.execute("SELECT changes()").fetchone()[0]:
                 created.append(run_key)
-            delay = rng.randint(
-                min(free_time_min_minutes, free_time_max_minutes),
-                max(free_time_min_minutes, free_time_max_minutes),
-            )
-            next_due = now + timedelta(minutes=delay)
-            conn.execute(
-                "UPDATE heartbeat_schedules SET next_due_at = ?, "
-                "wake_reason = 'periodic', updated_at = ? WHERE entry_kind = ?",
-                (_iso(next_due), now_iso, kind),
-            )
+
+        conn.execute(
+            "INSERT INTO heartbeat_schedules "
+            "(entry_kind, next_due_at, wake_reason, updated_at) "
+            "VALUES ('free_time_plan', ?, ?, ?)",
+            (_iso(end.astimezone(UTC)), marker, now_iso),
+        )
         conn.commit()
+        return created
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
-    return created
+
+
+def expire_unusable_free_time_runs(
+    *,
+    now: datetime,
+    active_chat: bool,
+    awake: bool,
+) -> int:
+    """Expire missed, sleeping, or chat-conflicting opportunities."""
+    now_iso = _iso(now)
+    cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        due_before = now_iso if active_chat or not awake else cutoff
+        outcome = "active_chat" if active_chat else "asleep" if not awake else "expired"
+        expired = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = ?, "
+            "handled_at = ?, next_attempt_at = NULL, claim_token = NULL, "
+            "lease_until = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' AND status = 'pending' "
+            "AND next_attempt_at <= ?",
+            (outcome, now_iso, due_before),
+        ).rowcount
+        interrupted = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', "
+            "outcome = 'interrupted', handled_at = ?, next_attempt_at = NULL, "
+            "claim_token = NULL, lease_until = NULL, last_error = '' "
+            "WHERE entry_kind = 'free_time' AND status IN ('running', 'ready') "
+            "AND (lease_until IS NULL OR lease_until <= ?)",
+            (now_iso, now_iso),
+        ).rowcount
+        conn.commit()
+        return expired + interrupted
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_schedulable_runs(*, now: datetime) -> list[dict]:
     now_iso = _iso(now)
+    cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
     conn = _connect()
     try:
         rows = conn.execute(
-            "SELECT * FROM heartbeat_runs WHERE "
-            "entry_kind = 'free_time' AND ("
-            "(status = 'ready' AND last_error = 'delivery budget/cooldown' AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status IN ('pending', 'ready') AND "
-            "(next_attempt_at IS NULL OR next_attempt_at <= ?) AND "
-            "(lease_until IS NULL OR lease_until <= ?)) OR "
-            "(status = 'running' AND lease_until <= ?)) "
+            "SELECT * FROM heartbeat_runs WHERE entry_kind = 'free_time' "
+            "AND status = 'pending' AND next_attempt_at > ? "
+            "AND next_attempt_at <= ? "
             "ORDER BY created_at, run_key",
-            (now_iso, now_iso, now_iso, now_iso),
+            (cutoff, now_iso),
         ).fetchall()
         return [dict(row) for row in rows]
     finally:
@@ -198,38 +251,31 @@ def claim_run(
             return None
         item = dict(row)
         status = item["status"]
-        retry_at = _as_utc(item.get("next_attempt_at"))
         lease = _as_utc(item.get("lease_until"))
-        legacy_budget_queue = (
-            status == "ready"
-            and item.get("last_error") == "delivery budget/cooldown"
-        )
-        if status not in {"pending", "ready", "running"}:
+        if status != "pending":
             conn.rollback()
             return None
         if item["entry_kind"] != "free_time":
             conn.rollback()
             return None
-        if retry_at and retry_at > now and not legacy_budget_queue:
-            conn.rollback()
-            return None
         if lease and lease > now:
             conn.rollback()
             return None
-        claimed_status = "ready" if item.get("result_json") else "running"
         cursor = conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, claim_token = ?, lease_until = ?, "
+            "UPDATE heartbeat_runs SET status = 'running', claim_token = ?, "
+            "lease_until = ?, attempt_count = attempt_count + 1, "
             "delivery_started_at = NULL WHERE run_key = ? AND status = ?",
-            (claimed_status, claim_token, lease_until, run_key, status),
+            (claim_token, lease_until, run_key, status),
         )
         if cursor.rowcount != 1:
             conn.rollback()
             return None
         conn.commit()
         item.update(
-            status=claimed_status,
+            status="running",
             claim_token=claim_token,
             lease_until=lease_until,
+            attempt_count=int(item.get("attempt_count") or 0) + 1,
         )
         return item
     finally:
@@ -237,6 +283,12 @@ def claim_run(
 
 
 def entry_from_claim(claimed: dict) -> MainRuntimeEntry:
+    try:
+        payload = json.loads(claimed.get("facts_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
     common = {
         "run_key": claimed["run_key"],
         "wake_reason": claimed["wake_reason"],
@@ -248,7 +300,11 @@ def entry_from_claim(claimed: dict) -> MainRuntimeEntry:
     }
     if claimed["entry_kind"] != "free_time":
         raise ValueError("only Free Time heartbeat runs can enter Main")
-    return MainRuntimeEntry.free_time(**common)
+    return MainRuntimeEntry.free_time(
+        direct_search=bool(payload.get("direct_search")),
+        chat_generation=int(claimed.get("_chat_activity_generation") or 0),
+        **common,
+    )
 
 
 def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
@@ -271,6 +327,7 @@ def complete_without_delivery(
 ) -> bool:
     if outcome not in {
         "skip",
+        "no_effect",
         "tools_only",
         "suppressed",
         "active_chat",
@@ -318,45 +375,6 @@ def recover_prior_tool_attempt(claimed: dict) -> DurableChatResult | None:
         ),
         disposition="handled",
     )
-
-
-def delivery_wait(
-    *,
-    now: datetime,
-    max_daily: int,
-    cooldown_seconds: int,
-) -> tuple[int, str | None]:
-    from mochi.admin.admin_db import get_system_config
-
-    local_now = now.astimezone(TZ)
-    day = logical_today(local_now)
-    start = datetime.strptime(day, "%Y-%m-%d").replace(
-        hour=get_system_config("MAINTENANCE_HOUR"), tzinfo=TZ,
-    ).astimezone(UTC)
-    end = start + timedelta(days=1)
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT COUNT(*) AS count, MAX(text_delivered_at) AS latest "
-            "FROM heartbeat_runs WHERE text_delivered_at >= ? "
-            "AND text_delivered_at < ?",
-            (_iso(start), _iso(end)),
-        ).fetchone()
-    finally:
-        conn.close()
-    if int(row["count"] or 0) >= max_daily:
-        return (
-            max(1, int((end - now.astimezone(UTC)).total_seconds())),
-            "daily_limit",
-        )
-    latest = _as_utc(row["latest"])
-    if latest:
-        remaining = cooldown_seconds - int(
-            (now.astimezone(UTC) - latest).total_seconds()
-        )
-        if remaining > 0:
-            return remaining, "cooldown"
-    return 0, None
 
 
 def begin_delivery(
@@ -446,31 +464,16 @@ def record_failure(claimed: dict, error: str) -> datetime | None:
     now = _utc_now()
     conn = _connect()
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT attempt_count, result_json FROM heartbeat_runs "
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET status = 'delivered', outcome = 'failed', "
+            "handled_at = ?, next_attempt_at = NULL, last_error = ?, "
+            "claim_token = NULL, lease_until = NULL, delivery_started_at = NULL "
             "WHERE run_key = ? AND claim_token = ? "
             "AND status IN ('running', 'ready')",
-            (claimed["run_key"], claimed["claim_token"]),
-        ).fetchone()
-        if row is None:
-            conn.rollback()
-            return None
-        attempt = int(row["attempt_count"] or 0) + 1
-        retry_at = now + timedelta(seconds=min(60 * (2 ** min(attempt - 1, 6)), 3600))
-        status = "ready" if row["result_json"] else "pending"
-        conn.execute(
-            "UPDATE heartbeat_runs SET status = ?, attempt_count = ?, "
-            "next_attempt_at = ?, last_error = ?, claim_token = NULL, "
-            "lease_until = NULL, delivery_started_at = NULL "
-            "WHERE run_key = ? AND claim_token = ?",
-            (
-                status, attempt, _iso(retry_at), error[:1000],
-                claimed["run_key"], claimed["claim_token"],
-            ),
+            (_iso(now), error[:1000], claimed["run_key"], claimed["claim_token"]),
         )
         conn.commit()
-        return retry_at
+        return now if cursor.rowcount else None
     finally:
         conn.close()
 

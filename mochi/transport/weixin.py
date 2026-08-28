@@ -518,6 +518,9 @@ class WeixinTransport(Transport):
             log.info("WeChat: rejected message from non-owner %s", from_user)
             return
 
+        from mochi.heartbeat import track_active_chat_task
+        track_active_chat_task()
+
         context_token = msg.get("context_token", "")
         self._remember_context_token(from_user, context_token)
 
@@ -615,7 +618,8 @@ class WeixinTransport(Transport):
                 "📊 心跳状态",
                 "",
                 f"状态: {stats['state']}",
-                f"今日主动推送: {stats['proactive_today']}/{stats['proactive_limit']}",
+                f"今日 Free Time 思考: "
+                f"{stats['free_time_thoughts_today']}/{stats['free_time_thought_limit']}",
                 f"上次思考: {stats['last_think_at'] or '无'}",
             ]
             if entry:

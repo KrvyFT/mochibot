@@ -40,7 +40,7 @@ locked: true
 | value | string | yes | 新值（空字符串=清除自定义值） |
 
 ### manage_agent_settings (on_demand)
-查看或调整自身运行设置。用户明确要求改变陪伴节奏、清醒时间或时区时可直接 set；系统主动回合只能查看。
+查看或调整每日 Free Time 自主思考上限。用户明确要求改变时可直接 set；系统主动回合只能查看。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|

@@ -42,11 +42,11 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry.kind == "free_time":
         return ContextPolicy(
             early_runtime_situation=True,
-            diary_journal=False,
+            diary_journal=True,
             conversation_summary=False,
             recent_history=True,
             recent_turns=6,
-            recent_outreach_only=True,
+            recent_outreach_only=False,
             trailing_history=False,
             auto_recall=False,
             recent_operations=False,
@@ -85,6 +85,8 @@ class MainRuntimeEntry:
     lease_until: str | None = None
     run_key: str | None = None
     wake_reason: str | None = None
+    free_time_direct_search: bool = False
+    free_time_chat_generation: int = 0
 
     @classmethod
     def bedtime(
@@ -198,6 +200,8 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
+        direct_search: bool = False,
+        chat_generation: int = 0,
     ) -> "MainRuntimeEntry":
         return cls._autonomous(
             kind="free_time",
@@ -208,6 +212,8 @@ class MainRuntimeEntry:
             transport=transport,
             claim_token=claim_token,
             lease_until=lease_until,
+            direct_search=direct_search,
+            chat_generation=chat_generation,
         )
 
     @classmethod
@@ -222,6 +228,8 @@ class MainRuntimeEntry:
         transport: str,
         claim_token: str,
         lease_until: str,
+        direct_search: bool = False,
+        chat_generation: int = 0,
     ) -> "MainRuntimeEntry":
         for label, value in (
             ("run key", run_key),
@@ -242,6 +250,8 @@ class MainRuntimeEntry:
             wake_reason=wake_reason.strip(),
             claim_token=claim_token.strip(),
             lease_until=lease_until.strip(),
+            free_time_direct_search=bool(direct_search),
+            free_time_chat_generation=max(0, int(chat_generation)),
         )
 
 

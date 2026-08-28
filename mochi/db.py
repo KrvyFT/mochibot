@@ -828,6 +828,29 @@ def get_recent_messages(user_id: int, limit: int = 20, since: str | None = None)
     return [dict(r) for r in reversed(rows)]
 
 
+def get_recent_real_messages(
+    user_id: int,
+    limit: int = 6,
+    since: str | None = None,
+) -> list[dict]:
+    """Return the latest real user/assistant messages in chronological order."""
+    conn = _connect()
+    conditions = ["user_id = ?", "role IN ('user', 'assistant')"]
+    params: list = [user_id]
+    if since:
+        conditions.append("created_at > ?")
+        params.append(since)
+    params.append(max(1, min(int(limit), 20)))
+    rows = conn.execute(
+        "SELECT role, content, created_at, tool_history, turn_id, processed "
+        "FROM messages WHERE " + " AND ".join(conditions)
+        + " ORDER BY id DESC LIMIT ?",
+        params,
+    ).fetchall()
+    conn.close()
+    return [dict(row) for row in reversed(rows)]
+
+
 def get_recent_user_messages_in_window(
     user_id: int,
     start: datetime,

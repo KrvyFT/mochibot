@@ -25,6 +25,7 @@ from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
     recall_memory, mark_memory_items_accessed, get_conversation_context,
+    get_context_reset, get_recent_real_messages,
     start_tool_execution, finish_tool_execution,
 )
 from mochi.core_store import read_core
@@ -889,7 +890,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly:
+    if not is_weekly and not is_autonomous:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -1225,13 +1226,29 @@ async def chat(
         tools = skill_registry.get_tools_by_load(
             "resident", transport=transport,
         )
+        if runtime_entry.free_time_direct_search:
+            tools.extend(skill_registry.get_tools_by_tool_names(
+                ("web_search", "read_web_page"),
+                transport=transport,
+            ))
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
-        core_memory, conversation_context = await asyncio.gather(
+        core_memory, recent_messages = await asyncio.gather(
             asyncio.to_thread(read_core),
-            _safe_conversation_context(),
+            asyncio.to_thread(
+                get_recent_real_messages,
+                user_id,
+                6,
+                get_context_reset(user_id),
+            ),
         )
+        conversation_context = {
+            "summary": "",
+            "overflow": [],
+            "recent": recent_messages,
+            "trailing": [],
+        }
         recalled_memories = []
         habits = []
 
@@ -1487,6 +1504,15 @@ async def chat(
         except Exception as exc:
             log.warning("Main usage telemetry failed: %s", exc)
 
+    def _free_time_cancelled() -> bool:
+        if not is_autonomous:
+            return False
+        from mochi.heartbeat import free_time_turn_available
+
+        return not free_time_turn_available(
+            runtime_entry.free_time_chat_generation,
+        )
+
     def _final_result(reply: str) -> ChatResult:
         if is_bedtime or bedtime_requested:
             reply, _ = _parse_runtime_reply(reply)
@@ -1568,8 +1594,11 @@ async def chat(
         )
 
     for round_num in range(max_tool_rounds):
+        if _free_time_cancelled():
+            return ChatResult(disposition="invalid")
         round_availability = availability
-        for _attempt in range(2):
+        model_attempts = 1 if is_autonomous else 2
+        for _attempt in range(model_attempts):
             try:
                 response = await asyncio.to_thread(
                     client.chat,
@@ -1583,10 +1612,15 @@ async def chat(
                 )
                 break
             except Exception as e:
-                if _attempt == 0:
+                if _attempt + 1 < model_attempts:
                     log.warning("LLM call failed (attempt 1), retrying: %s", e)
                     continue
-                log.error("LLM call failed (attempt 2): %s", e, exc_info=True)
+                log.error(
+                    "LLM call failed (attempt %d): %s",
+                    _attempt + 1,
+                    e,
+                    exc_info=True,
+                )
                 if is_bedtime:
                     return ChatResult()
                 if is_self_reminder or is_autonomous:
@@ -1606,6 +1640,9 @@ async def chat(
         if recalled_memories and not recall_exposure_recorded:
             _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True
+
+        if _free_time_cancelled():
+            return ChatResult(disposition="invalid")
 
         # No tool calls — we have the final response
         if not response.tool_calls:
@@ -1635,6 +1672,8 @@ async def chat(
         diary_update_attempted = False
         weekly_core_update_attempted = False
         for tc in response.tool_calls:
+            if _free_time_cancelled():
+                return ChatResult(disposition="invalid")
             # ── Handle tool escalation ──
             if tc["name"] == "request_tools":
                 if not round_availability.allows("request_tools"):

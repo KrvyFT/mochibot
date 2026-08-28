@@ -403,7 +403,11 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, api_key: str, model: str):
         import anthropic
         self._model = model
-        self._client = anthropic.Anthropic(api_key=api_key)
+        self._client = anthropic.Anthropic(
+            api_key=api_key,
+            max_retries=0,
+            timeout=_HTTP_TIMEOUT,
+        )
 
     def provider_name(self) -> str:
         return "anthropic"

@@ -1410,7 +1410,7 @@ async function loadSettings() {
     const ownerBound = s.config_status.owner_user_id?.set || false;
     const preferencesConfigured = (
       prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
-      && prefs.MAX_DAILY_PROACTIVE?.source === 'user'
+      && prefs.MAX_DAILY_FREE_TIME?.source === 'user'
     );
     const setupComplete = hasModel && hasTransport && preferencesConfigured;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
@@ -1534,11 +1534,11 @@ async function loadSettings() {
     const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
     const browserTimezone = -(new Date().getTimezoneOffset() / 60);
     const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
-    const proactive = prefs.MAX_DAILY_PROACTIVE || {value: 10, default: 10};
-    const proactiveEnabled = Number(proactive.value) > 0;
-    const proactiveLimit = proactiveEnabled ? Number(proactive.value) : Number(proactive.default || 10);
+    const freeTime = prefs.MAX_DAILY_FREE_TIME || {value: 10, default: 10};
+    const freeTimeEnabled = Number(freeTime.value) > 0;
+    const freeTimeLimit = freeTimeEnabled ? Number(freeTime.value) : Number(freeTime.default || 10);
     html += `<div class="card"><div class="settings-section-head">
-      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和主动联系</div></div>
+      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间和 Free Time</div></div>
     </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:260px;flex:1">
@@ -1549,12 +1549,13 @@ async function loadSettings() {
         <span style="font-size:12px;color:var(--text-soft)">UTC 偏移</span>
       </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
-        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${proactiveEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
-        <div style="min-width:220px;flex:1;font-size:14px">主动联系</div>
+        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
+        <div style="min-width:220px;flex:1;font-size:14px">Free Time 自主思考</div>
         <label style="font-size:12px;color:var(--text-soft)">每天最多</label>
-        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="50" style="width:80px" value="${esc(proactiveLimit)}" ${proactiveEnabled?'':'disabled'}>
-        <span style="font-size:12px;color:var(--text-soft)">次</span>
+        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="10" style="width:80px" value="${esc(freeTimeLimit)}" ${freeTimeEnabled?'':'disabled'}>
+        <span style="font-size:12px;color:var(--text-soft)">次上限</span>
       </div>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:6px">每天随机产生不超过该数量的自主思考机会；热聊、睡眠或错过时直接过期，所以实际次数通常更少。</div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
     </div>`;
@@ -1594,13 +1595,13 @@ async function savePreferences() {
   if (!Number.isFinite(timezone) || timezone < -12 || timezone > 14) {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
-  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 50)) {
-    return showToast('主动联系上限必须是 1 到 50 的整数');
+  if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > 10)) {
+    return showToast('Free Time 思考上限必须是 1 到 10 的整数');
   }
   try {
     await api('PUT', '/preferences', {
       TIMEZONE_OFFSET_HOURS: timezone,
-      MAX_DAILY_PROACTIVE: enabled ? limit : 0,
+      MAX_DAILY_FREE_TIME: enabled ? limit : 0,
     });
     showToast('✅ 偏好已保存');
     loaded.settings = false;

@@ -226,22 +226,25 @@ atomically.
 
 ## Free Time flow
 
-Free Time uses a randomized durable clock and waits until the user's latest
-message has been quiet for 30 minutes. Sleeping and long-silence pause gates run
-before observer or model work. Observer caches continue to refresh without
-waking Main; Main may inspect their bounded safe views through `look_around`.
+The owner controls one Heartbeat preference: the daily upper limit for Free
+Time Main calls. At the start of each local day, the zero-model scheduler creates
+that many candidate moments across 06:00–21:00 and independently activates each
+with a 60% chance. The resulting opportunities and their direct-search
+allocation are durable, so restart does not redraw them. A due opportunity
+expires during sleep, active owner chat, or after it is missed; it is never
+delayed, accumulated, or retried.
 
 Free Time enters the standard Main personality and Agent First tool loop. It
-receives last contact age plus a bounded read-only window of its own recent
-proactive outreach. It does not inherit ordinary conversation, summary, Diary,
-the status panel, auto-recall, recent operations, or semantic routing, so the
-harness does not assign a topic to unclaimed time. Main starts with resident
-tools and may request other tools when curiosity calls for current context; it
-does not inherit a sticky routed skill.
+receives Core, current local time, last-contact age, today's free-text Diary, and
+the latest six real user/assistant messages as bounded read-only context. It does
+not receive the conversation summary, status panel, auto-recall, recent
+operations, or semantic routing. Main starts with resident tools and
+`request_tools`; about 20% of planned opportunities also expose `web_search` and
+`read_web_page` directly. The allocation does not describe the turn as a search
+mode or require search, and other turns may still request those tools.
 
-Free Time is ephemeral: its text is generated only when the random clock is
-claimed, and any transport failure, uncertain delivery, active chat, or recovery
-of previously prepared text ends that opportunity without replaying old wording.
-History and proactive delivery logs are written only after successful text
-delivery. Daily limits and cooldowns constrain delivery only; they do not filter
-topics or decide what facts mean.
+Free Time is ephemeral: its text is generated only when an opportunity is
+claimed. Empty/no-effect output, model failure, transport failure, uncertain
+delivery, active chat, or recovery of a previously interrupted run ends that
+opportunity without retry or replay. History and proactive delivery logs are
+written only after successful text delivery.

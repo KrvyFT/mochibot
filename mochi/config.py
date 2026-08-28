@@ -116,11 +116,7 @@ def _persist_owner(user_id: int) -> None:
 # Heartbeat
 # ═══════════════════════════════════════════════════════════════════════════
 
-HEARTBEAT_INTERVAL_MINUTES = _env_int("HEARTBEAT_INTERVAL_MINUTES", 20)
-MAX_DAILY_PROACTIVE = _env_int("MAX_DAILY_PROACTIVE", 10)
-PROACTIVE_COOLDOWN_SECONDS = _env_int("PROACTIVE_COOLDOWN_SECONDS", 1800)
-FREE_TIME_MIN_MINUTES = _env_int("FREE_TIME_MIN_MINUTES", 90)
-FREE_TIME_MAX_MINUTES = _env_int("FREE_TIME_MAX_MINUTES", 240)
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", 10)
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine

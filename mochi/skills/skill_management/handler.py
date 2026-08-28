@@ -9,54 +9,12 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 log = logging.getLogger(__name__)
 
 _AGENT_CONFIG_FIELDS = {
-    "heartbeat_interval_minutes": (
-        "HEARTBEAT_INTERVAL_MINUTES",
-        "int",
-        5,
-        240,
-        "框架检查生活变化与调度任务的间隔；越短反应越及时，但不代表每次都会发消息。",
-    ),
-    "max_daily_proactive": (
-        "MAX_DAILY_PROACTIVE",
+    "max_daily_free_time": (
+        "MAX_DAILY_FREE_TIME",
         "int",
         0,
-        50,
-        "每天最多发送多少次主动消息。",
-    ),
-    "free_time_min_minutes": (
-        "FREE_TIME_MIN_MINUTES",
-        "int",
-        30,
-        1440,
-        "两次 Free Time 之间随机等待的最短时间。",
-    ),
-    "free_time_max_minutes": (
-        "FREE_TIME_MAX_MINUTES",
-        "int",
-        30,
-        2880,
-        "两次 Free Time 之间随机等待的最长时间。",
-    ),
-    "wake_earliest_hour": (
-        "WAKE_EARLIEST_HOUR",
-        "int",
-        0,
-        23,
-        "每天最早进入清醒时段的本地小时。",
-    ),
-    "sleep_after_hour": (
-        "SLEEP_AFTER_HOUR",
-        "int",
-        1,
-        24,
-        "每天从哪个本地小时起进入休息时段；24 表示午夜。",
-    ),
-    "timezone_offset_hours": (
-        "TIMEZONE_OFFSET_HOURS",
-        "float",
-        -12,
-        14,
-        "当前所在地相对 UTC 的小时偏移，可使用 5.5 这类半小时时区。",
+        10,
+        "每天最多获得多少次 Free Time 自主思考机会；实际次数可能更少。",
     ),
 }
 
@@ -363,18 +321,6 @@ class SkillManagementSkill(Skill):
                 )
             normalized_changes[key] = normalized
 
-        proposed = {**current, **normalized_changes}
-        if proposed["free_time_min_minutes"] > proposed["free_time_max_minutes"]:
-            return SkillResult(
-                output="Free Time 最短间隔不能大于最长间隔。",
-                success=False,
-            )
-        if proposed["wake_earliest_hour"] >= proposed["sleep_after_hour"]:
-            return SkillResult(
-                output="最早清醒时间必须早于休息时段起点。",
-                success=False,
-            )
-
         receipts = []
         changed = False
         for key, normalized in normalized_changes.items():
@@ -391,8 +337,7 @@ class SkillManagementSkill(Skill):
             output=(
                 "已调整运行设置：\n- "
                 + "\n- ".join(receipts)
-                + "\n新值会被后续 Heartbeat 循环读取；已经排定的下一次时刻"
-                "不会追溯重算。"
+                + "\n当天尚未发生的 Free Time 机会会按新上限重新随机安排。"
             ),
             state_changed=changed,
         )
