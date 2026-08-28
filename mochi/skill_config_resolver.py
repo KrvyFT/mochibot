@@ -64,6 +64,9 @@ def resolve_skill_config(skill_name: str, schema: list) -> dict:
         db_val = db_overrides.get(key)
         if db_val is not None:
             try:
+                if field.secret:
+                    from mochi.credential_crypto import decrypt_secret
+                    db_val = decrypt_secret(db_val)
                 result[key] = _cast(db_val, type_name)
                 continue
             except (ValueError, TypeError):

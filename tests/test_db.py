@@ -112,3 +112,46 @@ def test_old_database_upgrades_messages_and_memory_without_data_loss(
     assert {"embedding", "access_count", "last_accessed"} <= memory_columns
     assert message == "keep me"
     assert memory == "keep this memory"
+
+    import logging
+    import mochi.admin.admin_env as admin_env
+    import mochi.config as config_module
+    import mochi.credential_crypto as credential_crypto
+    from mochi.admin.__main__ import _ensure_admin_token
+    from mochi.skill_config_resolver import resolve_skill_config
+    from mochi.skills.base import ConfigField
+
+    monkeypatch.setattr(admin_env, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.delenv("ADMIN_TOKEN", raising=False)
+    monkeypatch.setattr(config_module, "ADMIN_TOKEN", "")
+    token = _ensure_admin_token(logging.getLogger("test"))
+    assert token
+    assert config_module.ADMIN_TOKEN == token
+    assert admin_env.read_env_value("ADMIN_TOKEN") == token
+
+    monkeypatch.setattr(credential_crypto, "_fernet_instance", None)
+    encrypted = credential_crypto.encrypt_secret("search-secret")
+    assert credential_crypto.is_encrypted(encrypted)
+
+    db_module.set_skill_config("web_search", "BAIDU_API_KEY", encrypted)
+    stored = db_module.get_skill_config("web_search")["BAIDU_API_KEY"]
+    assert stored != "search-secret"
+    assert resolve_skill_config(
+        "web_search",
+        [ConfigField(
+            key="BAIDU_API_KEY",
+            type="str",
+            default="",
+            secret=True,
+        )],
+    )["BAIDU_API_KEY"] == "search-secret"
+
+    from mochi.skills.skill_management.handler import SkillManagementSkill
+
+    blocked = SkillManagementSkill()._set_skill_config(
+        "web_search",
+        "BAIDU_API_KEY",
+        "",
+    )
+    assert not blocked.success
+    assert db_module.get_skill_config("web_search")["BAIDU_API_KEY"] == stored
