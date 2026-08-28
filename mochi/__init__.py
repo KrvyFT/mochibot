@@ -1,3 +1,3 @@
 """MochiBot — A lightweight AI companion framework."""
 
-__version__ = "1.0.9"
+__version__ = "1.1.0"

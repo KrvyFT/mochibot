@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## v1.1.0
+- Free Time 改为每日随机自主思考，带入 Core、今日日记和最近对话，并避开热聊与睡眠
+- 移除独立 Attention；Observer 继续通过 `look_around` 提供只读生活信息
+- 联网搜索支持可选百度千帆，未配置或调用失败时继续使用免密钥 Bing
+- 修复过期主动内容重放：Self Reminder 失败即过期，普通提醒仅短时重试
+
 ## v1.0.9
 - 修复 DeepSeek 主动消息和工具续聊偶发中断
 - 修复 Self Reminder 把旧对话当成新消息
