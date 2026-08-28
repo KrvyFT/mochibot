@@ -16,6 +16,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 
+class DeliveryUnavailableUntilInbound(RuntimeError):
+    """The transport cannot send proactively until the owner contacts it."""
+
+
 @dataclass(frozen=True)
 class ImageAttachment:
     """An in-memory image attached to the current incoming message."""
@@ -74,6 +78,10 @@ class Transport(ABC):
         if delivered:
             result.confirm_delivered()
         return delivered
+
+    @property
+    def proactive_delivery_blocked(self) -> bool:
+        return False
 
     @property
     @abstractmethod

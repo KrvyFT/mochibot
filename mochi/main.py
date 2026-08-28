@@ -244,7 +244,13 @@ async def main():
         _t = transport  # capture for closure
 
         async def send_proactive(user_id: int, text: str) -> bool:
-            return await _t.send_message(user_id, text)
+            delivered = await _t.send_message(user_id, text)
+            if not delivered and _t.proactive_delivery_blocked:
+                from mochi.transport import DeliveryUnavailableUntilInbound
+                raise DeliveryUnavailableUntilInbound(
+                    "transport is waiting for fresh owner context"
+                )
+            return delivered
 
         async def enter_bedtime(user_id: int, trigger: str) -> bool:
             entry = MainRuntimeEntry.bedtime(
@@ -282,7 +288,13 @@ async def main():
             channel_id: int,
             result: ChatResult,
         ) -> bool:
-            return await _t.send_chat_result(channel_id, result)
+            delivered = await _t.send_chat_result(channel_id, result)
+            if not delivered and _t.proactive_delivery_blocked:
+                from mochi.transport import DeliveryUnavailableUntilInbound
+                raise DeliveryUnavailableUntilInbound(
+                    "transport is waiting for fresh owner context"
+                )
+            return delivered
 
         set_main_runtime_callbacks(
             prepare_self_reminder,

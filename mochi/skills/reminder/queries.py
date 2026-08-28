@@ -9,6 +9,9 @@ from mochi.db import _connect
 
 
 ACTIVE_STATUSES = ("pending", "running", "ready")
+NOTIFY_MAX_ATTEMPTS = 3
+NOTIFY_RETRY_WINDOW = timedelta(minutes=5)
+_NOTIFY_RETRY_DELAYS = (timedelta(seconds=30), timedelta(minutes=2))
 _UNSET = object()
 
 
@@ -461,14 +464,18 @@ def record_reminder_failure(
     error: str,
     *,
     now: datetime | None = None,
+    terminal: bool = False,
+    next_remind_at: str | None = None,
 ) -> datetime | None:
-    """Release a lease with bounded exponential backoff."""
+    """Retry a notify briefly or expire the current occurrence."""
     now = (now or _now()).astimezone(timezone.utc)
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
-            "SELECT attempt_count, prepared_text, result_json FROM reminders "
+            "SELECT kind, remind_at, attempt_count, delivery_cursor, "
+            "prepared_text, result_json "
+            "FROM reminders "
             "WHERE id = ? AND claimed_at = ? "
             "AND status IN ('running', 'ready')",
             (reminder_id, claimed_at),
@@ -476,9 +483,54 @@ def record_reminder_failure(
         if row is None:
             conn.rollback()
             return None
-        attempt_count = int(row["attempt_count"] or 0) + 1
-        delay = min(60 * (2 ** min(attempt_count - 1, 6)), 3600)
-        retry_at = now + timedelta(seconds=delay)
+        attempt_count = max(
+            int(row["attempt_count"] or 0) + 1,
+            int(row["delivery_cursor"] or 0),
+        )
+        remind_at = _as_utc(row["remind_at"])
+        retry_window_closed = (
+            remind_at is None or now - remind_at >= NOTIFY_RETRY_WINDOW
+        )
+        should_expire = (
+            terminal
+            or row["kind"] == "self"
+            or attempt_count >= NOTIFY_MAX_ATTEMPTS
+            or retry_window_closed
+        )
+        if should_expire:
+            if next_remind_at:
+                conn.execute(
+                    "UPDATE reminders SET status = 'pending', fired = 0, "
+                    "remind_at = ?, claimed_at = NULL, lease_until = NULL, "
+                    "attempt_count = 0, next_attempt_at = NULL, last_error = NULL, "
+                    "prepared_text = NULL, result_json = NULL, outcome = NULL, "
+                    "handled_at = NULL, delivery_cursor = 0, "
+                    "delivery_started_at = NULL, delivered_at = NULL "
+                    "WHERE id = ? AND claimed_at = ? "
+                    "AND status IN ('running', 'ready')",
+                    (next_remind_at, reminder_id, claimed_at),
+                )
+            else:
+                conn.execute(
+                    "UPDATE reminders SET status = 'delivered', fired = 1, "
+                    "attempt_count = ?, outcome = 'expired', handled_at = ?, "
+                    "next_attempt_at = NULL, last_error = ?, claimed_at = NULL, "
+                    "lease_until = NULL, prepared_text = NULL, result_json = NULL, "
+                    "delivery_started_at = NULL "
+                    "WHERE id = ? AND claimed_at = ? "
+                    "AND status IN ('running', 'ready')",
+                    (
+                        attempt_count,
+                        _iso(now),
+                        error[:1000],
+                        reminder_id,
+                        claimed_at,
+                    ),
+                )
+            conn.commit()
+            return None
+
+        retry_at = now + _NOTIFY_RETRY_DELAYS[attempt_count - 1]
         retry_status = (
             "ready" if row["prepared_text"] or row["result_json"] else "pending"
         )

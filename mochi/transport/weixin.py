@@ -134,6 +134,7 @@ class WeixinTransport(Transport):
         self._poll_task: asyncio.Task | None = None
         self._stopped = False
         self._session_expired = False
+        self._proactive_delivery_blocked = False
         # WeChat user ID of the owner (learned from first inbound message)
         self._owner_weixin_id: str | None = None
         # context_token cache: weixin_user_id → latest context_token
@@ -151,6 +152,10 @@ class WeixinTransport(Transport):
         """True when iLink session is expired and awaiting QR re-scan."""
         return self._session_expired
 
+    @property
+    def proactive_delivery_blocked(self) -> bool:
+        return self._session_expired or self._proactive_delivery_blocked
+
     def restore_owner_id(
         self,
         weixin_id: str,
@@ -165,11 +170,19 @@ class WeixinTransport(Transport):
             self._context_token_at[weixin_id] = 0
         log.info("WeChat: owner ID restored (%s): %s", source, weixin_id)
 
-    def _remember_context_token(self, weixin_id: str, context_token: str) -> None:
+    def _remember_context_token(
+        self,
+        weixin_id: str,
+        context_token: str,
+        *,
+        inbound: bool = False,
+    ) -> None:
         """Cache the latest peer context and persist the owner's encrypted copy."""
         if not context_token:
             return
         self._context_token_at[weixin_id] = time.time()
+        if inbound:
+            self._proactive_delivery_blocked = False
         if self._context_tokens.get(weixin_id) == context_token:
             return
         self._context_tokens[weixin_id] = context_token
@@ -233,8 +246,12 @@ class WeixinTransport(Transport):
                 errcode,
             )
             if -2 in {ret, errcode}:
+                self._proactive_delivery_blocked = True
                 self._invalidate_context_token(weixin_id, context_token)
                 return self._context_tokens.get(weixin_id, "")
+            if SESSION_EXPIRED_ERRCODE in {ret, errcode}:
+                self._session_expired = True
+                self._proactive_delivery_blocked = True
             return context_token
         cached = self._context_tokens.get(weixin_id, "")
         if cached and cached != context_token:
@@ -285,12 +302,14 @@ class WeixinTransport(Transport):
         to the WeChat string ID for API delivery.
         """
         if not self._session or not self._owner_weixin_id:
+            self._proactive_delivery_blocked = True
             log.warning("WeChat: cannot send — session or owner ID not ready")
             return False
 
         weixin_id = self._owner_weixin_id
         context_token = self._context_tokens.get(weixin_id, "")
         if not context_token:
+            self._proactive_delivery_blocked = True
             log.warning(
                 "WeChat: cannot send proactively — owner context is not ready"
             )
@@ -343,11 +362,19 @@ class WeixinTransport(Transport):
                             errcode,
                         )
                         delivered = False
+                        if SESSION_EXPIRED_ERRCODE in {ret, errcode}:
+                            self._session_expired = True
+                            self._proactive_delivery_blocked = True
+                            return False
                         if -2 in {ret, errcode}:
-                            self._context_token_at[weixin_id] = 0
+                            self._proactive_delivery_blocked = True
+                            self._invalidate_context_token(
+                                weixin_id,
+                                context_token,
+                            )
                             log.warning(
-                                "WeChat: send restricted; preserving context "
-                                "and forcing refresh before the next send"
+                                "WeChat: send restricted; waiting for fresh "
+                                "owner context"
                             )
                             return False
                 except Exception as e:
@@ -522,7 +549,11 @@ class WeixinTransport(Transport):
         track_active_chat_task()
 
         context_token = msg.get("context_token", "")
-        self._remember_context_token(from_user, context_token)
+        self._remember_context_token(
+            from_user,
+            context_token,
+            inbound=True,
+        )
 
         # System command: /restart (owner only)
         if text.strip() == "/restart":
@@ -839,7 +870,10 @@ class WeixinTransport(Transport):
                             errcode,
                         )
                         self._session_expired = True
+                        self._proactive_delivery_blocked = True
                         return  # supervisor will handle retry
+                    if -2 in {ret, errcode}:
+                        self._proactive_delivery_blocked = True
 
                     consecutive_failures += 1
                     log.warning(

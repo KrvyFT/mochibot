@@ -208,21 +208,21 @@ Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
 success and skip require no transport delivery; for a recurring reminder they
 advance the same row to its next occurrence. A
 deliverable result is serialized before any external send. Text and stickers
-are checkpointed independently, so ordinary retry resumes components not yet
-checkpointed. A crash after transport success but before its SQLite checkpoint
-can duplicate that one component; transport and SQLite provide at-least-once,
-not exactly-once, delivery. A stable turn ledger prevents restart from
-re-entering Main after any tool attempt, avoiding duplicate side effects at the
-cost of conservatively ending an interrupted turn. Each occurrence has a stable turn keyed by its scheduled time. Assistant
-history is written idempotently after delivery and marked processed so an
-assistant-only system turn does not enter memory extraction.
+are checkpointed independently. A failed or interrupted Self Reminder occurrence
+expires without regenerating or replaying its prepared text; recurring reminders
+advance to their next occurrence. A stable turn ledger prevents restart from
+re-entering Main after any tool attempt. Each occurrence has a stable turn keyed
+by its scheduled time. Assistant history is written idempotently after delivery
+and marked processed so an assistant-only system turn does not enter memory
+extraction.
 
 Ordinary `notify` reminders remain authorized, deterministic deliveries and
-may advance the same durable row through a recurrence. Their
-voice rendering is prepared once and persisted; transport retry reuses that
-outbox. SQLite claims and leases prevent concurrent workers, while the external
-send boundary remains at-least-once because transport and SQLite cannot commit
-atomically.
+may advance the same durable row through a recurrence. Their voice rendering is
+prepared once and persisted. Transient delivery failures retry at most three
+attempts within five minutes; stale occurrences expire, and recurring reminders
+advance instead of replaying old content. A transport that requires fresh owner
+contact ends the occurrence immediately. SQLite claims and leases prevent
+concurrent workers.
 
 ## Free Time flow
 

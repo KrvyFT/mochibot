@@ -18,8 +18,10 @@ from mochi.core_store import read_core
 from mochi.llm import get_client_for_tier
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 from mochi.prompt_loader import get_prompt
+from mochi.transport import DeliveryUnavailableUntilInbound
 from mochi.transport.utils import normalize_legacy_bubble_delimiters
 from mochi.skills.reminder.queries import (
+    NOTIFY_RETRY_WINDOW,
     begin_delivery,
     claim_reminder,
     complete_without_delivery,
@@ -218,18 +220,31 @@ def _finish_fire_task(reminder_id: int, task: asyncio.Task) -> None:
     notify_new_reminder()
 
 
-async def _persist_failure(reminder: dict, error: str) -> None:
+async def _persist_failure(
+    reminder: dict,
+    error: str,
+    *,
+    terminal: bool = False,
+) -> None:
     retry_at = record_reminder_failure(
         reminder["id"],
         reminder["claimed_at"],
         error,
         now=_utc_now(),
+        terminal=terminal,
+        next_remind_at=_next_remind_at(reminder),
     )
     if retry_at is not None:
         log.warning(
             "Reminder #%d will retry at %s: %s",
             reminder["id"],
             retry_at.isoformat(),
+            error,
+        )
+    else:
+        log.warning(
+            "Reminder #%d occurrence expired after failure: %s",
+            reminder["id"],
             error,
         )
 
@@ -374,6 +389,9 @@ async def _deliver_self_reminder(
             delivered = await _self_delivery_callback(
                 claimed["channel_id"], component,
             )
+        except DeliveryUnavailableUntilInbound as exc:
+            await _persist_failure(claimed, str(exc), terminal=True)
+            return False
         except Exception as exc:
             await _persist_failure(
                 claimed, f"transport exception: {exc}",
@@ -418,6 +436,38 @@ async def _fire_reminder(reminder: dict) -> None:
     if claimed is None:
         return
     kind = claimed.get("kind", "notify")
+    remind_at = _to_utc_key(claimed.get("remind_at", ""))
+    if (
+        kind == "notify"
+        and (
+            remind_at is None
+            or _utc_now() - datetime.fromisoformat(remind_at)
+            > NOTIFY_RETRY_WINDOW
+        )
+    ):
+        await _persist_failure(
+            claimed,
+            "reminder occurrence is older than the delivery window",
+            terminal=True,
+        )
+        return
+    if (
+        kind == "notify"
+        and int(claimed.get("delivery_cursor") or 0) >= 3
+    ):
+        await _persist_failure(
+            claimed,
+            "reminder reached the delivery attempt limit",
+            terminal=True,
+        )
+        return
+    if kind == "self" and claimed.get("result_json"):
+        await _persist_failure(
+            claimed,
+            "prepared Self Reminder was interrupted before delivery",
+            terminal=True,
+        )
+        return
     if kind == "notify" and _send_callback is None:
         await _persist_failure(
             claimed, "reminder send callback is not registered",
@@ -439,14 +489,21 @@ async def _fire_reminder(reminder: dict) -> None:
         else:
             recovered = _recover_prior_tool_attempt(claimed)
             if recovered is not None:
-                complete_without_delivery(
-                    claimed["id"],
-                    claimed["claimed_at"],
-                    recovered.to_json(),
-                    "handled",
-                    handled_at=_utc_now(),
-                    next_remind_at=_next_remind_at(claimed),
-                )
+                if recovered.successful_effects:
+                    complete_without_delivery(
+                        claimed["id"],
+                        claimed["claimed_at"],
+                        recovered.to_json(),
+                        "handled",
+                        handled_at=_utc_now(),
+                        next_remind_at=_next_remind_at(claimed),
+                    )
+                else:
+                    await _persist_failure(
+                        claimed,
+                        "Self Reminder was interrupted after a prior tool attempt",
+                        terminal=True,
+                    )
                 return
             durable_result = await _prepare_self_reminder(claimed)
             if durable_result is None:
@@ -476,6 +533,9 @@ async def _fire_reminder(reminder: dict) -> None:
             delivered = await _send_callback(
                 claimed["user_id"], prepared_text,
             )
+        except DeliveryUnavailableUntilInbound as exc:
+            await _persist_failure(claimed, str(exc), terminal=True)
+            return
         except Exception as exc:
             await _persist_failure(
                 claimed, f"transport exception: {exc}",
@@ -507,7 +567,9 @@ async def _fire_reminder(reminder: dict) -> None:
         )
     except Exception as exc:
         await _persist_failure(
-            claimed, f"finalization failed after send: {exc}",
+            claimed,
+            f"finalization failed after send: {exc}",
+            terminal=True,
         )
         return
     if completed:
