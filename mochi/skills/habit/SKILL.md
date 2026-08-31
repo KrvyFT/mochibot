@@ -29,7 +29,8 @@ diary_status_order: 10
 | habit_id | integer | no | 习惯 ID；与 habit_name 二选一 |
 | habit_name | string | no | 唯一、精确的习惯名称；与 habit_id 二选一 |
 | note | string | no | 备注 |
-| count | integer | no | 打卡次数（默认 1） |
+| count | integer | no | 本次新增的完成次数（默认 1）；与 total 二选一 |
+| total | integer | no | 用户明确报告当前周期累计进度时使用；系统只补齐差额，与 count 二选一 |
 
 ### edit_habit (routed)
 创建或调整需要反复追踪的长期习惯，包括频率、重要性、暂停和恢复。

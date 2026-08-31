@@ -32,6 +32,7 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 _EXPLICIT_STATE_FACT_TOOLS = {
+    "checkin_habit",
     "edit_file",
     "manage_todo",
     "write_diary",

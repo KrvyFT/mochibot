@@ -17,9 +17,10 @@ from mochi.skills.habit.queries import (
     list_habits,
     deactivate_habit,
     update_habit,
-    checkin_habit,
+    add_habit_checkins,
+    reconcile_habit_total,
     get_habit_checkins,
-    delete_habit_checkin,
+    undo_latest_habit_checkin,
     get_habit_stats,
     get_habit_streak,
     pause_habit,
@@ -493,20 +494,77 @@ class HabitSkill(Skill):
         cycle, target = parsed
         period = _current_period(cycle)
         note = args.get("note", "")
-        count = max(1, int(args.get("count", 1) or 1))
+        raw_count = args.get("count")
+        raw_total = args.get("total")
+        if raw_count is not None and raw_total is not None:
+            return SkillResult(
+                output="Error: count and total cannot be used together.",
+                success=False,
+            )
 
-        existing = get_habit_checkins(habit_id, period)
-        actual = count
-        for _ in range(actual):
-            checkin_habit(habit_id, user_id, period, note)
-        done = len(existing) + actual
+        if raw_total is not None:
+            if (
+                isinstance(raw_total, bool)
+                or not isinstance(raw_total, int)
+                or raw_total < 0
+            ):
+                return SkillResult(
+                    output="Error: total must be a non-negative integer.",
+                    success=False,
+                )
+            try:
+                previous, actual = reconcile_habit_total(
+                    habit_id, user_id, period, raw_total, note,
+                )
+            except ValueError:
+                current = len(get_habit_checkins(habit_id, period))
+                return SkillResult(
+                    output=(
+                        f"Error: reported total {raw_total} is below current "
+                        f"progress {current}; clarify or undo check-ins first."
+                    ),
+                    success=False,
+                )
+            done = previous + actual
+            if actual == 0:
+                return SkillResult(
+                    output=f"{habit['name']} is already at {done}/{target}.",
+                )
+        else:
+            count = 1 if raw_count is None else raw_count
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+            ):
+                return SkillResult(
+                    output="Error: count must be a positive integer.",
+                    success=False,
+                )
+            actual = count
+            done = add_habit_checkins(
+                habit_id, user_id, period, actual, note,
+            )
         remaining = max(0, target - done)
 
-        extra = f" (x{actual})" if actual > 1 else ""
+        extra = (
+            f" (synced total, +{actual})"
+            if raw_total is not None
+            else f" (x{actual})" if actual > 1 else ""
+        )
         if done >= target:
-            return SkillResult(output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}")
+            return SkillResult(
+                output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}",
+                state_changed=True,
+            )
         cycle_label = "today" if cycle == "daily" else "this week"
-        return SkillResult(output=f"✅ {habit['name']} checked in {done}/{target}, {remaining} left {cycle_label}{extra}")
+        return SkillResult(
+            output=(
+                f"✅ {habit['name']} checked in {done}/{target}, "
+                f"{remaining} left {cycle_label}{extra}"
+            ),
+            state_changed=True,
+        )
 
     def _undo_checkin(self, user_id: int, args: dict) -> SkillResult:
         habit, error = _resolve_active_habit(user_id, args, "undo_checkin")
@@ -520,15 +578,15 @@ class HabitSkill(Skill):
             return SkillResult(output=f"Error: invalid frequency on habit #{habit_id}.", success=False)
         cycle, target = parsed
         period = _current_period(cycle)
-        existing = get_habit_checkins(habit_id, period)
-        if not existing:
+        remaining = undo_latest_habit_checkin(habit_id, user_id, period)
+        if remaining is None:
             cycle_label = "today" if cycle == "daily" else "this week"
             return SkillResult(output=f"{habit['name']} has no checkins {cycle_label} — nothing to undo.")
 
-        latest = existing[-1]
-        delete_habit_checkin(latest["id"])
-        remaining = len(existing) - 1
-        return SkillResult(output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})")
+        return SkillResult(
+            output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})",
+            state_changed=True,
+        )
 
     # ── Diary integration ─────────────────────────────────────
 

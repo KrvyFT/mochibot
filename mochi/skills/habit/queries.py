@@ -115,20 +115,83 @@ def update_habit(user_id: int, habit_id: int, **fields) -> bool:
     return updated
 
 
-def checkin_habit(habit_id: int, user_id: int, period: str,
-                  note: str = "") -> int:
-    """Record a check-in for a habit. Returns the log id."""
+def add_habit_checkins(
+    habit_id: int,
+    user_id: int,
+    period: str,
+    count: int,
+    note: str = "",
+) -> int:
+    """Atomically append check-ins and return the committed period total."""
+    if isinstance(count, bool) or not isinstance(count, int) or count <= 0:
+        raise ValueError("count must be a positive integer")
     now = datetime.now(TZ).isoformat()
     conn = _connect()
-    cursor = conn.execute(
-        "INSERT INTO habit_logs (habit_id, user_id, note, logged_at, period) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (habit_id, user_id, note, now, period),
-    )
-    log_id = cursor.lastrowid
-    conn.commit()
-    conn.close()
-    return log_id
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM habit_logs "
+            "WHERE habit_id = ? AND user_id = ? AND period = ?",
+            (habit_id, user_id, period),
+        ).fetchone()["cnt"]
+        conn.executemany(
+            "INSERT INTO habit_logs "
+            "(habit_id, user_id, note, logged_at, period) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (habit_id, user_id, note, now, period)
+                for _ in range(count)
+            ],
+        )
+        conn.commit()
+        return current + count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def reconcile_habit_total(
+    habit_id: int,
+    user_id: int,
+    period: str,
+    total: int,
+    note: str = "",
+) -> tuple[int, int]:
+    """Atomically add the missing check-ins needed to reach a reported total."""
+    if isinstance(total, bool) or not isinstance(total, int) or total < 0:
+        raise ValueError("total must be a non-negative integer")
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        current = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM habit_logs "
+            "WHERE habit_id = ? AND user_id = ? AND period = ?",
+            (habit_id, user_id, period),
+        ).fetchone()["cnt"]
+        if total < current:
+            raise ValueError(
+                f"reported total {total} is below current progress {current}"
+            )
+        added = total - current
+        conn.executemany(
+            "INSERT INTO habit_logs "
+            "(habit_id, user_id, note, logged_at, period) "
+            "VALUES (?, ?, ?, ?, ?)",
+            [
+                (habit_id, user_id, note, now, period)
+                for _ in range(added)
+            ],
+        )
+        conn.commit()
+        return current, added
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_habit_checkins(habit_id: int, period: str) -> list[dict]:
@@ -143,13 +206,43 @@ def get_habit_checkins(habit_id: int, period: str) -> list[dict]:
     return [dict(r) for r in rows]
 
 
-def delete_habit_checkin(log_id: int) -> bool:
-    """Delete a specific habit check-in log by its id. Returns True if deleted."""
+def undo_latest_habit_checkin(
+    habit_id: int,
+    user_id: int,
+    period: str,
+) -> int | None:
+    """Atomically delete the latest owner-scoped check-in and return the remainder."""
     conn = _connect()
-    cursor = conn.execute("DELETE FROM habit_logs WHERE id = ?", (log_id,))
-    conn.commit()
-    conn.close()
-    return cursor.rowcount > 0
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        latest = conn.execute(
+            "SELECT id FROM habit_logs "
+            "WHERE habit_id = ? AND user_id = ? AND period = ? "
+            "ORDER BY logged_at DESC, id DESC LIMIT 1",
+            (habit_id, user_id, period),
+        ).fetchone()
+        if latest is None:
+            conn.commit()
+            return None
+        deleted = conn.execute(
+            "DELETE FROM habit_logs "
+            "WHERE id = ? AND habit_id = ? AND user_id = ? AND period = ?",
+            (latest["id"], habit_id, user_id, period),
+        )
+        if deleted.rowcount != 1:
+            raise RuntimeError("latest habit check-in changed during undo")
+        remaining = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM habit_logs "
+            "WHERE habit_id = ? AND user_id = ? AND period = ?",
+            (habit_id, user_id, period),
+        ).fetchone()["cnt"]
+        conn.commit()
+        return remaining
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def get_habit_stats(habit_id: int, periods: list[str]) -> dict:
