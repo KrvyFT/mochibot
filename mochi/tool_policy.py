@@ -26,9 +26,28 @@ class PolicyDecision:
 
 # ── Denylist ──
 
-_deny_set: set[str] = set()
-if TOOL_DENY_NAMES:
-    _deny_set = {n.strip() for n in TOOL_DENY_NAMES.split(",") if n.strip()}
+_LEGACY_DENY_ALIASES = {
+    "checkin_habit": "habit_progress",
+    "query_habit": "habit_progress",
+}
+
+
+def _build_deny_set(value: str) -> set[str]:
+    denied = {name.strip() for name in value.split(",") if name.strip()}
+    for legacy_name, current_name in _LEGACY_DENY_ALIASES.items():
+        if legacy_name not in denied:
+            continue
+        denied.add(current_name)
+        log.warning(
+            "TOOL_DENY_NAMES entry '%s' now conservatively disables '%s'; "
+            "update the configured tool name.",
+            legacy_name,
+            current_name,
+        )
+    return denied
+
+
+_deny_set = _build_deny_set(TOOL_DENY_NAMES)
 
 # ── Rate Limiter ──
 

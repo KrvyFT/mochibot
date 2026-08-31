@@ -192,8 +192,8 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
     """Collect diary status lines from all enabled skills.
 
     Iterates registered skills in diary_status_order, calls diary_status()
-    on each enabled skill, collects lines.  One skill's failure never affects
-    others.
+    on each enabled skill, and collects lines. An incomplete collection raises
+    so the caller can preserve the last complete snapshot.
     """
     if not _skills:
         return []
@@ -203,6 +203,7 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
         key=lambda s: (s.diary_status_order, s.name),
     )
     all_lines: list[str] = []
+    failed_skills: list[str] = []
     for skill in ordered:
         if skill.name in disabled:
             continue
@@ -214,6 +215,12 @@ def collect_diary_status(user_id: int, today: str, now: datetime) -> list[str]:
                 all_lines.extend(lines)
         except Exception:
             log.exception("diary_status failed for skill %s", skill.name)
+            failed_skills.append(skill.name)
+    if failed_skills:
+        raise RuntimeError(
+            "diary status collection failed for: "
+            + ", ".join(failed_skills)
+        )
     return all_lines
 
 

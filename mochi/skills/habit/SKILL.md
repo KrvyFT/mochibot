@@ -12,24 +12,17 @@ diary_status_order: 10
 
 ## Tools
 
-### query_habit (routed)
-读取习惯的今日进度或历史统计，例如当天打卡和月度跑步次数。
+### habit_progress (routed)
+读取习惯进度或记录已经完成的进展；“打算做”或“晚点做”不算完成。
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| action | string (enum: list, stats) | yes | list = 今日进度；stats = 历史统计 |
-| habit_id | integer | no | 习惯 ID（仅 stats 需要） |
-
-### checkin_habit (routed)
-记录或撤销一次已经完成的习惯；“打算做”或“晚点做”不算完成。
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| action | string (enum: checkin, undo_checkin) | yes | 操作类型 |
-| habit_id | integer | no | 习惯 ID；与 habit_name 二选一 |
-| habit_name | string | no | 唯一、精确的习惯名称；与 habit_id 二选一 |
-| note | string | no | 备注 |
-| count | integer | no | 打卡次数（默认 1） |
+| action | string (enum: list, stats, add, sync, undo) | yes | list = 当前进度；stats = 历史统计；add = 新增完成次数；sync = 对账到累计进度；undo = 撤销最近一次 |
+| habit_id | integer | no | 习惯 ID；stats/add/sync/undo 使用 |
+| habit_name | string | no | 唯一、精确的习惯名称；stats/add/sync/undo 时可代替 habit_id |
+| note | string | no | add/sync 的备注 |
+| count | integer | no | add 本次新增的完成次数，默认 1 |
+| total | integer | no | sync 必填；工具原子读取已存进度并只补齐到这个当前周期累计值 |
 
 ### edit_habit (routed)
 创建或调整需要反复追踪的长期习惯，包括频率、重要性、暂停和恢复。

@@ -28,8 +28,8 @@ def test_startup_recovers_interrupted_tool_executions():
                 "call_chat",
                 "chat",
                 "habit",
-                "checkin_habit",
-                "checkin",
+                "habit_progress",
+                "add",
             ),
             (
                 "turn_reminder",

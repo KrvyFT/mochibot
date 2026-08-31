@@ -143,7 +143,7 @@ def update_todo(user_id: int, todo_id: int, **fields) -> str:
     return "updated"
 
 
-def get_visible_todos(today_str: str) -> list[dict]:
+def get_visible_todos(user_id: int, today_str: str) -> list[dict]:
     """Return pending todos visible in diary: due today, overdue, or no date.
 
     Future todos (nudge_date > today) are excluded.
@@ -151,9 +151,10 @@ def get_visible_todos(today_str: str) -> list[dict]:
     conn = _connect()
     rows = conn.execute(
         "SELECT id, user_id, task, nudge_date FROM todos "
-        "WHERE done = 0 AND (nudge_date IS NULL OR nudge_date <= ?) "
+        "WHERE user_id = ? AND done = 0 "
+        "AND (nudge_date IS NULL OR nudge_date <= ?) "
         "ORDER BY nudge_date IS NULL, nudge_date, id",
-        (today_str,),
+        (user_id, today_str),
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]

@@ -11,15 +11,20 @@ from datetime import datetime, timedelta
 
 from mochi.config import TZ, logical_today, logical_days_ago
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.habit.logic import parse_frequency, get_allowed_days
+from mochi.skills.habit.logic import (
+    describe_frequency,
+    get_allowed_days,
+    parse_frequency,
+)
 from mochi.skills.habit.queries import (
     add_habit,
     list_habits,
     deactivate_habit,
     update_habit,
-    checkin_habit,
+    add_habit_checkins,
+    reconcile_habit_total,
     get_habit_checkins,
-    delete_habit_checkin,
+    undo_latest_habit_checkin,
     get_habit_stats,
     get_habit_streak,
     pause_habit,
@@ -213,19 +218,21 @@ class HabitSkill(Skill):
         action = args.get("action", "")
         uid = context.user_id
 
-        if context.tool_name == "query_habit":
+        if context.tool_name == "habit_progress":
             if action == "list":
                 return self._list(uid)
             elif action == "stats":
                 return self._stats(uid, args)
-            return SkillResult(output=f"Unknown query_habit action: {action}", success=False)
-
-        elif context.tool_name == "checkin_habit":
-            if action == "checkin":
-                return self._checkin(uid, args)
-            elif action == "undo_checkin":
+            elif action == "add":
+                return self._checkin(uid, args, mode="add")
+            elif action == "sync":
+                return self._checkin(uid, args, mode="sync")
+            elif action == "undo":
                 return self._undo_checkin(uid, args)
-            return SkillResult(output=f"Unknown checkin_habit action: {action}", success=False)
+            return SkillResult(
+                output=f"Unknown habit_progress action: {action}",
+                success=False,
+            )
 
         elif context.tool_name == "edit_habit":
             if action == "add":
@@ -241,6 +248,48 @@ class HabitSkill(Skill):
             return SkillResult(output=f"Unknown edit_habit action: {action}", success=False)
 
         return SkillResult(output=f"Unknown habit tool: {context.tool_name}", success=False)
+
+    def progress_context(self, user_id: int) -> str:
+        """Return a concise owner-scoped progress snapshot for a routed turn."""
+        habits = list_habits(user_id)
+        if not habits:
+            return "No active habits."
+
+        now = datetime.now(TZ)
+        today = logical_today(now)
+        this_week = now.strftime("%G-W%V")
+        weekday = now.weekday()
+        lines: list[str] = []
+        visible_habits = habits[:8]
+        for habit in visible_habits:
+            parsed = parse_frequency(habit["frequency"])
+            if not parsed:
+                continue
+            cycle, target = parsed
+            period = today if cycle == "daily" else this_week
+            done = len(get_habit_checkins(habit["id"], period))
+            annotations: list[str] = []
+            if _is_paused(habit):
+                annotations.append(f"paused until {habit['paused_until']}")
+            allowed = get_allowed_days(habit["frequency"])
+            if allowed is not None and weekday not in allowed:
+                annotations.append("not scheduled today")
+            suffix = (
+                f" ({'; '.join(annotations)})"
+                if annotations
+                else ""
+            )
+            lines.append(
+                f"- #{habit['id']} {habit['name'][:100]} "
+                f"({describe_frequency(habit['frequency'])}) — "
+                f"{done}/{target}{suffix}"
+            )
+        if len(habits) > len(visible_habits):
+            lines.append(
+                f"- ... {len(habits) - len(visible_habits)} more active habits; "
+                "use habit_progress(list) to view them."
+            )
+        return "\n".join(lines) if lines else "No valid active habits."
 
     # ── edit_habit actions ───────────────────────────────────────────────
 
@@ -387,7 +436,7 @@ class HabitSkill(Skill):
         parts = ", ".join(f"{k}={v}" for k, v in fields.items())
         return SkillResult(output=f"Habit #{habit_id} updated: {parts}.")
 
-    # ── query_habit actions ──────────────────────────────────────────────
+    # ── habit_progress read actions ──────────────────────────────────────
 
     def _list(self, user_id: int) -> SkillResult:
         habits = list_habits(user_id)
@@ -436,9 +485,18 @@ class HabitSkill(Skill):
         return SkillResult(output="\n".join(lines) if lines else "No active habits.")
 
     def _stats(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        habits = list_habits(user_id)
-        target_habits = [h for h in habits if (not habit_id or h["id"] == int(habit_id))]
+        has_selector = (
+            args.get("habit_id") not in (None, "")
+            or bool(str(args.get("habit_name") or "").strip())
+        )
+        if has_selector:
+            habit, error = _resolve_active_habit(user_id, args, "stats")
+            if error:
+                return error
+            assert habit is not None
+            target_habits = [habit]
+        else:
+            target_habits = list_habits(user_id)
         if not target_habits:
             return SkillResult(output="No habits found.")
 
@@ -478,10 +536,16 @@ class HabitSkill(Skill):
 
         return SkillResult(output="\n".join(lines) if lines else "No stats available.")
 
-    # ── checkin_habit actions ────────────────────────────────────────────
+    # ── habit_progress write actions ─────────────────────────────────────
 
-    def _checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit, error = _resolve_active_habit(user_id, args, "checkin")
+    def _checkin(
+        self,
+        user_id: int,
+        args: dict,
+        *,
+        mode: str,
+    ) -> SkillResult:
+        habit, error = _resolve_active_habit(user_id, args, mode)
         if error:
             return error
         assert habit is not None
@@ -493,23 +557,90 @@ class HabitSkill(Skill):
         cycle, target = parsed
         period = _current_period(cycle)
         note = args.get("note", "")
-        count = max(1, int(args.get("count", 1) or 1))
+        raw_count = args.get("count")
+        raw_total = args.get("total")
+        if mode == "sync" and raw_total is None:
+            return SkillResult(
+                output="Error: total is required for sync.",
+                success=False,
+            )
+        if mode == "sync" and raw_count is not None:
+            return SkillResult(
+                output="Error: count is only available for add.",
+                success=False,
+            )
+        if mode == "add" and raw_total is not None:
+            return SkillResult(
+                output="Error: total is only available for sync.",
+                success=False,
+            )
 
-        existing = get_habit_checkins(habit_id, period)
-        actual = count
-        for _ in range(actual):
-            checkin_habit(habit_id, user_id, period, note)
-        done = len(existing) + actual
+        if mode == "sync":
+            if (
+                isinstance(raw_total, bool)
+                or not isinstance(raw_total, int)
+                or raw_total < 0
+            ):
+                return SkillResult(
+                    output="Error: total must be a non-negative integer.",
+                    success=False,
+                )
+            try:
+                previous, actual = reconcile_habit_total(
+                    habit_id, user_id, period, raw_total, note,
+                )
+            except ValueError:
+                current = len(get_habit_checkins(habit_id, period))
+                return SkillResult(
+                    output=(
+                        f"Error: reported total {raw_total} is below current "
+                        f"progress {current}; clarify or undo check-ins first."
+                    ),
+                    success=False,
+                )
+            done = previous + actual
+            if actual == 0:
+                return SkillResult(
+                    output=f"{habit['name']} is already at {done}/{target}.",
+                )
+        else:
+            count = 1 if raw_count is None else raw_count
+            if (
+                isinstance(count, bool)
+                or not isinstance(count, int)
+                or count <= 0
+            ):
+                return SkillResult(
+                    output="Error: count must be a positive integer.",
+                    success=False,
+                )
+            actual = count
+            done = add_habit_checkins(
+                habit_id, user_id, period, actual, note,
+            )
         remaining = max(0, target - done)
 
-        extra = f" (x{actual})" if actual > 1 else ""
+        extra = (
+            f" (synced total, +{actual})"
+            if mode == "sync"
+            else f" (x{actual})" if actual > 1 else ""
+        )
         if done >= target:
-            return SkillResult(output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}")
+            return SkillResult(
+                output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}",
+                state_changed=True,
+            )
         cycle_label = "today" if cycle == "daily" else "this week"
-        return SkillResult(output=f"✅ {habit['name']} checked in {done}/{target}, {remaining} left {cycle_label}{extra}")
+        return SkillResult(
+            output=(
+                f"✅ {habit['name']} checked in {done}/{target}, "
+                f"{remaining} left {cycle_label}{extra}"
+            ),
+            state_changed=True,
+        )
 
     def _undo_checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit, error = _resolve_active_habit(user_id, args, "undo_checkin")
+        habit, error = _resolve_active_habit(user_id, args, "undo")
         if error:
             return error
         assert habit is not None
@@ -520,15 +651,15 @@ class HabitSkill(Skill):
             return SkillResult(output=f"Error: invalid frequency on habit #{habit_id}.", success=False)
         cycle, target = parsed
         period = _current_period(cycle)
-        existing = get_habit_checkins(habit_id, period)
-        if not existing:
+        remaining = undo_latest_habit_checkin(habit_id, user_id, period)
+        if remaining is None:
             cycle_label = "today" if cycle == "daily" else "this week"
             return SkillResult(output=f"{habit['name']} has no checkins {cycle_label} — nothing to undo.")
 
-        latest = existing[-1]
-        delete_habit_checkin(latest["id"])
-        remaining = len(existing) - 1
-        return SkillResult(output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})")
+        return SkillResult(
+            output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})",
+            state_changed=True,
+        )
 
     # ── Diary integration ─────────────────────────────────────
 
