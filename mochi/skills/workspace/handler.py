@@ -2,7 +2,7 @@
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import logging
 import os
 import re
@@ -34,7 +34,7 @@ _CORE_PRIVATE_DIRS = frozenset({
     "core_weekly_receipts",
 })
 _SYSTEM_PRIVATE_DIRS = frozenset({"prompts"})
-_DIARY_PRIVATE_PATHS = frozenset({"diary.md"})
+_DIARY_PRIVATE_PATHS = frozenset({"diary.md", "diary_tomorrow.json"})
 _DIARY_PRIVATE_DIRS = frozenset({"diary_archive"})
 _MAX_LISTED_FILES = 100
 _MAX_LIST_DEPTH = 4
@@ -73,44 +73,105 @@ class WorkspaceSkill(Skill):
     def _write_diary(self, args: dict) -> SkillResult:
         content = args.get("content")
         expected = args.get("_expected_content")
+        day = args.get("day", "today")
+        source_date = args.get("_source_date")
+        target_date = args.get("_target_date")
         if not isinstance(content, str):
             return SkillResult(output="Error: content is required.", success=False)
-        if not isinstance(expected, str):
+        if day not in {"today", "tomorrow"}:
+            return SkillResult(
+                output="Error: day must be today or tomorrow.",
+                success=False,
+            )
+        if not isinstance(expected, str) and day == "today":
             return SkillResult(
                 output="Diary update context is unavailable. Try again next turn.",
                 success=False,
             )
+        if not isinstance(source_date, str) or not isinstance(target_date, str):
+            return SkillResult(
+                output="Diary target context is unavailable. Try again next turn.",
+                success=False,
+            )
+        try:
+            source = date.fromisoformat(source_date)
+            target = date.fromisoformat(target_date)
+        except ValueError:
+            return SkillResult(
+                output="Diary target context is invalid. Try again next turn.",
+                success=False,
+            )
+        expected_target = source if day == "today" else source + timedelta(days=1)
+        if target != expected_target:
+            return SkillResult(
+                output="Diary target changed during this turn. Try again.",
+                success=False,
+            )
         lines = content.strip().splitlines()
         if lines and re.fullmatch(
-            rf"#\s+Diary\s+{re.escape(diary.current_date())}"
+            rf"#\s+Diary\s+{re.escape(target_date)}"
             rf"\s+{_WEEKDAY_PREFIX}\s*[。.!：:]?",
             lines[0].strip(),
             flags=re.IGNORECASE,
         ):
             lines = lines[1:]
         content = "\n".join(lines).strip()
-        try:
-            result = diary.replace_section_exact(
-                "今日日記",
-                expected_content=expected,
-                content=content,
-            )
-        except DiaryConflictError as exc:
+        if day == "tomorrow" and not isinstance(expected, str):
+            try:
+                current = diary.read_tomorrow_draft(target_date)
+            except ValueError as exc:
+                return SkillResult(
+                    output=f"Tomorrow Diary draft is unavailable: {exc}",
+                    success=False,
+                )
             return SkillResult(
                 output=(
-                    f"Diary update rejected: {exc}\n\n"
-                    f"Current journal:\n{diary.read(section='今日日記')}"
+                    "Tomorrow's journal needs a current snapshot; no write was "
+                    f"applied.\n\nCurrent journal:\n{current}"
                 ),
                 success=False,
             )
+        try:
+            if day == "today":
+                result = diary.replace_section_exact(
+                    "今日日記",
+                    expected_content=expected,
+                    content=content,
+                    target_date=target_date,
+                )
+            else:
+                result = diary.replace_tomorrow_exact(
+                    source_date=source_date,
+                    target_date=target_date,
+                    expected_content=expected,
+                    content=content,
+                )
+        except (DiaryConflictError, ValueError) as exc:
+            try:
+                current = (
+                    diary.read(section="今日日記")
+                    if day == "today"
+                    else diary.read_tomorrow_draft(target_date)
+                )
+            except ValueError:
+                current = "(draft unavailable)"
+            return SkillResult(
+                output=(
+                    f"Diary update rejected: {exc}\n\n"
+                    f"Current journal:\n{current}"
+                ),
+                success=False,
+            )
+        label = "Today's" if day == "today" else "Tomorrow's"
         receipt = (
-            f"Today's journal {'updated' if result['changed'] else 'unchanged'} "
+            f"{label} journal ({target_date}) "
+            f"{'updated' if result['changed'] else 'unchanged'} "
             f"({result['chars']} chars)."
         )
         return SkillResult(
             output=receipt,
             summary=receipt,
-            entity_refs=["diary:today"],
+            entity_refs=[f"diary:{target_date}"],
             state_changed=result["changed"],
         )
 
@@ -299,11 +360,6 @@ class WorkspaceSkill(Skill):
 
         if not rel_path:
             return SkillResult(output="Error: path is required.", success=False)
-        if Path(rel_path).suffix.casefold() != ".md":
-            return SkillResult(
-                output="Error: only .md files are supported.",
-                success=False,
-            )
 
         data_root = _DATA_DIR.resolve()
         target = (data_root / rel_path).resolve()
@@ -317,6 +373,11 @@ class WorkspaceSkill(Skill):
         if private_reason:
             return SkillResult(
                 output=f"Error: {private_reason}",
+                success=False,
+            )
+        if Path(rel_path).suffix.casefold() != ".md":
+            return SkillResult(
+                output="Error: only .md files are supported.",
                 success=False,
             )
         key = (

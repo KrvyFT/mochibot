@@ -131,6 +131,14 @@ with a lived sleep-transition situation. The heartbeat atomically claims the
 transition, Main may use the abilities available in the turn, and the runtime
 completes sleep even when model or delivery work fails.
 
+Bedtime may revise today's free-text Diary and independently stage one complete
+draft for the next logical day. The private sidecar stores only source date,
+target date, and content. On the target day's first Diary access, the framework
+adds a visible previous-night provenance line and consumes the draft exactly
+once. A draft missed while the bot was offline is archived under its intended
+date and never moved into a later day. Today and tomorrow use separate exact
+conflict snapshots, so Main may write either or both in one turn.
+
 ## Nightly and Weekly memory flow
 
 Nightly is deterministic housekeeping. After the configured maintenance hour,
