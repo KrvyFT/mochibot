@@ -294,8 +294,9 @@ class TelegramTransport(Transport):
     async def _cmd_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
             return
-        from mochi.diary import diary
+        from mochi.diary import diary, refresh_diary_status
         from mochi.config import logical_today
+        refresh_diary_status()
         status = diary.read(section="今日状態") or "(无)"
         journal = diary.read(section="今日日記") or "(无)"
         today = logical_today()

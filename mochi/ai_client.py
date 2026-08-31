@@ -1404,11 +1404,11 @@ async def chat(
         )
     )
 
-    # Fetch diary data for Zone C runtime context
-    # Only journal (events) — status panel (habits/todos) excluded from chat
-    # to avoid LLM parroting progress in every reply. Status is available
-    # via tools (query_habit, manage_todo) when the user asks.
-    from mochi.diary import diary as _diary
+    # Fetch diary data for Zone C runtime context. Ordinary chat excludes the
+    # status panel to avoid parroting progress; autonomous contexts can opt in.
+    from mochi.diary import diary as _diary, refresh_diary_status
+    if prompt_policy.diary_status:
+        await asyncio.to_thread(refresh_diary_status, user_id)
     _ds = (
         _diary.read(section="今日状態")
         if prompt_policy.diary_status

@@ -261,7 +261,7 @@ class TodoSkill(Skill):
     def diary_status(self, user_id: int, today: str, now: datetime) -> list[str] | None:
         from mochi.skills.todo.queries import get_visible_todos
 
-        todos = get_visible_todos(today)
+        todos = get_visible_todos(user_id, today)
         if not todos:
             return None
 

@@ -628,7 +628,7 @@ def refresh_diary_status(user_id: int | None = None) -> str:
         lines = collect_diary_status(user_id, today, now)
     except Exception:
         log.exception("diary_status: collect_diary_status failed")
-        lines = []
+        return "Diary status refresh skipped; previous status preserved."
 
     if lines:
         return diary.rewrite_section("今日状態", lines)

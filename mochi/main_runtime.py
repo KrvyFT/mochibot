@@ -42,6 +42,7 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry.kind == "free_time":
         return ContextPolicy(
             early_runtime_situation=True,
+            diary_status=True,
             diary_journal=True,
             conversation_summary=False,
             recent_history=True,
