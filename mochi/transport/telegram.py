@@ -295,7 +295,7 @@ class TelegramTransport(Transport):
             return
         from mochi.diary import diary, refresh_diary_status
         from mochi.config import logical_today
-        refresh_diary_status()
+        refresh_diary_status(update.effective_user.id)
         status = diary.read(section="今日状態") or "(无)"
         journal = diary.read(section="今日日記") or "(无)"
         today = logical_today()

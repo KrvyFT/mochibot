@@ -11,7 +11,11 @@ from datetime import datetime, timedelta
 
 from mochi.config import TZ, logical_today, logical_days_ago
 from mochi.skills.base import Skill, SkillContext, SkillResult
-from mochi.skills.habit.logic import parse_frequency, get_allowed_days
+from mochi.skills.habit.logic import (
+    describe_frequency,
+    get_allowed_days,
+    parse_frequency,
+)
 from mochi.skills.habit.queries import (
     add_habit,
     list_habits,
@@ -256,7 +260,8 @@ class HabitSkill(Skill):
         this_week = now.strftime("%G-W%V")
         weekday = now.weekday()
         lines: list[str] = []
-        for habit in habits:
+        visible_habits = habits[:8]
+        for habit in visible_habits:
             parsed = parse_frequency(habit["frequency"])
             if not parsed:
                 continue
@@ -275,7 +280,14 @@ class HabitSkill(Skill):
                 else ""
             )
             lines.append(
-                f"- #{habit['id']} {habit['name']} — {done}/{target}{suffix}"
+                f"- #{habit['id']} {habit['name'][:100]} "
+                f"({describe_frequency(habit['frequency'])}) — "
+                f"{done}/{target}{suffix}"
+            )
+        if len(habits) > len(visible_habits):
+            lines.append(
+                f"- ... {len(habits) - len(visible_habits)} more active habits; "
+                "use habit_progress(list) to view them."
             )
         return "\n".join(lines) if lines else "No valid active habits."
 
@@ -473,9 +485,18 @@ class HabitSkill(Skill):
         return SkillResult(output="\n".join(lines) if lines else "No active habits.")
 
     def _stats(self, user_id: int, args: dict) -> SkillResult:
-        habit_id = args.get("habit_id")
-        habits = list_habits(user_id)
-        target_habits = [h for h in habits if (not habit_id or h["id"] == int(habit_id))]
+        has_selector = (
+            args.get("habit_id") not in (None, "")
+            or bool(str(args.get("habit_name") or "").strip())
+        )
+        if has_selector:
+            habit, error = _resolve_active_habit(user_id, args, "stats")
+            if error:
+                return error
+            assert habit is not None
+            target_habits = [habit]
+        else:
+            target_habits = list_habits(user_id)
         if not target_habits:
             return SkillResult(output="No habits found.")
 

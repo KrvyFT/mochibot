@@ -19,7 +19,7 @@ diary_status_order: 10
 |-----------|------|----------|-------------|
 | action | string (enum: list, stats, add, sync, undo) | yes | list = 当前进度；stats = 历史统计；add = 新增完成次数；sync = 对账到累计进度；undo = 撤销最近一次 |
 | habit_id | integer | no | 习惯 ID；stats/add/sync/undo 使用 |
-| habit_name | string | no | 唯一、精确的习惯名称；add/sync/undo 时可代替 habit_id |
+| habit_name | string | no | 唯一、精确的习惯名称；stats/add/sync/undo 时可代替 habit_id |
 | note | string | no | add/sync 的备注 |
 | count | integer | no | add 本次新增的完成次数，默认 1 |
 | total | integer | no | sync 必填；工具原子读取已存进度并只补齐到这个当前周期累计值 |

@@ -786,7 +786,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if capability_context:
         capability_parts.append(f"## 能力上下文\n{capability_context}")
 
-    if user_id and tool_names and habits:
+    if user_id and tool_names and habits and not habit_status:
         habit_tool_names = {"habit_progress", "edit_habit"}
         if habit_tool_names & set(tool_names):
             from mochi.skills.habit.logic import describe_frequency
@@ -1022,6 +1022,7 @@ async def chat(
     capability_context = ""
     tier = "main"
     routed_skill_names: list[str] = []
+    current_routed_skill_names: list[str] = []
 
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
     habits = (
@@ -1200,8 +1201,11 @@ async def chat(
             _safe_recalled_memories(),
         )
 
+        current_routed_skill_names = turn_plan.filter_router_selection(
+            skill_names,
+        )
         skill_names = turn_plan.filter_router_selection([
-            *skill_names,
+            *current_routed_skill_names,
             *sticky_skill_names,
         ])
         routed_skill_names = list(skill_names)
@@ -1307,7 +1311,11 @@ async def chat(
         )
     )
 
-    habit_status = await _habit_progress_context(active_tool_names)
+    habit_status = await _habit_progress_context(
+        active_tool_names
+        if "habit" in current_routed_skill_names
+        else (),
+    )
 
     # Fetch diary data for Zone C runtime context. Ordinary chat excludes the
     # status panel to avoid parroting progress; autonomous contexts can opt in.
@@ -1839,9 +1847,13 @@ async def chat(
                 pending_definitions,
                 source=f"request_round_{round_num + 1}",
             )
-            if not habit_status:
+            newly_loaded_names = {
+                definition.get("function", {}).get("name")
+                for definition in pending_definitions
+            }
+            if not habit_status and "habit_progress" in newly_loaded_names:
                 habit_status = await _habit_progress_context(
-                    availability.names,
+                    newly_loaded_names,
                 )
                 if habit_status:
                     messages[0]["content"] += (
