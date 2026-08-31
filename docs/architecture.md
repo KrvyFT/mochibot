@@ -224,10 +224,13 @@ and marked processed so an assistant-only system turn does not enter memory
 extraction.
 
 Ordinary `notify` reminders remain authorized, deterministic deliveries and
-may advance the same durable row through a recurrence. Their voice rendering is
-prepared once and persisted. Transient delivery failures retry at most three
-attempts within five minutes; stale occurrences expire, and recurring reminders
-advance instead of replaying old content. A transport that requires fresh owner
+may advance the same durable row through a recurrence. Their exact notification
+text is prepared without a model call and persisted before delivery. After a
+confirmed send, it enters the conversation timeline as a processed assistant
+event, so later Main turns can see the reminder without feeding it into summary
+or memory extraction. Transient delivery failures retry at most three attempts
+within five minutes; stale occurrences expire, and recurring reminders advance
+instead of replaying old content. A transport that requires fresh owner
 contact ends the occurrence immediately. SQLite claims and leases prevent
 concurrent workers.
 

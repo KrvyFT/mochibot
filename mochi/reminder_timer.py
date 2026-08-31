@@ -11,15 +11,10 @@ from datetime import datetime, timedelta, timezone
 from mochi.config import TZ
 from mochi.db import (
     get_tool_executions_for_turn,
-    log_usage,
     save_message_once,
 )
-from mochi.core_store import read_core
-from mochi.llm import get_client_for_tier
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
-from mochi.prompt_loader import get_prompt
 from mochi.transport import DeliveryUnavailableUntilInbound
-from mochi.transport.utils import normalize_legacy_bubble_delimiters
 from mochi.skills.reminder.queries import (
     NOTIFY_RETRY_WINDOW,
     begin_delivery,
@@ -139,44 +134,9 @@ def _next_remind_at(reminder: dict) -> str | None:
     return next_occurrence.isoformat() if next_occurrence else None
 
 
-async def _rephrase_reminder(message: str, user_id: int) -> str:
-    """Prepare one durable notification; raw content is a safe fallback."""
-    fallback = f"⏰ {message}"
-    try:
-        template = get_prompt("reminder_deliver")
-        if not template:
-            return fallback
-        core = read_core()
-        agent = get_prompt("system_chat/agent")
-        system_prompt = "\n\n".join(
-            part for part in (core, agent, template) if part
-        )
-        response = await asyncio.wait_for(
-            asyncio.to_thread(
-                get_client_for_tier("main").chat,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": message},
-                ],
-                max_tokens=256,
-            ),
-            timeout=30,
-        )
-        log_usage(
-            response.prompt_tokens,
-            response.completion_tokens,
-            response.total_tokens,
-            model=response.model,
-            purpose="reminder_deliver",
-            reasoning_tokens=response.reasoning_tokens,
-            cached_prompt_tokens=response.cached_prompt_tokens,
-        )
-        return normalize_legacy_bubble_delimiters(
-            response.content or "",
-        ) or fallback
-    except Exception as exc:
-        log.warning("Reminder rewrite unavailable, using raw content: %s", exc)
-        return fallback
+def _notification_text(message: str) -> str:
+    """Render one authorized notify Reminder without a model call."""
+    return f"⏰ {message}"
 
 
 def _to_utc_key(raw_time: str) -> str | None:
@@ -509,9 +469,7 @@ async def _fire_reminder(reminder: dict) -> None:
             if durable_result is None:
                 return
     elif not prepared_text:
-        prepared_text = await _rephrase_reminder(
-            claimed["message"], claimed["user_id"],
-        )
+        prepared_text = _notification_text(claimed["message"])
         if not store_prepared_text(
             claimed["id"], claimed["claimed_at"], prepared_text,
         ):
