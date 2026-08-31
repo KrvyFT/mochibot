@@ -9,7 +9,7 @@ locked: true
 
 ## Tools
 
-### list_skills (on_demand)
+### list_skills (on_demand, adaptive)
 列出所有已注册技能及其状态。
 
 | Parameter | Type | Required | Description |
@@ -23,7 +23,7 @@ locked: true
 | skill_name | string | yes | 技能名称 |
 | enabled | boolean | yes | true=启用, false=禁用 |
 
-### get_skill_config (on_demand)
+### get_skill_config (on_demand, adaptive)
 查看某个已安装技能的专属配置项及当前值；不用于 Agent 自身运行设置。
 
 | Parameter | Type | Required | Description |
@@ -46,3 +46,12 @@ locked: true
 |-----------|------|----------|-------------|
 | action | string (enum: view, set) | yes | 查看或修改 |
 | changes | array (items: object {key:string, value:number}) | no | set 时必填，可一次提交多项设置 |
+
+### manage_tool_load (on_demand)
+按用户明确要求锁定或恢复一个允许自适应的工具加载层级。
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| action | string (enum: pin, reset) | yes | pin = 锁定层级；reset = 恢复自动调整 |
+| tool_name | string | yes | 工具名称 |
+| load | string (enum: on_demand, routed) | no | pin 时必填 |

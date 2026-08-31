@@ -235,8 +235,30 @@ def get_tools(transport: str = "") -> list[dict]:
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        tools.extend(skill.get_tools())
+        tools.extend(_effective_tools(skill))
     return tools
+
+
+def _effective_tools(skill: Skill) -> list[dict]:
+    """Resolve declared definitions once at the registry boundary."""
+    from mochi.adaptive_tool_load import resolve_definition
+
+    return [resolve_definition(tool) for tool in skill.get_tools()]
+
+
+def get_effective_tools_for_skill(skill_name: str) -> list[dict]:
+    """Resolve loads without applying enabled/config/transport eligibility."""
+    skill = _skills.get(skill_name)
+    return _effective_tools(skill) if skill is not None else []
+
+
+def get_declared_tools() -> list[dict]:
+    """Return raw tool contracts for deterministic maintenance."""
+    return [
+        tool
+        for skill in _skills.values()
+        for tool in skill.get_tools()
+    ]
 
 
 def filter_tools_for_context(
@@ -289,7 +311,7 @@ def get_tools_by_names(
             continue
         if transport and transport in skill.exclude_transports:
             continue
-        for tool in skill.get_tools():
+        for tool in _effective_tools(skill):
             if loads is not None and tool.get("_load") not in loads:
                 continue
             tools.append(tool)
@@ -333,7 +355,7 @@ def get_tools_by_tool_names(
         definition = next(
             (
                 tool
-                for tool in skill.get_tools()
+                for tool in _effective_tools(skill)
                 if tool.get("function", {}).get("name") == tool_name
             ),
             None,
@@ -480,7 +502,7 @@ def get_capability_context_for_tools(
 
         on_demand_not_loaded = sorted(
             tool["function"]["name"]
-            for tool in skill.get_tools()
+            for tool in _effective_tools(skill)
             if tool.get("_load") == "on_demand"
             and tool["function"]["name"] not in tool_set
         )
@@ -524,7 +546,21 @@ def get_skill_info_all() -> list[dict]:
             "type": s.skill_type,
             "multi_turn": s.multi_turn,
             "triggers": s.triggers,
-            "tools": [t["function"]["name"] for t in s.get_tools()] if s.get_tools() else [],
+            "tools": [
+                t["function"]["name"] for t in _effective_tools(s)
+            ],
+            "tool_loads": [
+                {
+                    "name": t["function"]["name"],
+                    "declared": t.get("_declared_load", t.get("_load")),
+                    "effective": t.get("_load"),
+                    "adaptive": bool(t.get("_adaptive_load")),
+                    "pinned": t.get("_load_pinned"),
+                    "reason": t.get("_load_reason", ""),
+                    "changed_at": t.get("_load_changed_at"),
+                }
+                for t in _effective_tools(s)
+            ],
             "has_capability_context": bool(s.capability_context),
             "requires_config": getattr(s, "requires_config", []),
             "enabled": not admin_disabled and not auto_disabled,

@@ -34,6 +34,7 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
 _EXPLICIT_STATE_FACT_TOOLS = {
     "habit_progress",
     "edit_file",
+    "manage_tool_load",
     "manage_todo",
     "write_diary",
 }

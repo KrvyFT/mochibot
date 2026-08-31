@@ -191,6 +191,14 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_tool_exec_turn
             ON tool_executions(turn_id, id);
 
+        CREATE TABLE IF NOT EXISTS adaptive_tool_loads (
+            tool_name      TEXT PRIMARY KEY,
+            effective_load TEXT NOT NULL,
+            changed_at     TEXT NOT NULL,
+            pinned_load    TEXT DEFAULT NULL,
+            reason         TEXT NOT NULL DEFAULT ''
+        );
+
         -- Proactive message history
         CREATE TABLE IF NOT EXISTS proactive_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1001,6 +1009,72 @@ def get_tool_executions_for_turn(turn_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_adaptive_tool_load_states() -> dict[str, dict]:
+    """Return persisted effective loads keyed by canonical tool name."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT tool_name, effective_load, changed_at, pinned_load, reason "
+        "FROM adaptive_tool_loads"
+    ).fetchall()
+    conn.close()
+    return {row["tool_name"]: dict(row) for row in rows}
+
+
+def save_adaptive_tool_load_state(
+    tool_name: str,
+    *,
+    effective_load: str,
+    changed_at: str,
+    pinned_load: str | None,
+    reason: str,
+) -> None:
+    """Persist one canonical tool's effective load state."""
+    if effective_load not in {"on_demand", "routed"}:
+        raise ValueError("adaptive effective load must be on_demand or routed")
+    if pinned_load not in {None, "on_demand", "routed"}:
+        raise ValueError("adaptive pinned load must be on_demand, routed, or null")
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO adaptive_tool_loads "
+        "(tool_name, effective_load, changed_at, pinned_load, reason) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(tool_name) DO UPDATE SET "
+        "effective_load=excluded.effective_load, "
+        "changed_at=excluded.changed_at, "
+        "pinned_load=excluded.pinned_load, reason=excluded.reason",
+        (tool_name, effective_load, changed_at, pinned_load, reason[:500]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_successful_chat_tool_turn_counts(
+    *,
+    since: str,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Count distinct successful user-chat turns per canonical tool."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT tool_name, turn_id "
+        "FROM tool_executions "
+        "WHERE source = 'chat' AND status = 'success' "
+        "AND julianday(started_at) >= julianday(?) "
+        "GROUP BY tool_name, turn_id",
+        (since,),
+    ).fetchall()
+    conn.close()
+    alias_map = aliases or {}
+    turns_by_tool: dict[str, set[str]] = {}
+    for row in rows:
+        canonical = alias_map.get(row["tool_name"], row["tool_name"])
+        turns_by_tool.setdefault(canonical, set()).add(row["turn_id"])
+    return {
+        tool_name: len(turn_ids)
+        for tool_name, turn_ids in turns_by_tool.items()
+    }
 
 
 def set_context_reset(user_id: int) -> str:

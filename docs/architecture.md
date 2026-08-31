@@ -92,6 +92,15 @@ controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
 
+Tools marked `on_demand, adaptive` in their own `SKILL.md` may move to
+`routed` after successful use in three distinct owner-chat turns within 30
+days. Nightly performs this deterministic recalculation and returns tools to
+their declared `on_demand` load after 30 unused days, with a seven-day minimum
+tenure. System-owned turns never affect adaptation. Unmarked tools remain fixed;
+the owner may pin or reset only tools that opted into adaptation. The skill
+registry applies the effective load once so routing, `request_tools`, and skill
+inspection share the same result.
+
 ## Self-update flow
 
 Self-update is an owner-requested system skill, not an Observer. Mochi checks
