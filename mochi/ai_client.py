@@ -421,8 +421,13 @@ def _retrieve_memories_for_turn(
     try:
         from mochi.model_pool import get_pool
         pool = get_pool()
-        for lane, query in queries:
-            embeddings[lane] = pool.embed(query)
+        batch = pool.embed_batch([query for _lane, query in queries])
+        if len(batch) != len(queries):
+            raise ValueError("auto-recall embedding count mismatch")
+        embeddings.update(
+            (lane, embedding)
+            for (lane, _query), embedding in zip(queries, batch)
+        )
     except Exception as exc:
         log.warning(
             "auto-recall embedding failed; using keyword search: %s", exc,
