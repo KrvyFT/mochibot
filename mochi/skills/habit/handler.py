@@ -214,19 +214,21 @@ class HabitSkill(Skill):
         action = args.get("action", "")
         uid = context.user_id
 
-        if context.tool_name == "query_habit":
+        if context.tool_name == "habit_progress":
             if action == "list":
                 return self._list(uid)
             elif action == "stats":
                 return self._stats(uid, args)
-            return SkillResult(output=f"Unknown query_habit action: {action}", success=False)
-
-        elif context.tool_name == "checkin_habit":
-            if action == "checkin":
-                return self._checkin(uid, args)
-            elif action == "undo_checkin":
+            elif action == "add":
+                return self._checkin(uid, args, mode="add")
+            elif action == "sync":
+                return self._checkin(uid, args, mode="sync")
+            elif action == "undo":
                 return self._undo_checkin(uid, args)
-            return SkillResult(output=f"Unknown checkin_habit action: {action}", success=False)
+            return SkillResult(
+                output=f"Unknown habit_progress action: {action}",
+                success=False,
+            )
 
         elif context.tool_name == "edit_habit":
             if action == "add":
@@ -388,7 +390,7 @@ class HabitSkill(Skill):
         parts = ", ".join(f"{k}={v}" for k, v in fields.items())
         return SkillResult(output=f"Habit #{habit_id} updated: {parts}.")
 
-    # ── query_habit actions ──────────────────────────────────────────────
+    # ── habit_progress read actions ──────────────────────────────────────
 
     def _list(self, user_id: int) -> SkillResult:
         habits = list_habits(user_id)
@@ -479,10 +481,16 @@ class HabitSkill(Skill):
 
         return SkillResult(output="\n".join(lines) if lines else "No stats available.")
 
-    # ── checkin_habit actions ────────────────────────────────────────────
+    # ── habit_progress write actions ─────────────────────────────────────
 
-    def _checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit, error = _resolve_active_habit(user_id, args, "checkin")
+    def _checkin(
+        self,
+        user_id: int,
+        args: dict,
+        *,
+        mode: str,
+    ) -> SkillResult:
+        habit, error = _resolve_active_habit(user_id, args, mode)
         if error:
             return error
         assert habit is not None
@@ -496,13 +504,23 @@ class HabitSkill(Skill):
         note = args.get("note", "")
         raw_count = args.get("count")
         raw_total = args.get("total")
-        if raw_count is not None and raw_total is not None:
+        if mode == "sync" and raw_total is None:
             return SkillResult(
-                output="Error: count and total cannot be used together.",
+                output="Error: total is required for sync.",
+                success=False,
+            )
+        if mode == "sync" and raw_count is not None:
+            return SkillResult(
+                output="Error: count is only available for add.",
+                success=False,
+            )
+        if mode == "add" and raw_total is not None:
+            return SkillResult(
+                output="Error: total is only available for sync.",
                 success=False,
             )
 
-        if raw_total is not None:
+        if mode == "sync":
             if (
                 isinstance(raw_total, bool)
                 or not isinstance(raw_total, int)
@@ -549,7 +567,7 @@ class HabitSkill(Skill):
 
         extra = (
             f" (synced total, +{actual})"
-            if raw_total is not None
+            if mode == "sync"
             else f" (x{actual})" if actual > 1 else ""
         )
         if done >= target:
@@ -567,7 +585,7 @@ class HabitSkill(Skill):
         )
 
     def _undo_checkin(self, user_id: int, args: dict) -> SkillResult:
-        habit, error = _resolve_active_habit(user_id, args, "undo_checkin")
+        habit, error = _resolve_active_habit(user_id, args, "undo")
         if error:
             return error
         assert habit is not None

@@ -782,7 +782,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
         capability_parts.append(f"## 能力上下文\n{capability_context}")
 
     if user_id and tool_names and habits:
-        habit_tool_names = {"query_habit", "checkin_habit", "edit_habit"}
+        habit_tool_names = {"habit_progress", "edit_habit"}
         if habit_tool_names & set(tool_names):
             from mochi.skills.habit.logic import describe_frequency
             habit_lines = "  ".join(

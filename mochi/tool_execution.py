@@ -32,7 +32,7 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 _EXPLICIT_STATE_FACT_TOOLS = {
-    "checkin_habit",
+    "habit_progress",
     "edit_file",
     "manage_todo",
     "write_diary",
@@ -41,7 +41,7 @@ _EXPLICIT_STATE_FACT_TOOLS = {
 _STATE_CHANGING_ACTIONS: dict[str, set[str]] = {
     "manage_reminder": {"create", "update", "delete"},
     "manage_todo": {"add", "complete", "reopen", "delete", "update"},
-    "checkin_habit": {"checkin", "undo_checkin"},
+    "habit_progress": {"add", "sync", "undo"},
     "edit_habit": {"add", "remove", "pause", "resume", "update"},
     "edit_file": {"write"},
     "memory_trash_bin": {"restore"},
