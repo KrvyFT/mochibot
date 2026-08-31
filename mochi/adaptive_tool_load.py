@@ -195,12 +195,14 @@ def pin_definition(
     current_now = (now or datetime.now(TZ)).astimezone(TZ)
     previous = get_adaptive_tool_load_states().get(tool_name, {})
     previous_effective = str(previous.get("effective_load") or declared)
+    previous_pin = previous.get("pinned_load")
     effective = (
-        pinned_load
-        or previous_effective
+        declared
+        if pinned_load is None and previous_pin in {"on_demand", "routed"}
+        else pinned_load or previous_effective
     )
     changed = (
-        previous.get("pinned_load") != pinned_load
+        previous_pin != pinned_load
         or previous_effective != effective
     )
     effective_changed = previous_effective != effective

@@ -155,6 +155,10 @@ def test_startup_recovers_interrupted_tool_executions():
     pin_definition(by_name["list_skills"], None, now=now)
     assert recalculate(declared, now=now)["list_skills"]["effective_load"] == "routed"
 
+    pin_definition(by_name["run_checkup"], "routed", now=now)
+    pin_definition(by_name["run_checkup"], None, now=now)
+    assert recalculate(declared, now=now)["run_checkup"]["effective_load"] == "on_demand"
+
     old = now - timedelta(days=31)
     save_adaptive_tool_load_state(
         "run_checkup",
