@@ -183,13 +183,11 @@ to the previous topic. Query ranking uses only text/vector relevance;
 importance, age, and access count remain metadata rather than self-reinforcing
 ranking signals. Recall cooldown suppresses only an identical query/context,
 not a new topic. Exact matched KG relationship blocks join the same candidate
-pool rather than bypassing semantic selection. One bounded personality-free
-Lite selector may abstain or choose at most three fused candidates; if Lite is
-unavailable, deterministic fallback uses current-message candidates first and
-continuity only when the current lane is empty; unselected KG is not injected
-without Lite. Recalled content enters Main as explicit read-only JSON data, not
-as executable system instructions. Access/cooldown telemetry commits only
-after Main successfully accepts the recalled prompt.
+pool. The fused ranking is capped at three candidates and a fixed token budget,
+then enters Main as explicitly optional, read-only JSON data rather than
+executable system instructions. Main decides whether any candidate is relevant
+to the current conversation. Access/cooldown telemetry commits only after Main
+successfully accepts the recalled prompt.
 
 ## Self Reminder flow
 
@@ -235,13 +233,13 @@ expires during sleep, active owner chat, or after it is missed; it is never
 delayed, accumulated, or retried.
 
 Free Time enters the standard Main personality and Agent First tool loop. It
-receives Core, current local time, last-contact age, today's free-text Diary, and
-the latest six real user/assistant messages as bounded read-only context. It does
-not receive the conversation summary, status panel, auto-recall, recent
-operations, or semantic routing. Main starts with resident tools and
-`request_tools`; about 20% of planned opportunities also expose `web_search` and
-`read_web_page` directly. The allocation does not describe the turn as a search
-mode or require search, and other turns may still request those tools.
+receives Core, current local time, last-contact age, today's status panel and
+free-text Diary, and the latest six real user/assistant messages as bounded
+read-only context. It does not receive the conversation summary, auto-recall,
+recent operations, or semantic routing. Main starts with resident tools and
+`request_tools`; about 20% of planned opportunities also expose `web_search`
+and `read_web_page` directly. The allocation does not describe the turn as a
+search mode or require search, and other turns may still request those tools.
 
 Free Time is ephemeral: its text is generated only when an opportunity is
 claimed. Empty/no-effect output, model failure, transport failure, uncertain
