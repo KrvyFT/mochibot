@@ -245,6 +245,40 @@ class HabitSkill(Skill):
 
         return SkillResult(output=f"Unknown habit tool: {context.tool_name}", success=False)
 
+    def progress_context(self, user_id: int) -> str:
+        """Return a concise owner-scoped progress snapshot for a routed turn."""
+        habits = list_habits(user_id)
+        if not habits:
+            return "No active habits."
+
+        now = datetime.now(TZ)
+        today = logical_today(now)
+        this_week = now.strftime("%G-W%V")
+        weekday = now.weekday()
+        lines: list[str] = []
+        for habit in habits:
+            parsed = parse_frequency(habit["frequency"])
+            if not parsed:
+                continue
+            cycle, target = parsed
+            period = today if cycle == "daily" else this_week
+            done = len(get_habit_checkins(habit["id"], period))
+            annotations: list[str] = []
+            if _is_paused(habit):
+                annotations.append(f"paused until {habit['paused_until']}")
+            allowed = get_allowed_days(habit["frequency"])
+            if allowed is not None and weekday not in allowed:
+                annotations.append("not scheduled today")
+            suffix = (
+                f" ({'; '.join(annotations)})"
+                if annotations
+                else ""
+            )
+            lines.append(
+                f"- #{habit['id']} {habit['name']} — {done}/{target}{suffix}"
+            )
+        return "\n".join(lines) if lines else "No valid active habits."
+
     # ── edit_habit actions ───────────────────────────────────────────────
 
     def _add(self, user_id: int, args: dict) -> SkillResult:

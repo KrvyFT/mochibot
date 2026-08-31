@@ -16,7 +16,7 @@ import platform
 import re
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -720,10 +720,15 @@ def _render_self_reminder_event(runtime_entry: MainRuntimeEntry) -> str:
     )
 
 
+def _render_habit_status_context(habit_status: str) -> str:
+    return f"## 本轮习惯进度快照（只读事实）\n{habit_status}"
+
+
 def _build_system_prompt(user_id: int, capability_context: str = "",
                          tool_names: list[str] | None = None,
                          core_memory: str = "",
                          habits: list[dict] | None = None,
+                         habit_status: str = "",
                          transport: str = "",
                          recalled_memories: list[dict] | None = None,
                          diary_status: str = "",
@@ -791,6 +796,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
             if habit_lines:
                 capability_parts.append(f"## 习惯列表 (打卡用)\n{habit_lines}")
+
+    if habit_status:
+        capability_parts.append(_render_habit_status_context(habit_status))
 
     if policy.prompt_sections and not is_weekly:
         for section in skill_registry.get_prompt_sections(compact=True):
@@ -1066,6 +1074,19 @@ async def chat(
             current_user_message_id,
         )
 
+    async def _habit_progress_context(tool_names: Collection[str]) -> str:
+        if "habit_progress" not in tool_names:
+            return ""
+        habit_skill = skill_registry.get_skill("habit")
+        context_builder = getattr(habit_skill, "progress_context", None)
+        if not callable(context_builder):
+            return ""
+        try:
+            return await asyncio.to_thread(context_builder, user_id)
+        except Exception as exc:
+            log.warning("Habit progress context skipped: %s", exc)
+            return ""
+
     # ── Skill mode: /skilloff skips router + non-core tools ──
     from mochi.db import get_skill_mode
     from mochi.turn_tool_policy import build_turn_tool_plan
@@ -1286,6 +1307,8 @@ async def chat(
         )
     )
 
+    habit_status = await _habit_progress_context(active_tool_names)
+
     # Fetch diary data for Zone C runtime context. Ordinary chat excludes the
     # status panel to avoid parroting progress; autonomous contexts can opt in.
     from mochi.diary import diary as _diary, refresh_diary_status
@@ -1304,7 +1327,8 @@ async def chat(
 
     system_prompt = _build_system_prompt(
         user_id, capability_context=capability_context, tool_names=active_tool_names,
-        core_memory=core_memory, habits=habits, transport=transport,
+        core_memory=core_memory, habits=habits, habit_status=habit_status,
+        transport=transport,
         recalled_memories=recalled_memories,
         diary_status=_ds, diary_journal=_dj,
         conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
@@ -1815,6 +1839,14 @@ async def chat(
                 pending_definitions,
                 source=f"request_round_{round_num + 1}",
             )
+            if not habit_status:
+                habit_status = await _habit_progress_context(
+                    availability.names,
+                )
+                if habit_status:
+                    messages[0]["content"] += (
+                        "\n\n" + _render_habit_status_context(habit_status)
+                    )
 
     # If we exhausted tool rounds, return whatever we have
     reply = _clean_model_reply(response.content)
