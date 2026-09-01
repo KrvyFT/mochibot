@@ -333,7 +333,7 @@ _DEPRECATED_SYSTEM_KEYS = frozenset({
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
-    "MAX_DAILY_FREE_TIME":            ("int",   10),
+    "MAX_DAILY_FREE_TIME":            ("int",   30),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),

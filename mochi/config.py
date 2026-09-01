@@ -116,7 +116,12 @@ def _persist_owner(user_id: int) -> None:
 # Heartbeat
 # ═══════════════════════════════════════════════════════════════════════════
 
-MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", 10)
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", 30)
+
+# Hard ceiling for MAX_DAILY_FREE_TIME. The scheduler, the admin portal, and
+# the agent-facing tool all clamp to this, so a bad value cannot flood the
+# user. Raising it costs one Main-model call per extra opportunity.
+FREE_TIME_DAILY_MAX = 96
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
