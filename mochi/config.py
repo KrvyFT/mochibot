@@ -116,17 +116,25 @@ def _persist_owner(user_id: int) -> None:
 # Heartbeat
 # ═══════════════════════════════════════════════════════════════════════════
 
-MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", 30)
-
-# Hard ceiling for MAX_DAILY_FREE_TIME. The scheduler, the admin portal, and
-# the agent-facing tool all clamp to this, so a bad value cannot flood the
-# user. Raising it costs one Main-model call per extra opportunity.
-FREE_TIME_DAILY_MAX = 96
+# 08:00–00:30 is 16.5 hours. Adjacent Free Time slots stay at least this far
+# apart, and the hard ceiling is how many such points fit in the window.
+FREE_TIME_MIN_GAP_MINUTES = 15
+FREE_TIME_WINDOW_MINUTES = 16 * 60 + 30
+FREE_TIME_DAILY_MAX = FREE_TIME_WINDOW_MINUTES // FREE_TIME_MIN_GAP_MINUTES
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", FREE_TIME_DAILY_MAX)
+# Fraction of daily Free Time slots that come with web_search already loaded
+# and a search-oriented situation. The rest still talk to the owner.
+FREE_TIME_SEARCH_SHARE = _env_float("FREE_TIME_SEARCH_SHARE", 0.2)
+# When the owner said they are busy or asleep, skip due Free Time slots but
+# still consume them. Always fire at least once every N minutes.
+FREE_TIME_UNAVAILABLE_FLOOR_MINUTES = max(
+    1, _env_int("FREE_TIME_UNAVAILABLE_FLOOR_MINUTES", 45),
+)
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
 WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
-SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 21)      # bedtime availability + silence checks
+SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 1)       # rest window starts here; may wrap past midnight
 SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)

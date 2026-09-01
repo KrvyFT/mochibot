@@ -252,6 +252,43 @@ def _validate(content: str) -> str:
     return normalized
 
 
+PIN_MARKER = "以上设置不要删除覆写"
+
+
+def split_pinned_core(content: str) -> tuple[str, str]:
+    """Split Core into (pinned identity, living remainder).
+
+    The pinned half is everything through the first line that is exactly
+    PIN_MARKER. Main and Weekly may revise only the remainder.
+    """
+    text = content.strip()
+    if not text:
+        return "", ""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == PIN_MARKER:
+            pinned = "\n".join(lines[: index + 1])
+            live = "\n".join(lines[index + 1 :]).strip()
+            return pinned, live
+    return "", text
+
+
+def with_pinned_identity(current: str, proposed: str) -> str:
+    """Keep the on-disk identity pin; take only the living section from proposed.
+
+    A sentence inside Core is not a lock. Main and Weekly always submit a
+    complete replacement; this merge is what actually prevents the identity
+    block from being deleted.
+    """
+    pinned, _current_live = split_pinned_core(current)
+    if not pinned:
+        return proposed.strip()
+    _ignored_pin, new_live = split_pinned_core(proposed)
+    if new_live:
+        return f"{pinned}\n\n{new_live}"
+    return pinned
+
+
 def _atomic_write_bytes(path: Path, content: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(
@@ -386,7 +423,7 @@ def replace_core_exact(
                 "Core changed since this turn began. Read the current document and "
                 "submit a fresh revision."
             )
-        normalized = _validate(content)
+        normalized = _validate(with_pinned_identity(current, content))
         if normalized == current:
             return {"changed": False, **_stats(current)}
         _snapshot_unlocked(current, source)
@@ -425,12 +462,15 @@ def replace_weekly_core_exact(
     """
     if not isinstance(expected_content, str):
         raise CoreError("expected_content must be text.")
-    updated = _validate(content)
-    requested_hash = _sha256(updated)
+    if not isinstance(content, str):
+        raise CoreError("content must be text.")
 
     with _transaction():
         _ensure_core_ready_unlocked(user_id)
         receipt = _read_weekly_receipt_unlocked(user_id, period_key)
+        current = _core_path().read_text(encoding="utf-8").strip()
+        updated = _validate(with_pinned_identity(current, content))
+        requested_hash = _sha256(updated)
         if receipt:
             return (
                 "replayed"
@@ -438,7 +478,6 @@ def replace_weekly_core_exact(
                 else "conflict"
             )
 
-        current = _core_path().read_text(encoding="utf-8").strip()
         if current != expected_content:
             # A process may have completed the durable Core write just before
             # persisting its receipt. Recover only an identical deterministic

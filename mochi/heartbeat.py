@@ -15,6 +15,7 @@ from mochi.config import (
 )
 from mochi.db import (
     _connect,
+    get_last_user_message,
     get_last_user_message_time,
     log_heartbeat,
 )
@@ -28,10 +29,14 @@ from mochi.heartbeat_runtime import (
     ensure_daily_free_time_plan,
     entry_from_claim,
     expire_unusable_free_time_runs,
+    in_free_time_window,
     get_schedulable_runs,
+    last_delivered_free_time_at,
+    owner_free_time_unavailable_cue,
     record_failure,
     recover_prior_tool_attempt,
     remove_delivered_component,
+    should_skip_unavailable_slot,
     store_delivery_progress,
     store_prepared_result,
 )
@@ -62,12 +67,37 @@ def _sleep_after_hour() -> int:
     return int(_effective("SLEEP_AFTER_HOUR"))
 
 
+def _hour_in_half_open(hour: int, start: int, end: int) -> bool:
+    """True if ``hour`` is in ``[start, end)`` on a 24-hour clock.
+
+    When ``end < start`` the range wraps past midnight, e.g. 06:00–01:00.
+    """
+    hour %= 24
+    start %= 24
+    end %= 24
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end
+
+
 def _is_awake_hour(hour: int) -> bool:
-    return _wake_earliest_hour() <= hour < _sleep_after_hour()
+    return _hour_in_half_open(hour, _wake_earliest_hour(), _sleep_after_hour())
 
 
 def _is_rest_hour(hour: int) -> bool:
     return not _is_awake_hour(hour)
+
+
+def _fallback_wake_due(hour: int) -> bool:
+    if not _is_awake_hour(hour):
+        return False
+    return _hour_in_half_open(
+        hour,
+        int(_effective("FALLBACK_WAKE_HOUR")),
+        _sleep_after_hour(),
+    )
 
 
 def _persist_state(state: str, changed_at: datetime | None = None) -> None:
@@ -511,12 +541,15 @@ async def _deliver_autonomous(
         log_heartbeat(_state, "free_time_delivery_failed")
         return False
     if (
-        _state != AWAKE
-        or has_active_chat()
+        has_active_chat()
         or claimed.get("_chat_activity_generation") != chat_activity_generation()
     ):
         complete_without_delivery(claimed, durable, "active_chat")
         log_heartbeat(_state, "free_time_active_chat")
+        return False
+    if _state != AWAKE and not in_free_time_window(datetime.now(TZ)):
+        complete_without_delivery(claimed, durable, "asleep")
+        log_heartbeat(_state, "free_time_asleep")
         return False
     if not begin_delivery(claimed):
         return False
@@ -590,9 +623,11 @@ async def run_main_runtime_tick(
     now: datetime | None = None,
 ) -> list[str]:
     """Refresh observer caches and run due Free Time claims."""
-    if _state != AWAKE or _silent_pause:
-        return []
     now = now or datetime.now(TZ)
+    if _silent_pause:
+        return []
+    if _state != AWAKE and not in_free_time_window(now):
+        return []
     from mochi.observers import collect_all
 
     await collect_all()
@@ -611,17 +646,39 @@ async def run_main_runtime_tick(
     )
     if active_chat:
         return created
+    last_user = get_last_user_message(user_id)
+    unavailable_cue = owner_free_time_unavailable_cue(
+        sleeping=_state == SLEEPING,
+        last_user_text=None if last_user is None else last_user.get("content"),
+    )
+    last_delivered_at = last_delivered_free_time_at(user_id)
     for row in get_schedulable_runs(now=now):
         current_now = datetime.now(TZ)
+        in_window = in_free_time_window(current_now)
         expire_unusable_free_time_runs(
             now=current_now,
             active_chat=has_active_chat(),
-            awake=_state == AWAKE,
+            awake=_state == AWAKE or in_window,
         )
-        if _state != AWAKE or has_active_chat():
+        if has_active_chat():
+            break
+        if _state != AWAKE and not in_window:
             break
         claimed = claim_run(row["run_key"], now=current_now)
         if claimed is not None:
+            skip_reason = should_skip_unavailable_slot(
+                now=current_now,
+                cue=unavailable_cue,
+                last_delivered_at=last_delivered_at,
+            )
+            if skip_reason:
+                complete_without_delivery(
+                    claimed,
+                    DurableChatResult(disposition="skip"),
+                    f"skipped_{skip_reason}",
+                )
+                log_heartbeat(_state, f"free_time_skipped_{skip_reason}")
+                break
             claimed["_chat_activity_generation"] = chat_activity_generation()
             await _run_claimed_entry(claimed)
             break
@@ -658,15 +715,17 @@ async def heartbeat_loop() -> None:
                 await asyncio.sleep(interval)
                 continue
             if _state == SLEEPING:
-                expire_unusable_free_time_runs(
-                    now=now,
-                    active_chat=has_active_chat(),
-                    awake=False,
-                )
+                in_window = in_free_time_window(now)
+                if not in_window:
+                    expire_unusable_free_time_runs(
+                        now=now,
+                        active_chat=has_active_chat(),
+                        awake=False,
+                    )
                 fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
-                if fallback_hour <= now.hour < _sleep_after_hour():
+                if _fallback_wake_due(now.hour):
                     wake_up(f"fallback_{fallback_hour}:00")
-                else:
+                elif not in_window:
                     log_heartbeat(_state, "sleeping")
                     await asyncio.sleep(interval)
                     continue

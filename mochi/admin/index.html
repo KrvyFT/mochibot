@@ -1560,7 +1560,7 @@ async function loadSettings() {
         <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="${_freeTimeMax}" style="width:80px" value="${esc(freeTimeLimit)}" ${freeTimeEnabled?'':'disabled'}>
         <span style="font-size:12px;color:var(--text-soft)">次</span>
       </div>
-      <div style="font-size:11px;color:var(--text-soft);margin-top:6px">机会在 06:00–21:00 内均匀分布并带随机抖动，数量即为安排数；热聊、睡眠或错过时会过期，所以实际送达数略低。中途调大会补足当天剩余时段。</div>
+      <div style="font-size:11px;color:var(--text-soft);margin-top:6px">机会在 08:00–00:30 内均匀分布并带随机抖动，安排数即当天至少要排的次数。约 20% 的机会带上联网搜索，去找一件有趣或你可能感兴趣的事。热聊中的到期机会会过期；中途调大会补足当天剩余时段。睡眠时段是 01:00–06:00。</div>
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
     </div>`;
@@ -1785,7 +1785,7 @@ let _modelEditGeneration = 0;
 let _modelTargetTier = null;
 let _modelCredentialSources = [];
 let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
-let _freeTimeMax = 96;      // replaced by the server-sent bound on first render
+let _freeTimeMax = 66;      // replaced by the server-sent bound on first render
 let _lastAutoModel = '';
 
 async function loadAdvanced() {

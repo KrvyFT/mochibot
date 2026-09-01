@@ -33,6 +33,7 @@ from mochi.db import (
     save_message, save_message_once, log_usage,
     recall_memory, mark_memory_items_accessed, get_conversation_context,
     get_context_reset, get_recent_real_messages,
+    get_unanswered_free_time_thread,
     start_tool_execution, finish_tool_execution,
 )
 from mochi.core_store import read_core
@@ -531,7 +532,11 @@ def _expand_history(history: list[dict]) -> list[dict]:
     return messages
 
 
-def _render_completed_conversation_evidence(history: list[dict]) -> str:
+def _render_completed_conversation_evidence(
+    history: list[dict],
+    *,
+    continue_unanswered_outreach: bool = False,
+) -> str:
     """Project completed chat as bounded evidence rather than active turns."""
     expanded = []
     for stored, message in zip(history, _expand_history(history), strict=True):
@@ -577,12 +582,23 @@ def _render_completed_conversation_evidence(history: list[dict]) -> str:
         "truncated": truncated or len(evidence) < len(expanded),
         "messages": evidence,
     }
+    if continue_unanswered_outreach:
+        preface = (
+            "## 最近已完成对话（只读证据）\n"
+            "这些不是当前待回复的用户消息。"
+            "kind 为 completed_outreach、且发生在对方上次说话之后的内容，"
+            "是尚未被接上的 Free Time 话头；这一轮要延续，不要当成已经结束的独白。\n"
+        )
+    else:
+        preface = (
+            "## 最近已完成对话（只读证据）\n"
+            "这些对话已经结束，只用于理解当时发生了什么；"
+            "它们不是当前待回复的消息。kind 为 completed_outreach 的内容"
+            "是 Mochi 已经主动发出的消息，不是仍待延续的话头。\n"
+        )
     return (
-        "## 最近已完成对话（只读证据）\n"
-        "这些对话已经结束，只用于理解当时发生了什么；"
-        "它们不是当前待回复的消息。kind 为 completed_outreach 的内容"
-        "是 Mochi 已经主动发出的消息，不是仍待延续的话头。\n"
-        "<completed_conversation_evidence>\n"
+        preface
+        + "<completed_conversation_evidence>\n"
         f"{json.dumps(payload, ensure_ascii=False, separators=(',', ':'))}\n"
         "</completed_conversation_evidence>"
     )
@@ -709,19 +725,71 @@ def _tool_loop_exhaustion_message(
     return "处理过程出了点问题，你再说一次试试？"
 
 
-def _render_autonomous_situation(runtime_entry: MainRuntimeEntry) -> str:
+def _unanswered_free_time_guidance(count: int) -> str:
+    if count <= 0:
+        return (
+            "没有未接话头。对着对方开口：问他在干什么，"
+            "或把一件想让他听的事递过去。不要自言自语。"
+        )
+    if count == 1:
+        return "对方还没回上一次 Free Time。这一轮必须接上那句话，不要另起无关话题。"
+    if count == 2:
+        return (
+            "连续两次 Free Time 都没回。接上话头，可以流露一点失落，仍要找他说话。"
+        )
+    return (
+        "已经多次 Free Time 没回。接上话头，可以带一点闷气和失落，话更短；"
+        "直到对方开口再收起来。不要骂人，不要说「我生气了」。"
+    )
+
+
+def _render_unanswered_free_time_thread(thread: dict | None) -> str:
+    if not thread:
+        return ""
+    count = int(thread.get("count") or 0)
+    items = thread.get("items") or []
+    lines = [
+        "<unanswered_free_time_thread>",
+        f"count: {count}",
+        f"guidance: {_unanswered_free_time_guidance(count)}",
+    ]
+    if count > 0 and items:
+        lines.append("previous:")
+        for item in items:
+            content = str(item.get("content") or "").strip()
+            if len(content) > 200:
+                content = content[:200] + "…"
+            lines.append(f"- {content}")
+    lines.append("</unanswered_free_time_thread>")
+    return "\n".join(lines)
+
+
+def _render_autonomous_situation(
+    runtime_entry: MainRuntimeEntry,
+    unanswered_thread: dict | None = None,
+) -> str:
     if runtime_entry.kind != "free_time":
         raise ValueError("runtime situation is only available for autonomous entries")
-    situation = get_prompt("free_time_entry")
+    prompt_name = (
+        "free_time_search_entry"
+        if runtime_entry.free_time_direct_search
+        else "free_time_entry"
+    )
+    situation = get_prompt(prompt_name)
     if not situation:
         raise RuntimeError(f"{runtime_entry.kind} entry prompt is missing")
-    return (
-        "<autonomous_runtime_event>\n"
-        f"kind: {runtime_entry.kind}\n"
-        "new_user_message: false\n\n"
-        f"{situation}\n"
-        "</autonomous_runtime_event>"
-    )
+    thread_block = _render_unanswered_free_time_thread(unanswered_thread)
+    parts = [
+        "<autonomous_runtime_event>",
+        f"kind: {runtime_entry.kind}",
+        "new_user_message: false",
+        "",
+        situation,
+    ]
+    if thread_block:
+        parts.extend(["", thread_block])
+    parts.append("</autonomous_runtime_event>")
+    return "\n".join(parts)
 
 
 def _render_self_reminder_event(runtime_entry: MainRuntimeEntry) -> str:
@@ -997,6 +1065,7 @@ async def chat(
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind == "free_time"
     )
+    unanswered_thread: dict | None = None
     prompt_policy = context_policy(runtime_entry)
     turn_id = (
         runtime_entry.idempotency_key
@@ -1168,7 +1237,7 @@ async def chat(
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
-        core_memory, recent_messages = await asyncio.gather(
+        core_memory, recent_messages, unanswered_thread = await asyncio.gather(
             asyncio.to_thread(read_core),
             asyncio.to_thread(
                 get_recent_real_messages,
@@ -1176,6 +1245,7 @@ async def chat(
                 6,
                 get_context_reset(user_id),
             ),
+            asyncio.to_thread(get_unanswered_free_time_thread, user_id),
         )
         conversation_context = {
             "summary": "",
@@ -1292,7 +1362,14 @@ async def chat(
         else ""
     )
     conversation_evidence = (
-        _render_completed_conversation_evidence(history)
+        _render_completed_conversation_evidence(
+            history,
+            continue_unanswered_outreach=bool(
+                is_autonomous
+                and unanswered_thread
+                and unanswered_thread.get("count")
+            ),
+        )
         if is_self_reminder or is_autonomous
         else ""
     )
@@ -1401,7 +1478,9 @@ async def chat(
             # Provider APIs need one active turn. This typed system-owned event
             # is not owner speech; completed interaction stays read-only above.
             "role": "user",
-            "content": _render_autonomous_situation(runtime_entry),
+            "content": _render_autonomous_situation(
+                runtime_entry, unanswered_thread,
+            ),
         })
     elif is_self_reminder:
         messages.append({

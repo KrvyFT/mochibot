@@ -859,6 +859,62 @@ def get_recent_real_messages(
     return [dict(row) for row in reversed(rows)]
 
 
+def get_unanswered_free_time_thread(
+    user_id: int,
+    *,
+    limit: int = 5,
+) -> dict:
+    """Return Free Time outreach still waiting on a user reply.
+
+    Count and excerpts are the delivered assistant messages whose turn_id
+    starts with ``free_time:`` after the latest user message. A later user
+    message clears the thread.
+    """
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 0:
+        raise ValueError("user_id must be a non-negative integer")
+    cap = max(1, min(int(limit), 20))
+    conn = _connect()
+    try:
+        last_user = conn.execute(
+            "SELECT id FROM messages "
+            "WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        conditions = [
+            "user_id = ?",
+            "role = 'assistant'",
+            "turn_id LIKE 'free_time:%'",
+        ]
+        params: list = [user_id]
+        if last_user is not None:
+            conditions.append("id > ?")
+            params.append(last_user["id"])
+        where = " AND ".join(conditions)
+        count = int(
+            conn.execute(
+                f"SELECT COUNT(*) AS n FROM messages WHERE {where}",
+                params,
+            ).fetchone()["n"]
+        )
+        rows = conn.execute(
+            "SELECT content, created_at, turn_id FROM messages WHERE "
+            + where
+            + " ORDER BY id DESC LIMIT ?",
+            [*params, cap],
+        ).fetchall()
+        items = [
+            {
+                "content": row["content"],
+                "created_at": row["created_at"],
+                "turn_id": row["turn_id"],
+            }
+            for row in reversed(rows)
+        ]
+        return {"count": count, "items": items}
+    finally:
+        conn.close()
+
+
 def search_conversation_messages(
     user_id: int,
     query: str,
@@ -2781,13 +2837,19 @@ def cleanup_heartbeat_log(days: int = 30) -> int:
 
 
 def get_last_user_message_time(user_id: int) -> str | None:
+    message = get_last_user_message(user_id)
+    return None if message is None else message["created_at"]
+
+
+def get_last_user_message(user_id: int) -> dict | None:
     conn = _connect()
     row = conn.execute(
-        "SELECT created_at FROM messages WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
+        "SELECT content, created_at FROM messages "
+        "WHERE user_id = ? AND role = 'user' ORDER BY id DESC LIMIT 1",
         (user_id,),
     ).fetchone()
     conn.close()
-    return row["created_at"] if row else None
+    return dict(row) if row else None
 
 
 def get_daily_message_counts(user_id: int, days: int = 7) -> list[dict]:

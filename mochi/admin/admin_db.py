@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from mochi.config import (
     TZ,
     MAIN_PROVIDER, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
+    FREE_TIME_DAILY_MAX,
 )
 from mochi.db import _connect
 from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key
@@ -333,13 +334,13 @@ _DEPRECATED_SYSTEM_KEYS = frozenset({
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
-    "MAX_DAILY_FREE_TIME":            ("int",   30),
+    "MAX_DAILY_FREE_TIME":            ("int",   FREE_TIME_DAILY_MAX),
     "FALLBACK_WAKE_HOUR":             ("int",   10),
     "BEDTIME_ENTRY_ENABLED":          ("bool",  True),
     "BEDTIME_ENTRY_TIMEOUT_S":        ("int",   60),
     # ── Sleep/Wake ──
     "WAKE_EARLIEST_HOUR":             ("int",   6),
-    "SLEEP_AFTER_HOUR":               ("int",   21),
+    "SLEEP_AFTER_HOUR":               ("int",   1),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),

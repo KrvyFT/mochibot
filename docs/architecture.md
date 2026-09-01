@@ -248,22 +248,31 @@ concurrent workers.
 
 ## Free Time flow
 
-The owner controls one Heartbeat preference: the daily upper limit for Free
-Time Main calls. At the start of each local day, the zero-model scheduler creates
-that many candidate moments across 06:00–21:00 and independently activates each
-with a 60% chance. The resulting opportunities and their direct-search
+The owner controls one Heartbeat preference: the daily Free Time quota. The
+zero-model scheduler lays that many candidate moments across the full
+08:00–00:30 window (even buckets with jitter, at least 15 minutes apart).
+Starting mid-window does not compress leftovers into the evening; times
+already past expire in place. The hard ceiling is how many 15-minute points
+fit in that window. The resulting opportunities and their direct-search
 allocation are durable, so restart does not redraw them. A due opportunity
-expires during sleep, active owner chat, or after it is missed; it is never
-delayed, accumulated, or retried.
+expires during active owner chat or after it is missed, and sleep inside
+08:00–00:30 does not cancel remaining slots. Rest hours are 01:00–06:00. It
+is never delayed, accumulated, or retried. If the owner just said they are
+busy or going to sleep, a due slot is still consumed but skipped unless 45
+minutes have passed since the last Free Time that actually reached them.
 
 Free Time enters the standard Main personality and Agent First tool loop. It
 receives Core, current local time, last-contact age, today's status panel and
-free-text Diary, and the latest six real user/assistant messages as bounded
-read-only context. It does not receive the conversation summary, auto-recall,
-recent operations, or semantic routing. Main starts with resident tools and
-`request_tools`; about 20% of planned opportunities also expose `web_search`
-and `read_web_page` directly. The allocation does not describe the turn as a
-search mode or require search, and other turns may still request those tools.
+free-text Diary, the latest six real user/assistant messages, and any
+unanswered Free Time outreach since the owner's last message. It does not
+receive the conversation summary, auto-recall, recent operations, or semantic
+routing. Main starts with resident tools and `request_tools`; about 20% of
+planned opportunities also expose `web_search` and `read_web_page` directly,
+with a search-oriented Free Time situation. Ordinary Free Time is for talking
+to the owner—asking what they are doing, sharing one thing worth hearing,
+and continuing an unanswered previous Free Time thread, with a little
+hurt then heat if several slots pass in silence. Other turns may still
+request those tools.
 
 Free Time is ephemeral: its text is generated only when an opportunity is
 claimed. Empty/no-effect output, model failure, transport failure, uncertain
