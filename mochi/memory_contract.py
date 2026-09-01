@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from collections.abc import Sequence
 
 
 MAX_MEMORY_CONTENT_CHARS = 160
 MAX_EVIDENCE_MESSAGE_IDS = 20
+
+
+def normalize_memory_exact(content: str) -> str:
+    """Normalize cosmetic representation while preserving meaningful symbols."""
+    normalized = unicodedata.normalize("NFKC", content or "").casefold()
+    return " ".join(normalized.split())
 
 
 def validate_memory_content(content: object) -> str:

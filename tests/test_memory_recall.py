@@ -4,11 +4,14 @@ import struct
 
 from mochi.db import (
     _connect,
+    commit_memory_extraction_batch,
     delete_memory_items,
+    get_memory_extraction_batch,
     list_memory_trash,
     merge_memory_items,
     recall_memory,
     restore_memory_from_trash,
+    save_message,
     save_memory_item,
     update_memory_item,
 )
@@ -106,6 +109,7 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
         strip_legacy_tool_fact_suffix,
     )
     from mochi.memory_extraction import _conversation_payload
+    from mochi.memory_extraction import _same_fact
     from mochi.observers.recent_conversation.observer import (
         RecentConversationObserver,
     )
@@ -156,6 +160,41 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     extraction_payload = _conversation_payload(messages)
     assert suffix not in extraction_payload[1]["content"]
     assert extraction_payload[1]["tool_receipts"] == ["habit_progress"]
+    assert _same_fact("喜欢简洁直接沟通", " 喜欢简洁直接沟通 ")
+    assert not _same_fact("喜欢简洁直接沟通", "不喜欢简洁直接沟通")
+    assert not _same_fact("血型是A+", "血型是A-")
+    assert not _same_fact("主要使用C++", "主要使用C")
+
+    save_memory_item(1, "喜欢简洁直接沟通", source="admin")
+    correction_user_id = save_message(
+        1,
+        "user",
+        "不喜欢简洁直接沟通",
+        turn_id="correction",
+    )
+    correction_assistant_id = save_message(
+        1,
+        "assistant",
+        "知道了",
+        turn_id="correction",
+    )
+    cursor, batch = get_memory_extraction_batch(1, batch_turns=1)
+    assert [message["id"] for message in batch] == [
+        correction_user_id,
+        correction_assistant_id,
+    ]
+    inserted = commit_memory_extraction_batch(
+        1,
+        expected_cursor=cursor,
+        through_message_id=correction_assistant_id,
+        batch_user_message_ids=[correction_user_id],
+        memories=[{
+            "content": "不喜欢简洁直接沟通",
+            "importance": 2,
+            "evidence_message_ids": [correction_user_id],
+        }],
+    )
+    assert len(inserted) == 1
 
     monkeypatch.setattr(
         ai_client,

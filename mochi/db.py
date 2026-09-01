@@ -1611,35 +1611,6 @@ def text_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-def _memory_contents_match(content: str, existing_content: str) -> bool:
-    normalized = _normalize_text(content)
-    existing = _normalize_text(existing_content)
-    if not normalized or not existing:
-        return False
-    shorter = min(len(normalized), len(existing))
-    return (
-        normalized == existing
-        or (
-            shorter >= 6
-            and (normalized in existing or existing in normalized)
-        )
-        or (
-            shorter >= 8
-            and difflib.SequenceMatcher(None, normalized, existing).ratio()
-            >= 0.94
-        )
-    )
-
-
-def _find_memory_duplicate_in_rows(
-    content: str, rows: list[sqlite3.Row | dict],
-) -> dict | None:
-    for row in rows:
-        if _memory_contents_match(content, row["content"]):
-            return dict(row)
-    return None
-
-
 def _sync_memory_item_indexes(
     conn: sqlite3.Connection,
     item_id: int,
@@ -1811,6 +1782,13 @@ def commit_memory_extraction_batch(
                 (user_id,),
             ).fetchall()
         ]
+        from mochi.memory_contract import normalize_memory_exact
+
+        existing_normalized = {
+            normalize_memory_exact(row["content"])
+            for row in existing_rows
+            if normalize_memory_exact(row["content"])
+        }
 
         inserted_ids: list[int] = []
         for memory in memories:
@@ -1828,7 +1806,8 @@ def commit_memory_extraction_batch(
                 raise ValueError(
                     "memory evidence must reference same-user batch user messages"
                 )
-            if _find_memory_duplicate_in_rows(memory["content"], existing_rows):
+            normalized = normalize_memory_exact(memory["content"])
+            if normalized and normalized in existing_normalized:
                 continue
             item_id = insert_memory_item(
                 user_id,
@@ -1840,11 +1819,8 @@ def commit_memory_extraction_batch(
                 conn=conn,
             )
             inserted_ids.append(item_id)
-            existing_rows.append({
-                "id": item_id,
-                "content": memory["content"],
-                "source": "lite_extracted",
-            })
+            if normalized:
+                existing_normalized.add(normalized)
 
         conn.execute(
             "UPDATE memory_extraction_state SET "
