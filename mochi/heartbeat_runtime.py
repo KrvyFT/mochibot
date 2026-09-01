@@ -8,7 +8,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 
-from mochi.config import TZ
+from mochi.config import FREE_TIME_DAILY_MAX, TZ
 from mochi.db import _connect, get_tool_executions_for_turn
 from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
@@ -16,9 +16,13 @@ from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 UTC = timezone.utc
 FREE_TIME_AWAKE_START = time(6, 0)
 FREE_TIME_AWAKE_END = time(21, 0)
-FREE_TIME_ACTIVATION_CHANCE = 0.6
 FREE_TIME_SEARCH_SHARE = 0.2
 FREE_TIME_MISSED_GRACE = timedelta(seconds=45)
+# Opportunities are spread over even buckets and jittered inside them. The
+# margin keeps consecutive slots at least 2*margin*bucket apart, so a 30s
+# heartbeat tick can still claim each one within FREE_TIME_MISSED_GRACE.
+FREE_TIME_JITTER_MARGIN = 0.2
+FREE_TIME_MIN_GAP = timedelta(minutes=2)
 _LEASE_SECONDS = 300
 
 
@@ -70,7 +74,7 @@ def ensure_daily_free_time_plan(
     local_now = now.astimezone(TZ)
     local_date = local_now.date().isoformat()
     now_iso = _iso(local_now)
-    max_daily = max(0, min(10, int(max_daily)))
+    max_daily = max(0, min(FREE_TIME_DAILY_MAX, int(max_daily)))
     start = datetime.combine(
         local_now.date(), FREE_TIME_AWAKE_START, tzinfo=TZ,
     )
@@ -122,18 +126,34 @@ def ensure_daily_free_time_plan(
         ).fetchone()[0]
         remaining = max(0, max_daily - int(consumed))
         planned: list[tuple[str, datetime]] = []
-        if remaining and local_now < end:
-            window_seconds = (end - start).total_seconds()
-            for ordinal in range(remaining):
-                if rng.random() >= FREE_TIME_ACTIVATION_CHANCE:
-                    continue
-                due = start + timedelta(seconds=rng.random() * window_seconds)
-                if due <= local_now:
-                    continue
-                due_utc = due.astimezone(UTC)
-                run_key = f"free_time:{local_date}:{ordinal}:{due_utc.isoformat()}"
-                planned.append((run_key, due_utc))
-            planned.sort(key=lambda item: item[1])
+        # Only the part of the window still ahead can be scheduled, so a
+        # mid-day limit change tops up the rest of today instead of silently
+        # discarding the slots that already passed.
+        window_start = max(start, local_now)
+        if remaining and window_start < end:
+            span = end - window_start
+            # Late in the day the window may not fit every opportunity at a
+            # usable spacing; degrade predictably rather than stacking slots
+            # closer together than the tick can service.
+            count = min(remaining, int(span / FREE_TIME_MIN_GAP))
+            if count:
+                bucket = span / count
+                jitter_span = 1 - 2 * FREE_TIME_JITTER_MARGIN
+                for ordinal in range(count):
+                    due = window_start + bucket * (
+                        ordinal
+                        + FREE_TIME_JITTER_MARGIN
+                        + rng.random() * jitter_span
+                    )
+                    if due <= local_now:
+                        continue
+                    due_utc = due.astimezone(UTC)
+                    run_key = (
+                        f"free_time:{local_date}:{ordinal}:"
+                        f"{due_utc.isoformat()}"
+                    )
+                    planned.append((run_key, due_utc))
+                planned.sort(key=lambda item: item[1])
 
         search_keys = _select_search_run_keys(
             [run_key for run_key, _due in planned],

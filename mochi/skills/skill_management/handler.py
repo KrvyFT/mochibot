@@ -4,6 +4,7 @@ import logging
 import os
 from copy import deepcopy
 
+from mochi.config import FREE_TIME_DAILY_MAX
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
@@ -13,8 +14,9 @@ _AGENT_CONFIG_FIELDS = {
         "MAX_DAILY_FREE_TIME",
         "int",
         0,
-        10,
-        "每天最多获得多少次 Free Time 自主思考机会；实际次数可能更少。",
+        FREE_TIME_DAILY_MAX,
+        "每天安排多少次 Free Time 自主思考机会；机会在清醒时段内均匀分布，"
+        "热聊、睡眠或错过时会过期，所以实际送达数略低。",
     ),
 }
 

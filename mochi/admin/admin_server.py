@@ -880,10 +880,14 @@ if HAS_FASTAPI:
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════
 
-    _PREFERENCE_RANGES = {
-        "TIMEZONE_OFFSET_HOURS": (-12.0, 14.0),
-        "MAX_DAILY_FREE_TIME": (0, 10),
-    }
+    def _preference_ranges() -> dict[str, tuple[float, float]]:
+        """Accepted bounds per preference; the Free Time cap is shared config."""
+        from mochi.config import FREE_TIME_DAILY_MAX
+
+        return {
+            "TIMEZONE_OFFSET_HOURS": (-12.0, 14.0),
+            "MAX_DAILY_FREE_TIME": (0, FREE_TIME_DAILY_MAX),
+        }
 
     @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
     async def api_get_preferences():
@@ -894,13 +898,18 @@ if HAS_FASTAPI:
         )
 
         overrides = get_system_overrides()
+        ranges = _preference_ranges()
         return {
             key: {
                 "value": get_system_config(key),
                 "default": SYSTEM_DEFAULTS[key][1],
                 "source": "user" if key in overrides else "default",
+                # Sent so the UI validates against the same bounds the API
+                # enforces, instead of duplicating them client-side.
+                "min": minimum,
+                "max": maximum,
             }
-            for key in _PREFERENCE_RANGES
+            for key, (minimum, maximum) in ranges.items()
         }
 
     @app.put("/api/preferences", dependencies=[Depends(_verify_token)])
@@ -911,7 +920,8 @@ if HAS_FASTAPI:
         if not isinstance(body, dict) or not body:
             raise HTTPException(400, "preferences must be a non-empty object")
 
-        unknown = sorted(set(body) - set(_PREFERENCE_RANGES))
+        ranges = _preference_ranges()
+        unknown = sorted(set(body) - set(ranges))
         if unknown:
             raise HTTPException(400, f"Unknown preference: {', '.join(unknown)}")
 
@@ -931,7 +941,7 @@ if HAS_FASTAPI:
             except (TypeError, ValueError):
                 raise HTTPException(400, f"{key} must be a number")
 
-            minimum, maximum = _PREFERENCE_RANGES[key]
+            minimum, maximum = ranges[key]
             if not minimum <= value <= maximum:
                 raise HTTPException(
                     400,
