@@ -13,6 +13,8 @@ from urllib.parse import urlsplit
 from mochi.config import (
     TZ,
     MAIN_PROVIDER, MAIN_API_KEY, MAIN_MODEL, MAIN_BASE_URL,
+    FREE_TIME_AWAKE_END,
+    FREE_TIME_AWAKE_START,
     FREE_TIME_DAILY_MAX,
 )
 from mochi.db import _connect
@@ -341,6 +343,8 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Sleep/Wake ──
     "WAKE_EARLIEST_HOUR":             ("int",   6),
     "SLEEP_AFTER_HOUR":               ("int",   1),
+    "FREE_TIME_AWAKE_START":          ("str",   FREE_TIME_AWAKE_START),
+    "FREE_TIME_AWAKE_END":            ("str",   FREE_TIME_AWAKE_END),
     "SILENCE_PAUSE_DAYS":             ("float", 3.0),
     # ── Basic ──
     "TIMEZONE_OFFSET_HOURS":          ("float", 8.0),

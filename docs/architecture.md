@@ -248,16 +248,18 @@ concurrent workers.
 
 ## Free Time flow
 
-The owner controls one Heartbeat preference: the daily Free Time quota. The
-zero-model scheduler lays that many candidate moments across the full
-08:00–00:30 window (even buckets with jitter, at least 15 minutes apart).
-Starting mid-window does not compress leftovers into the evening; times
-already past expire in place. The hard ceiling is how many 15-minute points
-fit in that window. The resulting opportunities and their direct-search
-allocation are durable, so restart does not redraw them. A due opportunity
-expires during active owner chat or after it is missed, and sleep inside
-08:00–00:30 does not cancel remaining slots. Rest hours are 01:00–06:00. It
-is never delayed, accumulated, or retried. If the owner just said they are
+The owner controls Heartbeat preferences: the daily Free Time quota, the
+awake window those slots are laid across, and the sleep/wake hours. The
+zero-model scheduler lays that many candidate moments across the configured
+window (default 08:00–00:30; even buckets with jitter, at least 15 minutes
+apart). Starting mid-window does not compress leftovers into the evening;
+times already past expire in place. The hard ceiling is how many 15-minute
+points fit in that window. The resulting opportunities and their
+direct-search allocation are durable, so restart does not redraw them. A due
+opportunity expires during active owner chat or after it is missed, and
+sleep inside the Free Time window does not cancel remaining slots. Rest
+hours default to 01:00–06:00 and are also configurable. It is never
+delayed, accumulated, or retried. If the owner just said they are
 busy or going to sleep, a due slot is still consumed but skipped unless 45
 minutes have passed since the last Free Time that actually reached them.
 

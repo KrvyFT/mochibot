@@ -116,12 +116,15 @@ def _persist_owner(user_id: int) -> None:
 # Heartbeat
 # ═══════════════════════════════════════════════════════════════════════════
 
-# 08:00–00:30 is 16.5 hours. Adjacent Free Time slots stay at least this far
-# apart, and the hard ceiling is how many such points fit in the window.
+# 08:00–00:30 is the default Free Time window (16.5 hours). Adjacent slots
+# stay at least this far apart; the hard ceiling is how many such points
+# fit in the configured window (66 for the default).
 FREE_TIME_MIN_GAP_MINUTES = 15
 FREE_TIME_WINDOW_MINUTES = 16 * 60 + 30
 FREE_TIME_DAILY_MAX = FREE_TIME_WINDOW_MINUTES // FREE_TIME_MIN_GAP_MINUTES
 MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", FREE_TIME_DAILY_MAX)
+FREE_TIME_AWAKE_START = _env("FREE_TIME_AWAKE_START", "08:00")
+FREE_TIME_AWAKE_END = _env("FREE_TIME_AWAKE_END", "00:30")
 # Fraction of daily Free Time slots that come with web_search already loaded
 # and a search-oriented situation. The rest still talk to the owner.
 FREE_TIME_SEARCH_SHARE = _env_float("FREE_TIME_SEARCH_SHARE", 0.2)
