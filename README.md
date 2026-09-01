@@ -159,6 +159,28 @@ docker compose up -d
 
 管理后台默认位于 `http://127.0.0.1:8080`。远程部署时请使用 SSH 隧道或带 HTTPS 的反向代理，不要直接暴露未保护的后台。
 
+## systemd（Linux 服务器）
+
+Linux 服务器上用 systemd 开机启动、崩溃自动拉起。入口必须是 `scripts/start.py`，这样聊天里的「你更新一下」和 `/restart` 仍然有效。
+
+1. 编辑 `deploy/mochibot.service` 里的 `User`、`WorkingDirectory`、`ExecStart`，改成你的安装路径。
+2. 安装并启用：
+
+```bash
+sudo cp deploy/mochibot.service /etc/systemd/system/mochibot.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now mochibot
+```
+
+3. 看状态和日志：
+
+```bash
+sudo systemctl status mochibot
+journalctl -u mochibot -f
+```
+
+崩溃或异常退出后约 5 秒会自动重启；2 分钟内连续失败 5 次会暂停拉起，避免死循环，修好后执行 `sudo systemctl reset-failed mochibot && sudo systemctl start mochibot`。停止服务：`sudo systemctl stop mochibot`。取消开机自启：`sudo systemctl disable mochibot`。
+
 ## 个性化
 
 - 在管理后台编辑 **Core**，写下身份和长期事实。Core 上限约 2500 token。

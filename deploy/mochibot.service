@@ -1,0 +1,56 @@
+# MochiBot systemd unit
+#
+# 开机启动、崩溃拉起、/restart 与聊天自助更新都可用。
+# 必须走 scripts/start.py：它会消化退出码 42（重启）和 44（套用正式版）。
+# 不要改成 python -m mochi.main，否则自助更新不会落地。
+#
+# 安装（先改 User / WorkingDirectory / ExecStart 为你的路径）：
+#   sudo cp deploy/mochibot.service /etc/systemd/system/mochibot.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now mochibot
+#
+# 常用：
+#   sudo systemctl status mochibot
+#   journalctl -u mochibot -f
+#   sudo systemctl restart mochibot
+
+[Unit]
+Description=MochiBot companion agent
+Documentation=https://github.com/KrvyFT/mochibot
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/cl/mochibot
+ExecStart=/home/ubuntu/cl/mochibot/.venv/bin/python /home/ubuntu/cl/mochibot/scripts/start.py
+
+# .env 由进程自己从 WorkingDirectory 读取，不要用 EnvironmentFile 把密钥写进 systemd 元数据。
+Environment=PYTHONUNBUFFERED=1
+Environment=MOCHIBOT_UPDATE_LAUNCHER=1
+
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillMode=control-group
+KillSignal=SIGTERM
+
+# 短暂网络抖动时 Telegram/微信连不上，多等一会儿再判启动失败。
+TimeoutStartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+# 自助更新要写仓库和 .venv，不能 ProtectSystem=strict。
+ProtectSystem=false
+ProtectHome=false
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mochibot
+
+[Install]
+WantedBy=multi-user.target
