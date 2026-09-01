@@ -16,12 +16,15 @@ from mochi.db import (
 
 def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     monkeypatch,
+    embedding_dim,
 ):
     import mochi.db as db
 
-    embedding = struct.pack("1536f", 1.0, *([0.0] * 1535))
+    embedding = struct.pack(
+        f"{embedding_dim}f", 1.0, *([0.0] * (embedding_dim - 1)),
+    )
     other_embedding = struct.pack(
-        "1536f", 0.0, 1.0, *([0.0] * 1534),
+        f"{embedding_dim}f", 0.0, 1.0, *([0.0] * (embedding_dim - 2)),
     )
     kept_id = save_memory_item(
         1, "Old alpha memory", source="admin", embedding=embedding,
