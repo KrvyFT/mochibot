@@ -126,13 +126,45 @@ async def test_workspace_rejects_private_and_outside_paths(workspace):
     assert not conflicting.success
     assert diary.read(section="今日日記") == "Today wrapped up."
 
+    from mochi.ai_client import _refresh_failed_diary_snapshots
+
+    expected = {
+        "2025-06-15": "Today wrapped up.",
+        "2025-06-16": "",
+    }
+    _refresh_failed_diary_snapshots(
+        diary,
+        expected,
+        {"today": "2025-06-15", "tomorrow": "2025-06-16"},
+        attempted={"2025-06-16"},
+        completed={"2025-06-15"},
+    )
+    assert expected == {
+        "2025-06-15": "Today wrapped up.",
+        "2025-06-16": "Keep watching the unfinished thing.",
+    }
+    retried = await skill.execute(_context(
+        "write_diary",
+        {
+            "content": "Updated after refreshing the conflict.",
+            "day": "tomorrow",
+            "_expected_content": expected["2025-06-16"],
+            "_source_date": "2025-06-15",
+            "_target_date": "2025-06-16",
+        },
+    ))
+    assert retried.success
+    assert diary.read_tomorrow_draft("2025-06-16") == (
+        "Updated after refreshing the conflict."
+    )
+
     logical_day["value"] = "2025-06-16"
     stale_tomorrow = await skill.execute(_context(
         "write_diary",
         {
             "content": "Must not retarget after rollover.",
             "day": "tomorrow",
-            "_expected_content": "Keep watching the unfinished thing.",
+            "_expected_content": "Updated after refreshing the conflict.",
             "_source_date": "2025-06-15",
             "_target_date": "2025-06-16",
         },
@@ -151,7 +183,7 @@ async def test_workspace_rejects_private_and_outside_paths(workspace):
     assert not stale_today.success
     carried = diary.read(section="今日日記")
     assert "来自 2025-06-15 睡前，留给今天" in carried
-    assert "Keep watching the unfinished thing." in carried
+    assert "Updated after refreshing the conflict." in carried
     assert diary.read(section="今日日記").count("留给今天") == 1
     assert not diary.tomorrow_draft_path.exists()
 
@@ -188,3 +220,14 @@ async def test_workspace_rejects_private_and_outside_paths(workspace):
     assert "# Diary 2025-06-17" in archived
     assert "来自 2025-06-16 睡前，留给今天" in archived
     assert "This belongs only to June 17." in archived
+
+    diary.tomorrow_draft_path.write_text("{", encoding="utf-8")
+    malformed_expected = {"2025-06-18": "", "2025-06-19": "stale"}
+    _refresh_failed_diary_snapshots(
+        diary,
+        malformed_expected,
+        {"today": "2025-06-18", "tomorrow": "2025-06-19"},
+        attempted={"2025-06-19"},
+        completed=set(),
+    )
+    assert malformed_expected["2025-06-19"] == ""

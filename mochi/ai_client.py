@@ -19,6 +19,7 @@ import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from mochi.llm import get_client_for_tier, LLMResponse
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
@@ -49,6 +50,9 @@ import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
 from mochi.transport.utils import normalize_legacy_bubble_delimiters
 
+if TYPE_CHECKING:
+    from mochi.diary import DailyFile
+
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
@@ -64,6 +68,26 @@ _WEEKDAY_NAMES = (
 _TOOL_HISTORY_EXCLUDE = frozenset({
     "request_tools", "send_sticker", ENTER_BEDTIME_TOOL_NAME,
 })
+
+
+def _refresh_failed_diary_snapshots(
+    diary_store: "DailyFile",
+    expected: dict[str, str | None],
+    target_dates: dict[str, str],
+    attempted: Collection[str],
+    completed: Collection[str],
+) -> None:
+    """Refresh failed targets so Main can retry against current content."""
+    source_date, today, tomorrow = diary_store.read_write_snapshot()
+    if source_date != target_dates["today"]:
+        return
+    current = {
+        target_dates["today"]: today,
+        target_dates["tomorrow"]: tomorrow,
+    }
+    for target in set(attempted).difference(completed):
+        if target in current:
+            expected[target] = current[target]
 
 
 def _deployment_environment() -> str:
@@ -1616,6 +1640,7 @@ async def chat(
         pending_definitions: list[dict] = []
         core_update_attempted = False
         weekly_core_update_attempted = False
+        diary_write_attempted: set[str] = set()
         for tc in response.tool_calls:
             if _free_time_cancelled():
                 return ChatResult(disposition="invalid")
@@ -1803,6 +1828,7 @@ async def chat(
                 }
             elif tc["name"] == "write_diary" and not is_weekly_tool:
                 if diary_target is not None:
+                    diary_write_attempted.add(diary_target)
                     dispatch_args = {
                         **tc["arguments"],
                         "_expected_content": diary_expected[diary_target],
@@ -1883,6 +1909,15 @@ async def chat(
             core_memory = await asyncio.to_thread(read_core)
             if not core_write_completed:
                 core_expected = core_memory
+        if diary_write_attempted:
+            await asyncio.to_thread(
+                _refresh_failed_diary_snapshots,
+                _diary,
+                diary_expected,
+                diary_target_dates,
+                diary_write_attempted,
+                diary_write_completed,
+            )
         if weekly_core_update_attempted and weekly_session:
             weekly_session.expected_core = await asyncio.to_thread(read_core)
 
