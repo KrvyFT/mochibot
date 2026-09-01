@@ -402,7 +402,12 @@ TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 8)
 TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
 TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
+# Quiet-window coalescing for Telegram text/photo. Commands and stickers
+# stay immediate. False restores one-turn-per-message.
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
+TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 10.0)
+TG_MESSAGE_DEBOUNCE_MAX_ITEMS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_ITEMS", 20)
+TG_MESSAGE_DEBOUNCE_MAX_CHARS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_CHARS", 8000)
 
 # Tool-call status UX (Telegram DM only)
 TG_STATUS_REACTIONS_ENABLED = _env_bool("TG_STATUS_REACTIONS_ENABLED", True)
