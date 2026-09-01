@@ -2,6 +2,8 @@
 name: relationship_health
 description: 用 RQI / ACS / LLMI 模型给一段关系的健康度打分，并跟踪历次评估的走向
 type: tool
+triggers: [tool_call, cron]
+diary_status_order: 45
 ---
 
 # Relationship Health
@@ -40,3 +42,5 @@ type: tool
 - 只传有证据的维度。工具按实际传入的维度重新归一化权重并报告覆盖率，覆盖率低于 50% 时不给健康分档
 - 依恋类型或爱的语言无法识别时，对应指数返回空而非默认值，此时 RQI 不做依恋修正
 - assess 每次都会写入一条持久快照；累计两次以上才能算出趋势
+- 用户让你评估时调用 assess_relationship_health；每日早上系统也会静默评一次默认关系，不向用户发分数
+- 默认关系的每次有效评估会改写相处文稿（行为准则、深层人格、关系互动）。那是行为指导，不是台词，也不要向用户报出数字。Core 只保留身份与长期事实

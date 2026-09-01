@@ -7,6 +7,7 @@ Main to read rather than as a report to forward.
 
 import json
 import logging
+from datetime import datetime
 
 from mochi.relationship_model import (
     DIMENSION_LABELS,
@@ -17,13 +18,17 @@ from mochi.relationship_model import (
     compute_llmi,
     compute_momentum,
     compute_rqi,
+    derive_stance,
     describe_llmi,
     normalize_attachment_style,
     normalize_love_language,
 )
 from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.relationship_health.queries import (
+    DEFAULT_SUBJECT,
     get_assessments,
+    get_chat_transcript,
+    get_latest_assessment,
     list_subjects,
     normalize_subject,
     record_assessment,
@@ -152,13 +157,118 @@ def _render_assessment(
     return "\n".join(lines)
 
 
+def _stance_lines(user_id: int, subject: str = DEFAULT_SUBJECT) -> tuple[str, ...]:
+    latest = get_latest_assessment(user_id, subject)
+    if not latest:
+        return ()
+    try:
+        scores = json.loads(latest["dimensions_json"])
+    except (TypeError, ValueError):
+        return ()
+    if not isinstance(scores, dict) or not scores:
+        return ()
+    try:
+        result = compute_rqi(scores, acs=latest.get("acs"), llmi=latest.get("llmi"))
+    except ValueError:
+        return ()
+    history = get_assessments(user_id, subject)
+    return derive_stance(result, compute_momentum([row["rqi"] for row in history]))
+
+
+def _commit_assessment(
+    user_id: int,
+    subject: str,
+    result: RqiResult,
+    *,
+    acs: float | None,
+    llmi: float | None,
+    note: str,
+) -> tuple[int, list[dict], Momentum]:
+    stored = {dimension.key: dimension.score for dimension in result.dimensions}
+    assessment_id = record_assessment(
+        user_id,
+        subject,
+        rqi=result.score,
+        tier=result.tier,
+        coverage=result.coverage,
+        acs=acs,
+        llmi=llmi,
+        dimensions=stored,
+        note=note,
+    )
+    history = get_assessments(user_id, subject)
+    momentum = compute_momentum([row["rqi"] for row in history])
+    if subject == DEFAULT_SUBJECT:
+        from mochi.relationship_voice import refresh_voice
+        refresh_voice(result, momentum)
+    return assessment_id, history, momentum
+
+
+def _format_transcript(rows: list[dict], *, max_chars: int = 6000) -> str:
+    lines: list[str] = []
+    used = 0
+    for row in rows:
+        role = "对方" if row["role"] == "user" else "我"
+        content = " ".join(str(row.get("content") or "").split())
+        if not content:
+            continue
+        line = f"{role}：{content}"
+        if used + len(line) + 1 > max_chars:
+            break
+        lines.append(line)
+        used += len(line) + 1
+    return "\n".join(lines)
+
+
+def _parse_morning_judgment(raw: str) -> dict:
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise ValueError("早评结果不是对象")
+    scores = _parse_dimensions(payload.get("dimensions"))
+    note = str(payload.get("note") or "早评").strip()[:500]
+    return {
+        "scores": scores,
+        "attachment_self": payload.get("attachment_self"),
+        "attachment_other": payload.get("attachment_other"),
+        "love_language_self": payload.get("love_language_self"),
+        "love_language_other": payload.get("love_language_other"),
+        "note": note or "早评",
+    }
+
+
 class RelationshipHealthSkill(Skill):
     """RQI / ACS / LLMI scoring over caller-supplied dimension judgements."""
 
     def init_schema(self, conn) -> None:
         conn.executescript(_SCHEMA)
 
+    def prompt_section(self, compact: bool = False) -> str:
+        """Living 行为准则 / 深层人格 / 关系互动, rewritten after each assessment.
+
+        Ordinary chat does not load diary status, so this is the path that
+        reaches Main every turn. Starts at 发展中 before the first scored
+        snapshot. Numbers stay out.
+        """
+        from mochi.config import OWNER_USER_ID
+        from mochi.relationship_voice import read_voice
+
+        if not OWNER_USER_ID:
+            return ""
+        return read_voice().strip()
+
+    def diary_status(self, user_id: int, today: str, now) -> list[str] | None:
+        lines = _stance_lines(user_id)
+        if not lines:
+            return None
+        return ["相处：" + lines[0]]
+
     async def execute(self, context: SkillContext) -> SkillResult:
+        if context.trigger == "cron":
+            try:
+                return await self._morning(context)
+            except ValueError as exc:
+                return SkillResult(output=f"早评失败：{exc}", success=False)
+
         handlers = {
             "assess_relationship_health": self._assess,
             "relationship_health_history": self._history,
@@ -172,6 +282,106 @@ class RelationshipHealthSkill(Skill):
             return handler(context)
         except ValueError as exc:
             return SkillResult(output=f"参数有问题：{exc}", success=False)
+
+    async def _morning(self, context: SkillContext) -> SkillResult:
+        """Silent daily judgment of the default relationship. No user delivery."""
+        import asyncio
+
+        from mochi.config import logical_today
+        from mochi.core_store import read_core
+        from mochi.db import log_usage
+        from mochi.llm import extract_json, get_client_for_tier
+        from mochi.prompt_loader import get_prompt
+
+        user_id = context.user_id
+        latest = get_latest_assessment(user_id, DEFAULT_SUBJECT)
+        if latest:
+            try:
+                created = datetime.fromisoformat(str(latest["created_at"]))
+            except (TypeError, ValueError):
+                created = None
+            if created is not None and logical_today(created) == logical_today():
+                return SkillResult(
+                    output="今天已经评估过默认关系，跳过早评。",
+                )
+
+        since = str(latest["created_at"]) if latest else None
+        transcript_rows = get_chat_transcript(user_id, since=since)
+        if not any(row["role"] == "user" for row in transcript_rows):
+            return SkillResult(output="自上次评估以来没有新的对方消息，跳过早评。")
+
+        prompt = get_prompt("relationship_morning")
+        if not prompt:
+            raise ValueError("relationship_morning prompt is unavailable")
+        core = read_core()
+        body = _format_transcript(transcript_rows)
+        messages = [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    f"你的长期自我认识：\n{core}\n\n"
+                    f"自上次评估以来的对话：\n{body}"
+                ),
+            },
+        ]
+
+        def _call():
+            return get_client_for_tier("main").chat(
+                messages=messages,
+                tools=None,
+                temperature=0.2,
+                max_tokens=800,
+                json_mode=True,
+            )
+
+        response = await asyncio.to_thread(_call)
+        if response.total_tokens:
+            log_usage(
+                response.prompt_tokens,
+                response.completion_tokens,
+                response.total_tokens,
+                model=response.model,
+                purpose="relationship_morning",
+                model_role="MAIN",
+                call_type="background",
+                usage_stage="morning_assessment",
+                reasoning_tokens=response.reasoning_tokens,
+                cached_prompt_tokens=response.cached_prompt_tokens,
+            )
+        raw = extract_json(response.content or "")
+        judgment = _parse_morning_judgment(raw)
+        acs = compute_acs(
+            judgment["attachment_self"], judgment["attachment_other"],
+        )
+        llmi = compute_llmi(
+            judgment["love_language_self"], judgment["love_language_other"],
+        )
+        result = compute_rqi(judgment["scores"], acs=acs, llmi=llmi)
+        assessment_id, history, momentum = _commit_assessment(
+            user_id,
+            DEFAULT_SUBJECT,
+            result,
+            acs=acs,
+            llmi=llmi,
+            note=f"早评：{judgment['note']}",
+        )
+        log.info(
+            "Morning relationship assessment: RQI %s coverage %.0f%% %s",
+            result.score,
+            result.coverage * 100,
+            momentum.trajectory,
+        )
+        return SkillResult(
+            output=_render_assessment(DEFAULT_SUBJECT, result, momentum, history),
+            summary=(
+                f"Morning assessment: RQI {result.score}"
+                + (f" ({result.tier})" if result.tiered else " (untiered)")
+                + f", {momentum.trajectory}."
+            ),
+            entity_refs=[f"relationship_assessment:{assessment_id}"],
+            state_changed=True,
+        )
 
     def _assess(self, context: SkillContext) -> SkillResult:
         args = context.args
@@ -203,22 +413,14 @@ class RelationshipHealthSkill(Skill):
             if raw and normalize_love_language(raw) is None:
                 notices.append(f"无法识别的爱的语言 {label}={raw!r}")
 
-        stored = {
-            dimension.key: dimension.score for dimension in result.dimensions
-        }
-        assessment_id = record_assessment(
+        assessment_id, history, momentum = _commit_assessment(
             context.user_id,
             subject,
-            rqi=result.score,
-            tier=result.tier,
-            coverage=result.coverage,
+            result,
             acs=acs,
             llmi=llmi,
-            dimensions=stored,
             note=str(args.get("note") or ""),
         )
-        history = get_assessments(context.user_id, subject)
-        momentum = compute_momentum([row["rqi"] for row in history])
 
         output = _render_assessment(subject, result, momentum, history)
         if notices:

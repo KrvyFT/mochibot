@@ -150,7 +150,7 @@ CONV_SUMMARY_MAX_TOKENS: int = max(
 MEMORY_EXTRACTION_BATCH_TURNS: int = max(
     1, _env_int("MEMORY_EXTRACTION_BATCH_TURNS", 10),
 )
-CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 1400)
+CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 2500)
 TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -161,6 +161,8 @@ MAINTENANCE_HOUR = _env_int("MAINTENANCE_HOUR", 3)
 MAINTENANCE_ENABLED = _env_bool("MAINTENANCE_ENABLED", True)
 WEEKLY_MAINTENANCE_ENABLED = _env_bool("WEEKLY_MAINTENANCE_ENABLED", True)
 WEEKLY_MAINTENANCE_MINUTE = _env_int("WEEKLY_MAINTENANCE_MINUTE", 15)
+RELATIONSHIP_MORNING_ENABLED = _env_bool("RELATIONSHIP_MORNING_ENABLED", True)
+RELATIONSHIP_MORNING_HOUR = _env_int("RELATIONSHIP_MORNING_HOUR", 8)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Bedtime Main entry

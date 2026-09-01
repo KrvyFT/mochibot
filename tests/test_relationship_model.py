@@ -305,3 +305,80 @@ def test_momentum_reports_per_step_rate_and_sample_count():
 def test_momentum_reads_endpoints_only():
     """Documented limitation: a full recovery is indistinguishable from calm."""
     assert compute_momentum([7.0, 3.0, 7.0]).trajectory == "stable"
+
+
+# ── Stance ────────────────────────────────────────────────────────────────
+
+def test_stance_is_withheld_when_untiered_or_healthy_stable():
+    from mochi.relationship_model import derive_stance
+
+    thin = compute_rqi({"communication_quality": 9.0})
+    assert derive_stance(thin, compute_momentum([thin.score])) == ()
+
+    healthy = compute_rqi(FULL_SCORES)
+    assert healthy.tier == "Healthy"
+    assert derive_stance(healthy, compute_momentum([7.0, 7.2])) == ()
+
+
+def test_stance_never_mentions_scores_or_tier_names():
+    from mochi.relationship_model import derive_stance
+
+    strained = compute_rqi({key: 4.2 for key in RQI_WEIGHTS})
+    declining = compute_momentum([6.0, 4.2])
+    text = "\n".join(derive_stance(strained, declining))
+    assert text
+    for forbidden in ("RQI", "Healthy", "Strained", "At Risk", "4.2", "20%", "ACS"):
+        assert forbidden not in text
+
+
+def test_declining_adds_distance_and_weakest_bias():
+    from mochi.relationship_model import derive_stance
+
+    scores = {**FULL_SCORES, "conflict_resolution_capacity": 2.0}
+    result = compute_rqi(scores)
+    lines = derive_stance(result, compute_momentum([8.0, result.score]))
+    joined = "".join(lines)
+    assert "走开" in joined
+    assert "分歧" in joined
+
+
+def test_voice_follows_tier_and_never_names_the_score():
+    from mochi.relationship_voice import compose_voice, starting_voice
+
+    start = starting_voice()
+    assert "# 行为准则" in start and "刚好走到这里" in start
+    assert "RQI" not in start
+
+    thriving = compose_voice(
+        compute_rqi({key: 9.0 for key in RQI_WEIGHTS}),
+        compute_momentum([8.0, 9.0]),
+    )
+    healthy = compose_voice(
+        compute_rqi({key: 7.5 for key in RQI_WEIGHTS}),
+        compute_momentum([7.3, 7.5]),
+    )
+    strained = compose_voice(
+        compute_rqi({key: 4.2 for key in RQI_WEIGHTS}),
+        compute_momentum([6.0, 4.2]),
+    )
+    assert thriving and healthy and strained
+    assert thriving != healthy
+    assert "今天想和您多走一段" in thriving
+    assert "不主动约" in healthy or "对方不先开口" in healthy
+    assert "不疾不徐" in healthy
+    assert "带刺" in strained or "裂痕" in strained
+    for text in (thriving, healthy, strained):
+        assert "RQI" not in text
+        assert "Thriving" not in text
+        assert "Strained" not in text
+
+
+def test_voice_weakest_dimension_is_a_short_scene_not_one_slogan():
+    from mochi.relationship_voice import compose_voice
+
+    scores = {**FULL_SCORES, "emotional_intimacy": 3.0}
+    text = compose_voice(compute_rqi(scores), compute_momentum([7.0, 6.5]))
+    assert text and "屋檐" in text
+    assert text.count("这一阵更少主动交心") == 1
+    intimacy_block = text.split("# 这一阵", 1)[1]
+    assert intimacy_block.count("。") >= 3
