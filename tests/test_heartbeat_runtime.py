@@ -110,6 +110,81 @@ def test_default_clock_capacity_matches_hard_ceiling():
     ) == FREE_TIME_DAILY_MAX
 
 
+def test_timezone_change_rebuilds_plan_utc_instants(monkeypatch):
+    import mochi.heartbeat_runtime as runtime
+    from datetime import tzinfo
+
+    class OffsetTZ(tzinfo):
+        def __init__(self, hours: int):
+            self._hours = hours
+
+        def utcoffset(self, dt):
+            return timedelta(hours=self._hours)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+        def tzname(self, dt):
+            return f"UTC{self._hours:+d}"
+
+    plus8 = OffsetTZ(8)
+    monkeypatch.setattr(runtime, "TZ", plus8)
+    ensure_daily_free_time_plan(
+        user_id=1,
+        channel_id=1,
+        transport="telegram",
+        now=datetime(2026, 9, 1, 8, 0, tzinfo=plus8),
+        max_daily=4,
+        rng=random.Random(0),
+    )
+    conn = _connect()
+    try:
+        before = [
+            datetime.fromisoformat(row["next_attempt_at"]).astimezone(UTC)
+            for row in conn.execute(
+                "SELECT next_attempt_at FROM heartbeat_runs "
+                "WHERE entry_kind = 'free_time' AND status = 'pending' "
+                "ORDER BY next_attempt_at",
+            )
+        ]
+        marker_before = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'",
+        ).fetchone()["wake_reason"]
+    finally:
+        conn.close()
+    assert "tz=8" in marker_before
+
+    plus0 = OffsetTZ(0)
+    monkeypatch.setattr(runtime, "TZ", plus0)
+    ensure_daily_free_time_plan(
+        user_id=1,
+        channel_id=1,
+        transport="telegram",
+        now=datetime(2026, 9, 1, 8, 0, tzinfo=plus0),
+        max_daily=4,
+        rng=random.Random(0),
+    )
+    conn = _connect()
+    try:
+        after = [
+            datetime.fromisoformat(row["next_attempt_at"]).astimezone(UTC)
+            for row in conn.execute(
+                "SELECT next_attempt_at FROM heartbeat_runs "
+                "WHERE entry_kind = 'free_time' AND status = 'pending' "
+                "ORDER BY next_attempt_at",
+            )
+        ]
+        marker_after = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'",
+        ).fetchone()["wake_reason"]
+    finally:
+        conn.close()
+    assert "tz=0" in marker_after
+    assert before != after
+
+
 def test_schedules_at_least_configured_count_across_overnight_window():
     now = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
     created = ensure_daily_free_time_plan(

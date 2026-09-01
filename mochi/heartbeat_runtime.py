@@ -318,10 +318,11 @@ def ensure_daily_free_time_plan(
     max_daily = max(0, min(capacity, int(max_daily)))
     share = min(1.0, max(0.0, float(FREE_TIME_SEARCH_SHARE)))
     gap_minutes = int(FREE_TIME_MIN_GAP_MINUTES)
+    tz_hours = (local_now.utcoffset() or timedelta(0)).total_seconds() / 3600.0
     marker = (
         f"{local_date}:{max_daily}:{user_id}:{channel_id}:{transport}:"
         f"{format_clock_time(start_clock)}-{format_clock_time(end_clock)}:"
-        f"search={share:.4f}:gap={gap_minutes}"
+        f"tz={tz_hours:g}:search={share:.4f}:gap={gap_minutes}"
     )
     created: list[str] = []
 
