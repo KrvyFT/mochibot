@@ -859,6 +859,63 @@ def get_recent_real_messages(
     return [dict(row) for row in reversed(rows)]
 
 
+def search_conversation_messages(
+    user_id: int,
+    query: str,
+    limit: int = 5,
+    exclude_turn_id: str | None = None,
+) -> list[dict]:
+    """Search real conversation text without changing recall telemetry."""
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 0:
+        raise ValueError("user_id must be a non-negative integer")
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        raise ValueError("query must not be empty")
+    limit = max(1, min(int(limit), 10))
+    escaped_query = (
+        query.strip()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+    conditions = [
+        "user_id = ?",
+        "role IN ('user', 'assistant')",
+        "content LIKE ? ESCAPE '\\'",
+    ]
+    params: list = [user_id, f"%{escaped_query}%"]
+    if exclude_turn_id:
+        conditions.append("(turn_id IS NULL OR turn_id != ?)")
+        params.append(exclude_turn_id)
+    params.append(min(limit * 8, 80))
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from mochi.conversation_text import strip_legacy_tool_fact_suffix
+
+    results: list[dict] = []
+    for row in rows:
+        content = strip_legacy_tool_fact_suffix(str(row["content"] or ""))
+        if normalized_query not in content.casefold():
+            continue
+        item = dict(row)
+        item["content"] = content
+        results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def get_recent_user_messages_in_window(
     user_id: int,
     start: datetime,

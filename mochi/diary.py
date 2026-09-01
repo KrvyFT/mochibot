@@ -25,6 +25,8 @@ from mochi.config import (
 log = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+_DIARY_SEARCH_MAX_ARCHIVE_FILES = 120
+_DIARY_SEARCH_MAX_ARCHIVE_BYTES = 2 * 1024 * 1024
 
 _WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
@@ -812,6 +814,58 @@ def read_diary_archive_window(
         total_chars=total_chars,
         truncated=truncated,
     )
+
+
+def search_diary_entries(
+    query: str,
+    limit: int = 5,
+) -> tuple[list[dict], bool]:
+    """Search current and archived journal sections without causing rollover."""
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        raise ValueError("query must not be empty")
+    limit = max(1, min(int(limit), 10))
+
+    blocks_by_date: dict[str, str] = {}
+    if diary.path.exists():
+        raw = diary.path.read_text(encoding="utf-8")
+        for date_str, block in diary._archive_blocks(raw):
+            blocks_by_date[date_str] = block
+
+    archive_dir = diary.path.parent / "diary_archive"
+    truncated = False
+    if archive_dir.exists():
+        archive_paths = sorted(archive_dir.glob("*.md"), reverse=True)
+        scanned_bytes = 0
+        for index, archive_path in enumerate(archive_paths):
+            file_bytes = archive_path.stat().st_size
+            if (
+                index >= _DIARY_SEARCH_MAX_ARCHIVE_FILES
+                or scanned_bytes + file_bytes
+                > _DIARY_SEARCH_MAX_ARCHIVE_BYTES
+            ):
+                truncated = True
+                break
+            raw = archive_path.read_text(encoding="utf-8")
+            scanned_bytes += file_bytes
+            for date_str, block in diary._archive_blocks(raw):
+                blocks_by_date.setdefault(date_str, block)
+
+    results: list[dict] = []
+    for date_str in sorted(blocks_by_date, reverse=True):
+        try:
+            content = diary._section_content(
+                blocks_by_date[date_str],
+                "今日日記",
+            )
+        except ValueError:
+            continue
+        if normalized_query not in content.casefold():
+            continue
+        results.append({"date": date_str, "content": content})
+        if len(results) >= limit:
+            break
+    return results, truncated
 
 
 # ---------------------------------------------------------------------------
