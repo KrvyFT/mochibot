@@ -28,25 +28,35 @@ _OFFICIAL_EMBEDDING_BASE_URLS = frozenset({
     "",
     "https://api.openai.com/v1",
     "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 })
 
 
 def _is_supported_embedding_base_url(base_url: str) -> bool:
+    """Whether the endpoint is an official provider the API key may be sent to.
+
+    The allowlist exists because embedding requests carry the user's API key
+    and raw memory text; only vendor-controlled domains are accepted.
+    """
     normalized = (base_url or "").strip().rstrip("/")
     if normalized in _OFFICIAL_EMBEDDING_BASE_URLS:
         return True
     parsed = urlsplit(normalized)
+    if parsed.scheme != "https" or parsed.query or parsed.fragment:
+        return False
     host = (parsed.hostname or "").lower()
-    return (
-        parsed.scheme == "https"
-        and (
-            host.endswith(".services.ai.azure.com")
-            or host.endswith(".openai.azure.com")
-        )
-        and parsed.path.rstrip("/") == "/openai/v1"
-        and not parsed.query
-        and not parsed.fragment
-    )
+    path = parsed.path.rstrip("/")
+
+    if path == "/openai/v1" and (
+        host.endswith(".services.ai.azure.com")
+        or host.endswith(".openai.azure.com")
+    ):
+        return True
+    # Alibaba Cloud Bailian dedicated (MaaS) deployments get a per-workspace
+    # host but keep the shared DashScope-compatible path.
+    if path == "/compatible-mode/v1" and host.endswith(".maas.aliyuncs.com"):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------

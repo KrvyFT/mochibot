@@ -43,6 +43,15 @@ def _get_app_version() -> str:
     return read_version()
 
 
+def _is_connection_error(exc: Exception) -> bool:
+    """Whether the request failed before any HTTP response was received."""
+    try:
+        from openai import APIConnectionError
+    except ImportError:
+        return isinstance(exc, (httpx.TransportError, OSError))
+    return isinstance(exc, (APIConnectionError, httpx.TransportError, OSError))
+
+
 def _format_embedding_test_error(exc: Exception) -> dict:
     """Turn provider exceptions into concise, actionable UI errors."""
     status = getattr(exc, "status_code", None)
@@ -55,7 +64,15 @@ def _format_embedding_test_error(exc: Exception) -> dict:
 
     code_text = str(code or "").strip()
     raw = f"{code_text} {exc}".lower()
-    if code_text.lower() == "unknown_model" or "unknown_model" in raw:
+    if _is_connection_error(exc):
+        # No HTTP response came back, so Key/model name are not implicated —
+        # point at egress instead of sending the user to re-check credentials.
+        message = (
+            "无法连接到 Embedding 服务，请求未收到响应。"
+            "请检查本机到该 Endpoint 的网络（DNS、防火墙、代理），"
+            "以及专属部署是否仅限内网访问。"
+        )
+    elif code_text.lower() == "unknown_model" or "unknown_model" in raw:
         message = (
             "模型名不匹配或服务暂时未就绪。请先重试一次；"
             "持续失败时检查服务端的模型部署名。"
