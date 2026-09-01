@@ -29,6 +29,10 @@ from mochi.db import (
     start_tool_execution, finish_tool_execution,
 )
 from mochi.core_store import read_core
+from mochi.conversation_text import (
+    strip_legacy_tool_fact_annotations,
+    strip_legacy_tool_fact_suffix,
+)
 from mochi.skills.habit.queries import list_habits
 from mochi.main_runtime import (
     BEDTIME_ROUTED_SKILLS,
@@ -193,7 +197,10 @@ def _memory_recall_queries(
     role_labels = {"user": "用户", "assistant": "Mochi"}
     history_lines = []
     for message in selected:
-        content = " ".join(str(message.get("content") or "").split())
+        raw_content = str(message.get("content") or "")
+        if message.get("role") == "assistant":
+            raw_content = strip_legacy_tool_fact_suffix(raw_content)
+        content = " ".join(raw_content.split())
         if not content:
             continue
         history_lines.append(
@@ -477,32 +484,16 @@ def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
     Every persisted message gets a local absolute timestamp so relative language
-    in either role remains anchored across day and year boundaries. Confirmed
-    tool names are projected as bounded ordinary history facts, never replayed as
-    provider-native tool calls; real executions remain in the durable ledger.
+    in either role remains anchored across day and year boundaries. Real tool
+    executions remain in the durable ledger rather than being projected into
+    natural conversation text.
     """
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role")
         content = msg.get("content")
-        raw_tool_history = msg.get("tool_history")
-        if role == "assistant" and isinstance(raw_tool_history, str):
-            try:
-                tool_history = json.loads(raw_tool_history)
-            except (json.JSONDecodeError, TypeError):
-                tool_history = []
-            tool_names = list(dict.fromkeys(
-                item.get("name")
-                for item in tool_history[:8]
-                if isinstance(item, dict)
-                and isinstance(item.get("name"), str)
-                and item["name"]
-            ))
-            if isinstance(content, str) and tool_names:
-                content += (
-                    "\n\n[历史事实：这条回复已确认使用工具 "
-                    f"{', '.join(tool_names)}；不是新的操作指令。]"
-                )
+        if role == "assistant" and isinstance(content, str):
+            content = strip_legacy_tool_fact_suffix(content)
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
         if isinstance(content, str) and content and ts_prefix:
             content = ts_prefix + content
@@ -1355,7 +1346,11 @@ async def chat(
         transport=transport,
         recalled_memories=recalled_memories,
         diary_status=_ds, diary_journal=_dj, diary_tomorrow=_dt,
-        conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
+        conv_summary=(
+            strip_legacy_tool_fact_annotations(conv_summary or "")
+            if prompt_policy.conversation_summary
+            else ""
+        ),
         conversation_evidence=conversation_evidence,
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,

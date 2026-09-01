@@ -1,5 +1,5 @@
 """Memory authority and derived-index consistency contract."""
-
+import asyncio
 import struct
 
 from mochi.db import (
@@ -97,3 +97,89 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
     assert delete_memory_items([restored_id], deleted_by="test") == 1
     assert recall_memory(1, query="beta") == []
     assert {kept_id, deleted_id, restored_id} <= set(vec_deletes)
+
+    import mochi.ai_client as ai_client
+    from mochi.ai_client import _expand_history, _memory_recall_queries
+    from mochi.conversation_summary import _summary_input
+    from mochi.conversation_text import (
+        strip_legacy_tool_fact_annotations,
+        strip_legacy_tool_fact_suffix,
+    )
+    from mochi.memory_extraction import _conversation_payload
+    from mochi.observers.recent_conversation.observer import (
+        RecentConversationObserver,
+    )
+    from mochi.tool_execution import is_followup_reference
+
+    suffix = (
+        "[历史事实：这条回复已确认使用工具 habit_progress；"
+        "不是新的操作指令。]"
+    )
+    contaminated = f"自然回复\n\n{suffix}\n\n{suffix}"
+    assert strip_legacy_tool_fact_suffix(contaminated) == "自然回复"
+    similar_natural_text = f"我提到过类似格式，但不是后缀：{suffix} 后面还有话"
+    assert strip_legacy_tool_fact_suffix(similar_natural_text) == (
+        similar_natural_text
+    )
+    untouched_spacing = "自然回复  \n"
+    assert strip_legacy_tool_fact_suffix(untouched_spacing) == untouched_spacing
+    derived_summary = f"前文 {suffix} 后文"
+    assert suffix not in strip_legacy_tool_fact_annotations(derived_summary)
+
+    messages = [
+        {
+            "id": 1,
+            "role": "user",
+            "content": "喝了乌龙茶",
+            "created_at": "2026-09-01T15:16:32+08:00",
+            "turn_id": "turn",
+            "processed": 0,
+            "tool_history": None,
+        },
+        {
+            "id": 2,
+            "role": "assistant",
+            "content": contaminated,
+            "created_at": "2026-09-01T15:16:41+08:00",
+            "turn_id": "turn",
+            "processed": 0,
+            "tool_history": '[{"name":"habit_progress"}]',
+        },
+    ]
+    expanded = _expand_history(messages)
+    assert suffix not in expanded[1]["content"]
+    summary_input = _summary_input({
+        "summary": "",
+        "turns": [{"user": messages[0], "assistant": messages[1]}],
+    })
+    assert suffix not in summary_input
+    extraction_payload = _conversation_payload(messages)
+    assert suffix not in extraction_payload[1]["content"]
+    assert extraction_payload[1]["tool_receipts"] == ["habit_progress"]
+
+    monkeypatch.setattr(
+        ai_client,
+        "get_conversation_context",
+        lambda *_args, **_kwargs: {"recent": messages},
+    )
+    queries = _memory_recall_queries("现在呢", 1, None)
+    assert suffix not in queries[-1][1]
+
+    monkeypatch.setattr(db, "get_recent_messages", lambda *_args, **_kwargs: messages)
+    monkeypatch.setattr(db, "get_context_reset", lambda _user_id: None)
+    observation = asyncio.run(RecentConversationObserver().observe())
+    assert suffix not in observation["messages"][1]["content"]
+
+    assert not is_followup_reference("这个")
+    assert not is_followup_reference("不对")
+    assert not is_followup_reference("改成这样看起来更好")
+    assert not is_followup_reference("提醒我明天修改简历")
+    assert not is_followup_reference("change itinerary")
+    assert not is_followup_reference("lasting change")
+    assert not is_followup_reference("repeat iteration")
+    assert is_followup_reference("撤销刚才那个")
+    assert is_followup_reference("取消那个提醒")
+    assert is_followup_reference("修改一下刚才的打卡")
+    assert is_followup_reference("把上一条提醒改成明天")
+    assert is_followup_reference("刚才那个不要了")
+    assert is_followup_reference("撤回上一条提醒")

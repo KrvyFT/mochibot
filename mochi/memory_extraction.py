@@ -9,6 +9,7 @@ import re
 import threading
 
 from mochi.config import MEMORY_EXTRACTION_BATCH_TURNS, OWNER_USER_ID
+from mochi.conversation_text import strip_legacy_tool_fact_suffix
 from mochi.core_store import read_core
 from mochi.db import (
     _normalize_text,
@@ -64,7 +65,11 @@ def _conversation_payload(batch: list[dict]) -> list[dict]:
         {
             "id": message["id"],
             "role": message["role"],
-            "content": message["content"],
+            "content": (
+                strip_legacy_tool_fact_suffix(message["content"])
+                if message["role"] == "assistant"
+                else message["content"]
+            ),
             "created_at": message["created_at"],
             "tool_receipts": (
                 _tool_receipts(message.get("tool_history"))

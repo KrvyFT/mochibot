@@ -6,6 +6,10 @@ import asyncio
 import logging
 
 from mochi.config import CONV_SUMMARY_BATCH_TURNS
+from mochi.conversation_text import (
+    strip_legacy_tool_fact_annotations,
+    strip_legacy_tool_fact_suffix,
+)
 from mochi.db import (
     get_conversation_summary_batch,
     get_conversation_summary_status,
@@ -37,7 +41,10 @@ class SummaryContextError(ValueError):
 
 
 def _summary_input(claim: dict) -> str:
-    previous = claim["summary"].strip() or "(empty)"
+    previous = (
+        strip_legacy_tool_fact_annotations(claim["summary"]).strip()
+        or "(empty)"
+    )
     lines = [
         "<previous_summary>",
         previous,
@@ -50,7 +57,8 @@ def _summary_input(claim: dict) -> str:
         assistant = turn["assistant"]
         lines.extend([
             f"[{user['created_at']}] user: {user['content']}",
-            f"[{assistant['created_at']}] assistant: {assistant['content']}",
+            f"[{assistant['created_at']}] assistant: "
+            f"{strip_legacy_tool_fact_suffix(assistant['content'])}",
         ])
     lines.append("</new_turns>")
     return "\n".join(lines)
