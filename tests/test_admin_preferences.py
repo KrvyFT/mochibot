@@ -71,6 +71,23 @@ def test_rejects_identical_sleep_hours():
         )
 
 
+def test_accepts_clock_with_seconds():
+    out = normalize_preference_updates(
+        {"FREE_TIME_AWAKE_START": "08:00:00", "FREE_TIME_AWAKE_END": "00:30:00"},
+        CURRENT,
+    )
+    assert out["FREE_TIME_AWAKE_START"] == "08:00"
+    assert out["FREE_TIME_AWAKE_END"] == "00:30"
+
+
+def test_rejects_hour_clock_with_minutes():
+    with pytest.raises(ValueError, match="whole hours"):
+        normalize_preference_updates(
+            {"SLEEP_AFTER_HOUR": "01:30"},
+            CURRENT,
+        )
+
+
 def test_rejects_unknown_preference():
     with pytest.raises(ValueError, match="Unknown preference"):
         normalize_preference_updates({"NOT_A_KEY": 1}, CURRENT)

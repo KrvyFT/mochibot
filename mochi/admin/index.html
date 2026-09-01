@@ -1564,11 +1564,11 @@ async function loadSettings() {
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:220px;flex:1">
           <div style="font-size:14px">睡眠时段</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">这段时间说话也不会叫醒；过了结束点才会醒</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">这段时间说话也不会叫醒；过了结束点才会醒。只支持整点。</div>
         </div>
-        <input class="form-input" id="pref-sleep-start" type="time" step="3600" style="width:120px" value="${esc(sleepStartClock)}" onchange="syncFreeTimeCap()">
+        <input class="form-input" id="pref-sleep-start" type="time" step="3600" style="width:120px" value="${esc(sleepStartClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
         <span style="font-size:12px;color:var(--text-soft)">至</span>
-        <input class="form-input" id="pref-sleep-end" type="time" step="3600" style="width:120px" value="${esc(wakeClock)}" onchange="syncFreeTimeCap()">
+        <input class="form-input" id="pref-sleep-end" type="time" step="3600" style="width:120px" value="${esc(wakeClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
       </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
@@ -1624,15 +1624,18 @@ function hourToClock(value, fallbackHour) {
 
 function clockValue(value, fallback) {
   const text = String(value == null ? '' : value).trim();
-  return /^\d{1,2}:\d{2}$/.test(text) ? text.padStart(5, '0') : fallback;
+  const match = /^(\d{1,2}):(\d{2})(?::\d{2})?$/.exec(text);
+  if (!match) return fallback;
+  return String(Number(match[1])).padStart(2, '0') + ':' + match[2];
 }
 
 function clockToMinutes(value) {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(String(value || ''));
+  const match = /^(\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(String(value || ''));
   if (!match) return null;
   const hour = Number(match[1]);
   const minute = Number(match[2]);
-  if (hour > 23 || minute > 59) return null;
+  const second = Number(match[3] || 0);
+  if (hour > 23 || minute > 59 || second > 59) return null;
   return hour * 60 + minute;
 }
 
@@ -1649,7 +1652,16 @@ function windowCapacity(start, end) {
 function clockHour(value) {
   const minutes = clockToMinutes(value);
   if (minutes == null) return null;
+  if (minutes % 60 !== 0) return null;
   return Math.floor(minutes / 60) % 24;
+}
+
+function snapSleepHour(input) {
+  if (!input) return;
+  const minutes = clockToMinutes(input.value);
+  if (minutes == null) return;
+  const hour = Math.floor(minutes / 60) % 24;
+  input.value = String(hour).padStart(2, '0') + ':00';
 }
 
 function syncFreeTimeCap() {
@@ -1682,6 +1694,8 @@ function toggleProactivePreference() {
 }
 
 async function savePreferences() {
+  snapSleepHour(document.getElementById('pref-sleep-start'));
+  snapSleepHour(document.getElementById('pref-sleep-end'));
   syncFreeTimeCap();
   const timezone = Number(document.getElementById('pref-timezone')?.value);
   const enabled = document.getElementById('pref-proactive-enabled')?.checked;
@@ -1696,7 +1710,7 @@ async function savePreferences() {
     return showToast('时区必须在 UTC-12 到 UTC+14 之间');
   }
   if (sleepHour == null || wakeHour == null) {
-    return showToast('请填写完整的睡眠时段');
+    return showToast('睡眠时段只支持整点，例如 01:00');
   }
   if (sleepHour === wakeHour) {
     return showToast('睡眠开始和结束不能是同一个小时');
@@ -1707,7 +1721,7 @@ async function savePreferences() {
   if (clockToMinutes(ftEnd) == null) {
     return showToast('请填写 Free Time 结束时间');
   }
-  if (ftStart === ftEnd) {
+  if (ftStart === ftEnd || clockToMinutes(ftStart) === clockToMinutes(ftEnd)) {
     return showToast('Free Time 开始和结束不能相同');
   }
   if (enabled && (!Number.isInteger(limit) || limit < 1 || limit > _freeTimeMax)) {

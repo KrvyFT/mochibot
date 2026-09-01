@@ -226,10 +226,12 @@ def claim_sleep_transition(trigger: str) -> bool:
 
 
 def should_wake_on_message() -> bool:
-    return (
-        _state == SLEEPING
-        and datetime.now(TZ).hour >= _wake_earliest_hour()
-    )
+    """Wake on owner chat only during awake hours.
+
+    ``hour >= wake_earliest`` is wrong when sleep wraps midnight: a 23:00–07:00
+    rest window would still treat 23:00 as wakeable because 23 >= 7.
+    """
+    return _state == SLEEPING and _is_awake_hour(datetime.now(TZ).hour)
 
 
 def bedtime_tool_available() -> bool:

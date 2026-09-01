@@ -70,12 +70,13 @@ def try_parse_clock_time(value: object) -> time | None:
     if isinstance(value, time):
         return value.replace(second=0, microsecond=0)
     text = str(value or "").strip()
-    match = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
     if not match:
         return None
     hour = int(match.group(1))
     minute = int(match.group(2))
-    if hour > 23 or minute > 59:
+    second = int(match.group(3) or 0)
+    if hour > 23 or minute > 59 or second > 59:
         return None
     return time(hour, minute)
 
