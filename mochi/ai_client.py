@@ -18,7 +18,8 @@ import time
 import uuid
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from typing import TYPE_CHECKING
 
 from mochi.llm import (
     LLMResponse,
@@ -35,6 +36,10 @@ from mochi.db import (
     start_tool_execution, finish_tool_execution,
 )
 from mochi.core_store import read_core
+from mochi.conversation_text import (
+    strip_legacy_tool_fact_annotations,
+    strip_legacy_tool_fact_suffix,
+)
 from mochi.skills.habit.queries import list_habits
 from mochi.main_runtime import (
     BEDTIME_ROUTED_SKILLS,
@@ -51,6 +56,9 @@ import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
 from mochi.transport.utils import normalize_legacy_bubble_delimiters
 
+if TYPE_CHECKING:
+    from mochi.diary import DailyFile
+
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
@@ -66,6 +74,26 @@ _WEEKDAY_NAMES = (
 _TOOL_HISTORY_EXCLUDE = frozenset({
     "request_tools", "send_sticker", ENTER_BEDTIME_TOOL_NAME,
 })
+
+
+def _refresh_failed_diary_snapshots(
+    diary_store: "DailyFile",
+    expected: dict[str, str | None],
+    target_dates: dict[str, str],
+    attempted: Collection[str],
+    completed: Collection[str],
+) -> None:
+    """Refresh failed targets so Main can retry against current content."""
+    source_date, today, tomorrow = diary_store.read_write_snapshot()
+    if source_date != target_dates["today"]:
+        return
+    current = {
+        target_dates["today"]: today,
+        target_dates["tomorrow"]: tomorrow,
+    }
+    for target in set(attempted).difference(completed):
+        if target in current:
+            expected[target] = current[target]
 
 
 def _deployment_environment() -> str:
@@ -199,7 +227,10 @@ def _memory_recall_queries(
     role_labels = {"user": "用户", "assistant": "Mochi"}
     history_lines = []
     for message in selected:
-        content = " ".join(str(message.get("content") or "").split())
+        raw_content = str(message.get("content") or "")
+        if message.get("role") == "assistant":
+            raw_content = strip_legacy_tool_fact_suffix(raw_content)
+        content = " ".join(raw_content.split())
         if not content:
             continue
         history_lines.append(
@@ -483,32 +514,16 @@ def _expand_history(history: list[dict]) -> list[dict]:
     """Convert stored conversation history into ordinary chat messages.
 
     Every persisted message gets a local absolute timestamp so relative language
-    in either role remains anchored across day and year boundaries. Confirmed
-    tool names are projected as bounded ordinary history facts, never replayed as
-    provider-native tool calls; real executions remain in the durable ledger.
+    in either role remains anchored across day and year boundaries. Real tool
+    executions remain in the durable ledger rather than being projected into
+    natural conversation text.
     """
     messages: list[dict] = []
     for msg in history:
         role = msg.get("role")
         content = msg.get("content")
-        raw_tool_history = msg.get("tool_history")
-        if role == "assistant" and isinstance(raw_tool_history, str):
-            try:
-                tool_history = json.loads(raw_tool_history)
-            except (json.JSONDecodeError, TypeError):
-                tool_history = []
-            tool_names = list(dict.fromkeys(
-                item.get("name")
-                for item in tool_history[:8]
-                if isinstance(item, dict)
-                and isinstance(item.get("name"), str)
-                and item["name"]
-            ))
-            if isinstance(content, str) and tool_names:
-                content += (
-                    "\n\n[历史事实：这条回复已确认使用工具 "
-                    f"{', '.join(tool_names)}；不是新的操作指令。]"
-                )
+        if role == "assistant" and isinstance(content, str):
+            content = strip_legacy_tool_fact_suffix(content)
         ts_prefix = _format_history_timestamp(msg.get("created_at"))
         if isinstance(content, str) and content and ts_prefix:
             content = ts_prefix + content
@@ -739,6 +754,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          recalled_memories: list[dict] | None = None,
                          diary_status: str = "",
                          diary_journal: str = "",
+                         diary_tomorrow: str = "",
                          conv_summary: str = "",
                          conversation_evidence: str = "",
                          recent_operations: str = "",
@@ -757,6 +773,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     )
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind == "free_time"
+    )
+    is_bedtime = bool(
+        runtime_entry and runtime_entry.kind == "bedtime"
     )
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
@@ -836,6 +855,11 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     if recent_operations:
         dynamic_live_context.append(recent_operations)
 
+    if is_bedtime and diary_tomorrow:
+        dynamic_live_context.append(
+            "## 明日日记草稿（只读）\n" + diary_tomorrow
+        )
+
     if recalled_memories:
         dynamic_live_context.append(
             _format_recalled_memories(recalled_memories)
@@ -864,11 +888,10 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     elif is_self_reminder and not defer_runtime_situation:
         dynamic_live_context.append(_render_self_reminder_event(runtime_entry))
     elif is_weekly:
-        weekly_prompt = get_prompt("weekly_maintenance_entry")
-        if not weekly_prompt:
-            raise RuntimeError("Weekly maintenance entry prompt is missing")
         dynamic_live_context.append(
-            weekly_prompt.replace("{{weekly_context}}", weekly_context)
+            "<weekly_context source=\"system\" authority=\"read_only\">\n"
+            + weekly_context
+            + "\n</weekly_context>"
         )
 
     from mochi.db import get_last_user_message_time
@@ -1334,19 +1357,31 @@ async def chat(
         if prompt_policy.diary_status
         else ""
     )
-    _dj = (
-        _diary.read(section="今日日記")
-        if prompt_policy.diary_journal
-        else ""
-    )
+    (
+        diary_source_date,
+        diary_today_snapshot,
+        _dt,
+    ) = await asyncio.to_thread(_diary.read_write_snapshot)
+    _dj = diary_today_snapshot if prompt_policy.diary_journal else ""
+    diary_target_dates = {
+        "today": diary_source_date,
+        "tomorrow": (
+            datetime.strptime(diary_source_date, "%Y-%m-%d")
+            + timedelta(days=1)
+        ).strftime("%Y-%m-%d"),
+    }
 
     system_prompt = _build_system_prompt(
         user_id, capability_context=capability_context, tool_names=active_tool_names,
         core_memory=core_memory, habits=habits, habit_status=habit_status,
         transport=transport,
         recalled_memories=recalled_memories,
-        diary_status=_ds, diary_journal=_dj,
-        conv_summary=(conv_summary or "") if prompt_policy.conversation_summary else "",
+        diary_status=_ds, diary_journal=_dj, diary_tomorrow=_dt,
+        conv_summary=(
+            strip_legacy_tool_fact_annotations(conv_summary or "")
+            if prompt_policy.conversation_summary
+            else ""
+        ),
         conversation_evidence=conversation_evidence,
         recent_operations=recent_operations,
         runtime_entry=runtime_entry,
@@ -1375,6 +1410,22 @@ async def chat(
             "role": "user",
             "content": _render_self_reminder_event(runtime_entry),
         })
+    elif is_weekly:
+        weekly_prompt = get_prompt("weekly_maintenance_entry")
+        if not weekly_prompt:
+            raise RuntimeError("Weekly maintenance entry prompt is missing")
+        messages.append({
+            # Provider APIs need one active turn. This is a system-owned Weekly
+            # situation, not a new user message.
+            "role": "user",
+            "content": (
+                "<weekly_runtime_event>\n"
+                "source: system\n"
+                "new_user_message: false\n\n"
+                f"{weekly_prompt}\n"
+                "</weekly_runtime_event>"
+            ),
+        })
     if image:
         _replace_current_user_with_image(messages, stored_text, text, image)
         # Image understanding belongs to the configured Main model.
@@ -1388,8 +1439,13 @@ async def chat(
     successful_effects = False
     core_expected = core_memory
     core_write_completed = False
-    diary_expected = _dj
-    diary_write_completed = False
+    diary_expected: dict[str, str | None] = {
+        diary_target_dates["today"]: diary_today_snapshot,
+        diary_target_dates["tomorrow"]: (
+            _dt if is_bedtime or not _dt else None
+        ),
+    }
+    diary_write_completed: set[str] = set()
     recall_exposure_recorded = False
     bedtime_requested = False
     after_delivery_actions: list[Callable[[], None]] = []
@@ -1620,8 +1676,8 @@ async def chat(
 
         pending_definitions: list[dict] = []
         core_update_attempted = False
-        diary_update_attempted = False
         weekly_core_update_attempted = False
+        diary_write_attempted: set[str] = set()
         for tc in response.tool_calls:
             if _free_time_cancelled():
                 return ChatResult(disposition="invalid")
@@ -1697,14 +1753,28 @@ async def chat(
                     ),
                 })
                 continue
-            if tc["name"] == "write_diary" and diary_write_completed:
+            diary_day = tc["arguments"].get("day", "today")
+            diary_target = (
+                diary_target_dates.get(diary_day)
+                if isinstance(diary_day, str)
+                else None
+            )
+            if (
+                tc["name"] == "write_diary"
+                and diary_target in diary_write_completed
+            ):
+                current = (
+                    _diary.read(section="今日日記")
+                    if diary_day == "today"
+                    else _diary.read_tomorrow_draft(diary_target)
+                )
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
                     "content": (
-                        "Today's journal was already updated successfully this "
-                        "turn. No second write was applied.\n\n"
-                        f"Current journal:\n{_diary.read(section='今日日記')}"
+                        f"The {diary_day} journal was already handled "
+                        "successfully this turn. No second write was applied.\n\n"
+                        f"Current journal:\n{current}"
                     ),
                 })
                 continue
@@ -1794,11 +1864,14 @@ async def chat(
                     "_expected_content": core_expected,
                 }
             elif tc["name"] == "write_diary" and not is_weekly_tool:
-                diary_update_attempted = True
-                dispatch_args = {
-                    **tc["arguments"],
-                    "_expected_content": diary_expected,
-                }
+                if diary_target is not None:
+                    diary_write_attempted.add(diary_target)
+                    dispatch_args = {
+                        **tc["arguments"],
+                        "_expected_content": diary_expected[diary_target],
+                        "_source_date": diary_source_date,
+                        "_target_date": diary_target,
+                    }
             elif tc["name"] == "log_meal" and not is_weekly_tool:
                 dispatch_args = {
                     **tc["arguments"],
@@ -1830,12 +1903,16 @@ async def chat(
                     "status": outcome["status"],
                     "state_changed": bool(outcome["state_changed"]),
                 })
+                if (
+                    tc["name"] == "write_diary"
+                    and outcome["status"] == "success"
+                    and diary_target is not None
+                ):
+                    diary_write_completed.add(diary_target)
                 if outcome["status"] == "success" and outcome["state_changed"]:
                     successful_effects = True
                     if tc["name"] == "update_core":
                         core_write_completed = True
-                    elif tc["name"] == "write_diary":
-                        diary_write_completed = True
                 finish_tool_execution(
                     execution_id,
                     status=outcome["status"],
@@ -1869,13 +1946,15 @@ async def chat(
             core_memory = await asyncio.to_thread(read_core)
             if not core_write_completed:
                 core_expected = core_memory
-        if diary_update_attempted:
-            current_journal = await asyncio.to_thread(
-                _diary.read,
-                "今日日記",
+        if diary_write_attempted:
+            await asyncio.to_thread(
+                _refresh_failed_diary_snapshots,
+                _diary,
+                diary_expected,
+                diary_target_dates,
+                diary_write_attempted,
+                diary_write_completed,
             )
-            if not diary_write_completed:
-                diary_expected = current_journal
         if weekly_core_update_attempted and weekly_session:
             weekly_session.expected_core = await asyncio.to_thread(read_core)
 

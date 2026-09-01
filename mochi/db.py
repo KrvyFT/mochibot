@@ -191,6 +191,14 @@ def init_db() -> None:
         CREATE INDEX IF NOT EXISTS idx_tool_exec_turn
             ON tool_executions(turn_id, id);
 
+        CREATE TABLE IF NOT EXISTS adaptive_tool_loads (
+            tool_name      TEXT PRIMARY KEY,
+            effective_load TEXT NOT NULL,
+            changed_at     TEXT NOT NULL,
+            pinned_load    TEXT DEFAULT NULL,
+            reason         TEXT NOT NULL DEFAULT ''
+        );
+
         -- Proactive message history
         CREATE TABLE IF NOT EXISTS proactive_log (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -851,6 +859,63 @@ def get_recent_real_messages(
     return [dict(row) for row in reversed(rows)]
 
 
+def search_conversation_messages(
+    user_id: int,
+    query: str,
+    limit: int = 5,
+    exclude_turn_id: str | None = None,
+) -> list[dict]:
+    """Search real conversation text without changing recall telemetry."""
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id < 0:
+        raise ValueError("user_id must be a non-negative integer")
+    normalized_query = query.strip().casefold()
+    if not normalized_query:
+        raise ValueError("query must not be empty")
+    limit = max(1, min(int(limit), 10))
+    escaped_query = (
+        query.strip()
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+    conditions = [
+        "user_id = ?",
+        "role IN ('user', 'assistant')",
+        "content LIKE ? ESCAPE '\\'",
+    ]
+    params: list = [user_id, f"%{escaped_query}%"]
+    if exclude_turn_id:
+        conditions.append("(turn_id IS NULL OR turn_id != ?)")
+        params.append(exclude_turn_id)
+    params.append(min(limit * 8, 80))
+
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT id, role, content, created_at FROM messages "
+            f"WHERE {' AND '.join(conditions)} "
+            "ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    from mochi.conversation_text import strip_legacy_tool_fact_suffix
+
+    results: list[dict] = []
+    for row in rows:
+        content = strip_legacy_tool_fact_suffix(str(row["content"] or ""))
+        if normalized_query not in content.casefold():
+            continue
+        item = dict(row)
+        item["content"] = content
+        results.append(item)
+        if len(results) >= limit:
+            break
+    return results
+
+
 def get_recent_user_messages_in_window(
     user_id: int,
     start: datetime,
@@ -1001,6 +1066,72 @@ def get_tool_executions_for_turn(turn_id: str) -> list[dict]:
     ).fetchall()
     conn.close()
     return [dict(row) for row in rows]
+
+
+def get_adaptive_tool_load_states() -> dict[str, dict]:
+    """Return persisted effective loads keyed by canonical tool name."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT tool_name, effective_load, changed_at, pinned_load, reason "
+        "FROM adaptive_tool_loads"
+    ).fetchall()
+    conn.close()
+    return {row["tool_name"]: dict(row) for row in rows}
+
+
+def save_adaptive_tool_load_state(
+    tool_name: str,
+    *,
+    effective_load: str,
+    changed_at: str,
+    pinned_load: str | None,
+    reason: str,
+) -> None:
+    """Persist one canonical tool's effective load state."""
+    if effective_load not in {"on_demand", "routed"}:
+        raise ValueError("adaptive effective load must be on_demand or routed")
+    if pinned_load not in {None, "on_demand", "routed"}:
+        raise ValueError("adaptive pinned load must be on_demand, routed, or null")
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO adaptive_tool_loads "
+        "(tool_name, effective_load, changed_at, pinned_load, reason) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(tool_name) DO UPDATE SET "
+        "effective_load=excluded.effective_load, "
+        "changed_at=excluded.changed_at, "
+        "pinned_load=excluded.pinned_load, reason=excluded.reason",
+        (tool_name, effective_load, changed_at, pinned_load, reason[:500]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_successful_chat_tool_turn_counts(
+    *,
+    since: str,
+    aliases: dict[str, str] | None = None,
+) -> dict[str, int]:
+    """Count distinct successful user-chat turns per canonical tool."""
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT tool_name, turn_id "
+        "FROM tool_executions "
+        "WHERE source = 'chat' AND status = 'success' "
+        "AND julianday(started_at) >= julianday(?) "
+        "GROUP BY tool_name, turn_id",
+        (since,),
+    ).fetchall()
+    conn.close()
+    alias_map = aliases or {}
+    turns_by_tool: dict[str, set[str]] = {}
+    for row in rows:
+        canonical = alias_map.get(row["tool_name"], row["tool_name"])
+        turns_by_tool.setdefault(canonical, set()).add(row["turn_id"])
+    return {
+        tool_name: len(turn_ids)
+        for tool_name, turn_ids in turns_by_tool.items()
+    }
 
 
 def set_context_reset(user_id: int) -> str:
@@ -1537,35 +1668,6 @@ def text_similarity(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, na, nb).ratio()
 
 
-def _memory_contents_match(content: str, existing_content: str) -> bool:
-    normalized = _normalize_text(content)
-    existing = _normalize_text(existing_content)
-    if not normalized or not existing:
-        return False
-    shorter = min(len(normalized), len(existing))
-    return (
-        normalized == existing
-        or (
-            shorter >= 6
-            and (normalized in existing or existing in normalized)
-        )
-        or (
-            shorter >= 8
-            and difflib.SequenceMatcher(None, normalized, existing).ratio()
-            >= 0.94
-        )
-    )
-
-
-def _find_memory_duplicate_in_rows(
-    content: str, rows: list[sqlite3.Row | dict],
-) -> dict | None:
-    for row in rows:
-        if _memory_contents_match(content, row["content"]):
-            return dict(row)
-    return None
-
-
 def _sync_memory_item_indexes(
     conn: sqlite3.Connection,
     item_id: int,
@@ -1737,6 +1839,13 @@ def commit_memory_extraction_batch(
                 (user_id,),
             ).fetchall()
         ]
+        from mochi.memory_contract import normalize_memory_exact
+
+        existing_normalized = {
+            normalize_memory_exact(row["content"])
+            for row in existing_rows
+            if normalize_memory_exact(row["content"])
+        }
 
         inserted_ids: list[int] = []
         for memory in memories:
@@ -1754,7 +1863,8 @@ def commit_memory_extraction_batch(
                 raise ValueError(
                     "memory evidence must reference same-user batch user messages"
                 )
-            if _find_memory_duplicate_in_rows(memory["content"], existing_rows):
+            normalized = normalize_memory_exact(memory["content"])
+            if normalized and normalized in existing_normalized:
                 continue
             item_id = insert_memory_item(
                 user_id,
@@ -1766,11 +1876,8 @@ def commit_memory_extraction_batch(
                 conn=conn,
             )
             inserted_ids.append(item_id)
-            existing_rows.append({
-                "id": item_id,
-                "content": memory["content"],
-                "source": "lite_extracted",
-            })
+            if normalized:
+                existing_normalized.add(normalized)
 
         conn.execute(
             "UPDATE memory_extraction_state SET "

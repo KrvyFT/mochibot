@@ -408,15 +408,31 @@ def _parse_config_schema(content: str) -> list[dict]:
     return schema
 
 
-def _extract_tool_load(heading: str) -> tuple[str, str | None]:
+def _extract_tool_load(heading: str) -> tuple[str, str | None, bool]:
     """Extract one current load annotation from a tool heading."""
     match = re.fullmatch(r"(\S+)\s*\(([^)]+)\)\s*", heading)
     if not match:
-        return (heading.split()[0] if heading else ""), None
-    tool_name, load = match.group(1), match.group(2).strip()
+        return (heading.split()[0] if heading else ""), None, False
+    tool_name = match.group(1)
+    annotations = [
+        item.strip() for item in match.group(2).split(",") if item.strip()
+    ]
+    load = annotations[0] if annotations else ""
     if load not in VALID_TOOL_LOADS:
         raise ValueError(f"Invalid tool load '{load}' for '{tool_name}'")
-    return tool_name, load
+    flags = set(annotations[1:])
+    unknown = flags - {"adaptive"}
+    if unknown:
+        raise ValueError(
+            f"Invalid tool annotation(s) {', '.join(sorted(unknown))} "
+            f"for '{tool_name}'"
+        )
+    adaptive = "adaptive" in flags
+    if adaptive and load != "on_demand":
+        raise ValueError(
+            f"Adaptive tool '{tool_name}' must default to on_demand"
+        )
+    return tool_name, load, adaptive
 
 
 def _parse_tools_v2(content: str) -> list[dict]:
@@ -433,7 +449,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         lines = block.strip().split("\n")
         heading = lines[0].strip()
         try:
-            tool_name, load = _extract_tool_load(heading)
+            tool_name, load, adaptive = _extract_tool_load(heading)
         except ValueError as exc:
             raise ValueError(f"{exc} in SKILL.md tool heading '{heading}'") from exc
 
@@ -451,6 +467,7 @@ def _parse_tools_v2(content: str) -> list[dict]:
         params, required_params = _parse_param_table(block)
         tool_def = _build_tool_schema(tool_name, desc, params, required_params)
         tool_def["_load"] = load
+        tool_def["_adaptive_load"] = adaptive
         tools.append(tool_def)
     return tools
 

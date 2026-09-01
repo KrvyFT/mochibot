@@ -98,6 +98,9 @@ sense:
 - `on_demand` — 只通过 `request_tools` 请求
 
 示例：`### manage_todo (routed)`、`### delete_memory (on_demand)`。
+只读工具可显式选择自适应：`### list_skills (on_demand, adaptive)`。
+这类工具默认仍是 `on_demand`；Nightly 可根据真实用户聊天中的成功使用，
+将它提升为 `routed`，长期未使用后恢复。未写 `adaptive` 的工具始终固定。
 `request_tools` 只会加载已启用、配置完整、平台兼容且未被策略拒绝的工具，
 并从下一次 provider round 才生效。工具 schema 与 dispatch 始终共享同一份
 不可变轮次快照。

@@ -167,7 +167,7 @@ def build_catalog(transport: str = "", user_id: int = 0) -> RequestCatalog:
     for name, skill in skill_registry.all_skills().items():
         definitions = _normalized_definitions(
             skill_registry.filter_tools_for_context(
-                skill.get_tools(),
+                skill_registry.get_effective_tools_for_skill(name),
                 user_id=user_id,
                 transport=transport,
             )

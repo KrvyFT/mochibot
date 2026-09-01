@@ -2,7 +2,13 @@
 
 import pytest
 
-from mochi.db import _connect
+from mochi.db import (
+    _connect,
+    get_conversation_context,
+    get_memory_extraction_status,
+    save_message_once,
+)
+from mochi.reminder_timer import _notification_text
 from mochi.skills.base import SkillContext
 from mochi.skills.reminder.handler import ReminderSkill
 
@@ -81,3 +87,20 @@ async def test_recurring_reminders_can_be_listed_updated_and_owned_by_user_zero(
     conn.close()
     assert rows["notify"]["recurrence"] is None
     assert rows["self"]["recurrence"] == "daily"
+
+    notification = _notification_text("drink water")
+    assert notification == "⏰ drink water"
+    assert save_message_once(
+        0,
+        "assistant",
+        notification,
+        turn_id="notify-reminder:1:2026-08-19T08:30:00+08:00",
+        processed=True,
+    )
+    context = get_conversation_context(0, recent_turns=10)
+    assert any(
+        message["content"] == notification
+        for message in context["recent"]
+    )
+    extraction = get_memory_extraction_status(0, batch_turns=1)
+    assert extraction["pending_turns"] == 0
