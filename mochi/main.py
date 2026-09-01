@@ -34,6 +34,7 @@ from mochi.heartbeat import (
     set_weekly_callback,
 )
 from mochi.main_runtime import MainRuntimeEntry
+from mochi.owner_alert import set_alert_sender
 from mochi.reminder_timer import (
     reminder_loop,
     set_self_reminder_callbacks,
@@ -301,6 +302,16 @@ async def main():
             deliver_self_reminder,
             _t.name,
         )
+
+        async def send_owner_alert(text: str) -> bool:
+            # Read the owner lazily: first-run auto-detection rebinds it in
+            # mochi.config after this closure is created.
+            from mochi.config import OWNER_USER_ID as owner
+            if not owner:
+                return False
+            return await _t.send_message(owner, text)
+
+        set_alert_sender(send_owner_alert)
         set_bedtime_callback(enter_bedtime)
         set_weekly_callback(enter_weekly)
         set_reminder_callback(send_proactive)
