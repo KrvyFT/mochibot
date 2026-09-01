@@ -23,11 +23,15 @@ REQUEST_TOOLS_DEF = {
     "function": {
         "name": "request_tools",
         "description": (
-            "当前工具不够时，申请本轮需要的额外能力。知道技能或工具名时"
-            "使用 skills；不知道名称时用 query 描述想做什么。申请成功后，"
-            "下一轮才能使用新工具；未找到时会返回可申请能力候选。"
+            "当前工具不够时，申请本轮需要的额外能力。必须提供 skills 或 "
+            "query 至少一项：知道技能或工具名时使用 skills；不知道名称时"
+            "用 query 描述想做什么。申请成功后，下一轮才能使用新工具；"
+            "未找到时会返回可申请能力候选。"
         ),
         "parameters": {
+            # OpenAI (and OpenAI-compatible APIs) reject oneOf/anyOf/allOf/
+            # enum/const/not at the top level of function.parameters.
+            # XOR is enforced in _validate_arguments instead.
             "type": "object",
             "properties": {
                 "skills": {
@@ -40,17 +44,16 @@ REQUEST_TOOLS_DEF = {
                     },
                     "minItems": 1,
                     "maxItems": MAX_EXACT_REQUESTS,
-                    "description": "明确的技能名或工具名。",
+                    "description": "明确的技能名或工具名。与 query 至少填一项。",
                 },
                 "query": {
                     "type": "string",
                     "minLength": 1,
                     "maxLength": MAX_QUERY_LENGTH,
                     "pattern": r".*\S.*",
-                    "description": "用自然语言描述需要什么能力。",
+                    "description": "用自然语言描述需要什么能力。与 skills 至少填一项。",
                 },
             },
-            "anyOf": [{"required": ["skills"]}, {"required": ["query"]}],
             "additionalProperties": False,
         },
     },
