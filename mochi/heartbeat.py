@@ -410,6 +410,46 @@ async def _run_weekly_if_due(
     return True
 
 
+async def _run_relationship_morning_if_due(
+    user_id: int,
+    now: datetime | None = None,
+) -> bool:
+    """Silent daily relationship assessment after RELATIONSHIP_MORNING_HOUR."""
+    if not _effective("RELATIONSHIP_MORNING_ENABLED"):
+        return False
+    now = now or datetime.now(TZ)
+    if now.hour < int(_effective("RELATIONSHIP_MORNING_HOUR")):
+        return False
+    from mochi.config import logical_today
+    from mochi.db import claim_scheduled_run, finish_scheduled_run
+
+    period = logical_today(now)
+    if not claim_scheduled_run("relationship_morning", period):
+        return False
+    try:
+        import mochi.skills as skill_registry
+        from mochi.skills.base import SkillContext
+
+        skill = skill_registry.get_skill("relationship_health")
+        if skill is None:
+            raise RuntimeError("Relationship health skill not found")
+        result = await asyncio.wait_for(
+            skill.run(SkillContext(trigger="cron", user_id=user_id)),
+            timeout=_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
+        )
+        if not result.success:
+            raise RuntimeError(result.output or "Morning relationship assessment failed")
+    except Exception as exc:
+        finish_scheduled_run(
+            "relationship_morning", period, success=False, error=str(exc),
+        )
+        log_heartbeat(_state, "relationship_morning_error", str(exc)[:200])
+        return True
+    finish_scheduled_run("relationship_morning", period, success=True)
+    log_heartbeat(_state, "relationship_morning", (result.summary or result.output)[:200])
+    return True
+
+
 async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
     if claimed.get("result_json"):
         durable = DurableChatResult.from_json(claimed["result_json"])
@@ -605,6 +645,7 @@ async def heartbeat_loop() -> None:
             now = datetime.now(TZ)
             await _run_maintenance_if_due(user_id, now)
             await _run_weekly_if_due(user_id, now)
+            await _run_relationship_morning_if_due(user_id, now)
             ensure_daily_free_time_plan(
                 user_id=user_id,
                 channel_id=user_id,

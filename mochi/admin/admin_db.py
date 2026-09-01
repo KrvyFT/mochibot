@@ -348,6 +348,8 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "MAINTENANCE_ENABLED":            ("bool",  True),
     "WEEKLY_MAINTENANCE_ENABLED":     ("bool",  True),
     "WEEKLY_MAINTENANCE_MINUTE":      ("int",   15),
+    "RELATIONSHIP_MORNING_ENABLED":   ("bool",  True),
+    "RELATIONSHIP_MORNING_HOUR":      ("int",   8),
 }
 
 

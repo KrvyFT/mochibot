@@ -268,3 +268,158 @@ async def test_blank_subject_falls_back_to_the_default_label():
                                love_language_alignment=7.0),
     )
     assert DEFAULT_SUBJECT in result.output
+
+
+def _morning_context(user_id: int = 1) -> SkillContext:
+    return SkillContext(trigger="cron", user_id=user_id, channel_id=user_id)
+
+
+@pytest.mark.asyncio
+async def test_morning_skips_when_there_is_no_new_user_message():
+    skill = RelationshipHealthSkill()
+    result = await skill.execute(_morning_context())
+    assert result.success
+    assert "没有新的对方消息" in result.output
+    assert not result.state_changed
+
+
+@pytest.mark.asyncio
+async def test_morning_skips_when_already_assessed_today():
+    from mochi.db import save_message
+
+    skill = RelationshipHealthSkill()
+    await _assess(
+        skill,
+        dimensions=_dimensions(communication_quality=7.0,
+                               emotional_intimacy=7.0,
+                               conflict_resolution_capacity=7.0,
+                               love_language_alignment=7.0),
+    )
+    save_message(1, "user", "今天也来了")
+    result = await skill.execute(_morning_context())
+    assert result.success
+    assert "已经评估过" in result.output
+    assert not result.state_changed
+
+
+@pytest.mark.asyncio
+async def test_morning_persists_a_snapshot_from_main_judgment(monkeypatch):
+    from mochi.db import save_message
+    from mochi.llm import LLMResponse
+    from mochi.skills.relationship_health.queries import get_latest_assessment
+
+    save_message(1, "user", "你又走开了")
+    save_message(1, "assistant", "那边的路好像更凉快")
+
+    class _FakeClient:
+        def chat(self, **kwargs):
+            assert kwargs.get("json_mode") is True
+            return LLMResponse(
+                content=(
+                    '{"dimensions":['
+                    '{"dimension":"communication_quality","score":6.0},'
+                    '{"dimension":"emotional_intimacy","score":5.5},'
+                    '{"dimension":"conflict_resolution_capacity","score":4.0},'
+                    '{"dimension":"love_language_alignment","score":6.0}'
+                    '],"attachment_self":"fearful","attachment_other":null,'
+                    '"love_language_self":"quality_time","love_language_other":null,'
+                    '"note":"她又把离开说成路更凉快"}'
+                ),
+                total_tokens=80,
+                prompt_tokens=50,
+                completion_tokens=30,
+                model="test-main",
+            )
+
+    monkeypatch.setattr(
+        "mochi.llm.get_client_for_tier", lambda tier="main": _FakeClient(),
+    )
+    skill = RelationshipHealthSkill()
+    result = await skill.execute(_morning_context())
+    assert result.success and result.state_changed
+    latest = get_latest_assessment(1, DEFAULT_SUBJECT)
+    assert latest is not None
+    assert latest["note"].startswith("早评：")
+    assert latest["coverage"] >= 0.5
+
+
+@pytest.mark.asyncio
+async def test_prompt_section_starts_developing_and_rewrites_after_assess():
+    from mochi.relationship_voice import read_voice
+
+    skill = RelationshipHealthSkill()
+    before = skill.prompt_section()
+    assert before.startswith("# 行为准则")
+    assert "# 深层人格" in before
+    assert "# 关系互动" in before
+    assert "刚好走到这里" in before
+    assert "RQI" not in before
+
+    await _assess(
+        skill,
+        dimensions=_dimensions(
+            communication_quality=4.0,
+            emotional_intimacy=4.0,
+            conflict_resolution_capacity=4.0,
+            love_language_alignment=4.0,
+            mutual_support_index=4.0,
+            shared_values_alignment=4.0,
+            autonomy_togetherness_balance=4.0,
+            physical_intimacy=4.0,
+        ),
+    )
+    after = skill.prompt_section()
+    assert after != before
+    assert "不要把裂痕说成没事" in after or "玩笑可以带刺" in after
+    assert "RQI" not in after
+    assert "Strained" not in after
+    assert "4.0" not in after
+    assert read_voice() == after + "\n" or read_voice().strip() == after.strip()
+
+
+@pytest.mark.asyncio
+async def test_other_subject_does_not_rewrite_the_living_voice():
+    skill = RelationshipHealthSkill()
+    before = skill.prompt_section()
+    await _assess(
+        skill,
+        subject="我和小雨",
+        dimensions=_dimensions(
+            communication_quality=4.0,
+            emotional_intimacy=4.0,
+            conflict_resolution_capacity=4.0,
+            love_language_alignment=4.0,
+            mutual_support_index=4.0,
+            shared_values_alignment=4.0,
+            autonomy_togetherness_balance=4.0,
+            physical_intimacy=4.0,
+        ),
+    )
+    assert skill.prompt_section() == before
+
+
+def test_core_budget_is_2500():
+    from mochi.config import CORE_MAX_TOKENS
+    from mochi.token_estimator import estimate_tokens
+    from mochi.relationship_voice import starting_voice
+
+    assert CORE_MAX_TOKENS == 2500
+    assert estimate_tokens(starting_voice()) < 2000
+
+
+@pytest.mark.asyncio
+async def test_morning_job_is_not_due_before_configured_hour(monkeypatch):
+    from datetime import datetime, timezone
+
+    from mochi import heartbeat
+
+    monkeypatch.setattr(
+        heartbeat,
+        "_effective",
+        lambda key: {
+            "RELATIONSHIP_MORNING_ENABLED": True,
+            "RELATIONSHIP_MORNING_HOUR": 8,
+        }[key],
+    )
+    too_early = datetime(2026, 9, 1, 7, 59, tzinfo=timezone.utc)
+    assert await heartbeat._run_relationship_morning_if_due(1, too_early) is False

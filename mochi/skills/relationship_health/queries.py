@@ -86,6 +86,44 @@ def get_assessments(
     return [dict(row) for row in reversed(rows)]
 
 
+def get_latest_assessment(user_id: int, subject: str) -> dict | None:
+    """Return the newest assessment for one subject, or ``None``."""
+    history = get_assessments(user_id, subject, limit=1)
+    return history[-1] if history else None
+
+
+def get_chat_transcript(
+    user_id: int,
+    *,
+    since: str | None = None,
+    limit: int = 40,
+) -> list[dict]:
+    """Return recent user/assistant turns, oldest first.
+
+    ``since`` is an inclusive-exclusive ISO timestamp: only messages strictly
+    after it are returned, so a morning run does not re-read the window that
+    already produced the previous snapshot.
+    """
+    limit = max(1, min(int(limit), 80))
+    conn = _connect()
+    try:
+        conditions = ["user_id = ?", "role IN ('user', 'assistant')"]
+        params: list = [user_id]
+        if since:
+            conditions.append("created_at > ?")
+            params.append(since)
+        params.append(limit)
+        rows = conn.execute(
+            "SELECT role, content, created_at FROM messages WHERE "
+            + " AND ".join(conditions)
+            + " ORDER BY id DESC LIMIT ?",
+            params,
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(row) for row in reversed(rows)]
+
+
 def list_subjects(user_id: int) -> list[dict]:
     """Return every subject with its assessment count and latest score."""
     conn = _connect()

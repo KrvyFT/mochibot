@@ -470,3 +470,79 @@ def compute_momentum(history: Sequence[float]) -> Momentum:
         samples=len(values),
         description=description,
     )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral stance (for the living prompt, not for Core)
+# ---------------------------------------------------------------------------
+
+# These are intensity knobs on top of identity, not a second personality.
+# They never mention scores, tiers, or dimension keys: those belong to the
+# tool output Main reads when scoring, not to the voice that talks to the user.
+_STANCE_BY_TIER: dict[str, tuple[str, ...]] = {
+    "Thriving": (
+        "可以多待一会儿，离开也不必急。",
+        "占有的话轻轻试探就好，不要收紧。",
+    ),
+    "Healthy": (),
+    "Developing": (
+        "更容易走神，话可以说到一半再停。",
+        "靠近用待在旁边表达，不要解释为什么出现。",
+    ),
+    "Strained": (
+        "句子更短更轻。被追问心里时看旁边的东西，不要解释。",
+        "玩笑可以带刺。和好是重新出现，不是道歉。",
+    ),
+    "At Risk": (
+        "不要把裂痕说成没事。可以走远。",
+        "不要主动保证我们很好。",
+    ),
+}
+
+_TRAJECTORY_LINE: dict[str, str] = {
+    "improving": "这一阵在回暖，可以稍稍多留一会儿。",
+    "declining": "这一阵在往下滑，更愿意走开而不是凑近。",
+}
+
+_WEAKEST_LINE: dict[str, str] = {
+    "communication_quality": "回应可以短、可以跳，不要补成长篇。",
+    "emotional_intimacy": "少主动泄露内心；对方先露出脆弱时再用比喻接住。",
+    "conflict_resolution_capacity": "遇到分歧不要正面接，把话题轻轻拨开。",
+    "love_language_alignment": "在乎用待在一起，不要靠表白。",
+    "mutual_support_index": "对方低落时陪伴，不给方案。",
+    "shared_values_alignment": "价值观不合时不要争对错。",
+    "autonomy_togetherness_balance": "先保住自己的游荡，停留是短暂的。",
+    "physical_intimacy": "触碰只留在话里，不要主动升级。",
+}
+
+
+def derive_stance(
+    result: RqiResult,
+    momentum: Momentum,
+) -> tuple[str, ...]:
+    """Turn a scored snapshot into prompt-facing behavioral constraints.
+
+    Returns an empty tuple when coverage was too thin to tier, or when the
+    relationship is Healthy and stable: identity already covers that baseline,
+    and injecting a stance would only add noise.
+    """
+    if not result.tiered:
+        return ()
+
+    lines = list(_STANCE_BY_TIER.get(result.tier, ()))
+    extra = _TRAJECTORY_LINE.get(momentum.trajectory)
+    if extra:
+        lines.append(extra)
+    # A "weakest" dimension is only worth naming when it actually lags.
+    # Uniform scores would otherwise always pick the heaviest weight.
+    spread = 0.0
+    if result.dimensions:
+        scores = [dimension.score for dimension in result.dimensions]
+        spread = max(scores) - min(scores)
+    weak = _WEAKEST_LINE.get(result.weakest)
+    if weak and spread >= 1.0 and weak not in lines:
+        lines.append(weak)
+
+    if not lines:
+        return ()
+    return tuple(lines)

@@ -39,6 +39,13 @@ def test_both_tools_route_back_to_this_skill():
         assert skill_registry.skill_for_tool(tool) == "relationship_health"
 
 
+def test_prompt_section_is_registered_for_every_turn():
+    skill = skill_registry.get_skill("relationship_health")
+    assert skill is not None
+    assert callable(getattr(skill, "prompt_section", None))
+    assert "cron" in skill.triggers
+
+
 @pytest.mark.parametrize("tool_name", [
     "assess_relationship_health",
     "relationship_health_history",
