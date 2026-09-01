@@ -76,6 +76,8 @@ class SkillManagementSkill(Skill):
                 output="action 必须是 view 或 set。",
                 success=False,
             )
+        elif tool == "manage_tool_load":
+            return self._manage_tool_load(context, args)
 
         return SkillResult(output=f"Unknown tool: {tool}", success=False)
 
@@ -98,7 +100,29 @@ class SkillManagementSkill(Skill):
             else:
                 status = "ON"
 
-            tools_str = ", ".join(s["tools"]) if s["tools"] else "(none)"
+            tool_lines = []
+            for tool in s["tool_loads"]:
+                load = (
+                    tool["effective"]
+                    if tool["declared"] == tool["effective"]
+                    else f"{tool['declared']} → {tool['effective']}"
+                )
+                pin = f", pinned={tool['pinned']}" if tool["pinned"] else ""
+                changed = (
+                    f", changed={tool['changed_at']}"
+                    if tool["changed_at"]
+                    else ""
+                )
+                reason_label = (
+                    "Nightly snapshot"
+                    if tool["adaptive"] and not tool["pinned"]
+                    else "reason"
+                )
+                tool_lines.append(
+                    f"{tool['name']} [{load}{pin}{changed}; "
+                    f"{reason_label}: {tool['reason']}]"
+                )
+            tools_str = ", ".join(tool_lines) if tool_lines else "(none)"
             config_tag = " [has config]" if s["config_schema"] else ""
             lines.append(
                 f"• {s['name']} [{status}] — {s['description']}\n"
@@ -107,6 +131,67 @@ class SkillManagementSkill(Skill):
 
         return SkillResult(
             output=f"Registered skills ({len(infos)}):\n\n" + "\n\n".join(lines),
+        )
+
+    def _manage_tool_load(
+        self,
+        context: SkillContext,
+        args: dict,
+    ) -> SkillResult:
+        if context.source != "chat":
+            return SkillResult(
+                output="只有用户当前对话可以调整工具加载层级。",
+                success=False,
+            )
+        action = args.get("action")
+        tool_name = str(args.get("tool_name") or "").strip()
+        if action not in {"pin", "reset"} or not tool_name:
+            return SkillResult(
+                output="action 必须是 pin 或 reset，并提供 tool_name。",
+                success=False,
+            )
+        from mochi.skills import get_declared_tools
+        from mochi.adaptive_tool_load import pin_definition, recalculate
+
+        definition = next(
+            (
+                tool for tool in get_declared_tools()
+                if tool.get("function", {}).get("name") == tool_name
+            ),
+            None,
+        )
+        if definition is None:
+            return SkillResult(
+                output=f"Unknown tool: '{tool_name}'",
+                success=False,
+            )
+        load = args.get("load") if action == "pin" else None
+        if action == "pin" and load not in {"on_demand", "routed"}:
+            return SkillResult(
+                output="pin 需要 load=on_demand 或 routed。",
+                success=False,
+            )
+        try:
+            state = pin_definition(definition, load)
+            changed = bool(state.get("changed"))
+            if action == "reset":
+                state = recalculate(get_declared_tools()).get(
+                    tool_name,
+                    state,
+                )
+                changed = changed or bool(state.get("changed"))
+        except ValueError as exc:
+            return SkillResult(output=f"Error: {exc}", success=False)
+        action_text = (
+            f"已锁定为 {state['effective_load']}"
+            if action == "pin"
+            else "已恢复自动调整"
+        )
+        return SkillResult(
+            output=f"{tool_name} {action_text}。{state['reason']}",
+            summary=f"Updated adaptive load for {tool_name}.",
+            entity_refs=[f"tool:{tool_name}"],
+            state_changed=changed,
         )
 
     # ── toggle_skill ─────────────────────────────────────────

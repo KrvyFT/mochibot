@@ -92,6 +92,15 @@ controls only whether the owner may disable a skill. Concrete deny rules, rate
 limits, state-change facts, recoverability, and receipts remain execution
 contracts rather than an abstract risk taxonomy.
 
+Tools marked `on_demand, adaptive` in their own `SKILL.md` may move to
+`routed` after successful use in three distinct owner-chat turns within 30
+days. Nightly performs this deterministic recalculation and returns tools to
+their declared `on_demand` load after 30 unused days, with a seven-day minimum
+tenure. System-owned turns never affect adaptation. Unmarked tools remain fixed;
+the owner may pin or reset only tools that opted into adaptation. The skill
+registry applies the effective load once so routing, `request_tools`, and skill
+inspection share the same result.
+
 ## Self-update flow
 
 Self-update is an owner-requested system skill, not an Observer. Mochi checks
@@ -122,6 +131,14 @@ with a lived sleep-transition situation. The heartbeat atomically claims the
 transition, Main may use the abilities available in the turn, and the runtime
 completes sleep even when model or delivery work fails.
 
+Bedtime may revise today's free-text Diary and independently stage one complete
+draft for the next logical day. The private sidecar stores only source date,
+target date, and content. On the target day's first Diary access, the framework
+adds a visible previous-night provenance line and consumes the draft exactly
+once. A draft missed while the bot was offline is archived under its intended
+date and never moved into a later day. Today and tomorrow use separate exact
+conflict snapshots, so Main may write either or both in one turn.
+
 ## Nightly and Weekly memory flow
 
 Nightly is deterministic housekeeping. After the configured maintenance hour,
@@ -139,10 +156,14 @@ ordinary chat tools:
   evidence messages;
 - one atomic relationship curation batch over the visible active user-life graph.
 
-Weekly context contains the previous seven logical days of archived Diary,
-recent conversation context, at most 40 new Memory Items, and at most 40
-text-related older items. Counts and truncation flags are explicit; unseen rows
-are never in scope. Main submits semantic decisions and minimal visible IDs;
+Weekly context is a system-owned, read-only data region containing the previous
+seven logical days of archived Diary, at most 40 new Memory Items, at most 40
+text-related older items, bounded recent user evidence, and active relationships.
+Ordinary conversation summary and history are omitted to avoid duplicating this
+package. Counts and truncation flags are explicit; unseen rows are never in
+scope. A separate ephemeral Weekly event gives Main the current reflective
+situation without presenting old chat history as the active turn. Main submits
+semantic decisions and minimal visible IDs;
 the framework binds those decisions to the captured Memory and relationship
 snapshots, including content and update-time conflict checks. Memory/Trash/FTS/
 vector/KG invalidation commits as one SQLite transaction.
@@ -215,10 +236,13 @@ and marked processed so an assistant-only system turn does not enter memory
 extraction.
 
 Ordinary `notify` reminders remain authorized, deterministic deliveries and
-may advance the same durable row through a recurrence. Their voice rendering is
-prepared once and persisted. Transient delivery failures retry at most three
-attempts within five minutes; stale occurrences expire, and recurring reminders
-advance instead of replaying old content. A transport that requires fresh owner
+may advance the same durable row through a recurrence. Their exact notification
+text is prepared without a model call and persisted before delivery. After a
+confirmed send, it enters the conversation timeline as a processed assistant
+event, so later Main turns can see the reminder without feeding it into summary
+or memory extraction. Transient delivery failures retry at most three attempts
+within five minutes; stale occurrences expire, and recurring reminders advance
+instead of replaying old content. A transport that requires fresh owner
 contact ends the occurrence immediately. SQLite claims and leases prevent
 concurrent workers.
 

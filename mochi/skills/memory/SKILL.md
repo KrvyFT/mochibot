@@ -21,7 +21,7 @@ locked: true
 |-----------|------|----------|-------------|
 | query | string | no | 搜索关键词 |
 
-### list_memories (on_demand)
+### list_memories (on_demand, adaptive)
 列出已保存的记忆。
 
 | Parameter | Type | Required | Description |
@@ -36,12 +36,12 @@ locked: true
 |-----------|------|----------|-------------|
 | memory_id | integer | yes | 要删除的记忆 ID |
 
-### memory_stats (on_demand)
+### memory_stats (on_demand, adaptive)
 显示记忆系统统计（总数、重要记忆和回收站大小）。
 
 无需参数。
 
-### view_core_memory (on_demand)
+### view_core_memory (on_demand, adaptive)
 读取完整 Core，在需要确认当前认知时使用。
 
 无需参数。

@@ -27,6 +27,8 @@ async def run_maintenance(user_id: int = 0) -> dict:
     from mochi.diary import diary
     from mochi.knowledge_graph import cleanup_expired_triples
     from mochi.core_store import get_core_stats
+    import mochi.skills as skill_registry
+    from mochi.adaptive_tool_load import recalculate
 
     results: dict = {
         "diary": diary.rollover(logical_today()),
@@ -42,6 +44,9 @@ async def run_maintenance(user_id: int = 0) -> dict:
     results["proactive_log"] = cleanup_proactive_log(30)
     results["heartbeat_log"] = cleanup_heartbeat_log(HEARTBEAT_LOG_DELETE_DAYS)
     results["kg_cleanup"] = cleanup_expired_triples(days=90)
+    results["adaptive_tools"] = recalculate(
+        skill_registry.get_declared_tools(),
+    )
     log.info("Deterministic Nightly complete: %s", results)
     return results
 

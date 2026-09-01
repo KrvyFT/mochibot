@@ -16,6 +16,7 @@ from datetime import datetime
 
 from mochi.observers.base import Observer
 from mochi.config import TZ
+from mochi.conversation_text import strip_legacy_tool_fact_suffix
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +88,8 @@ class RecentConversationObserver(Observer):
         compact = []
         for m in messages:
             content = m.get("content", "")
+            if m.get("role") == "assistant":
+                content = strip_legacy_tool_fact_suffix(content)
             # Truncate long messages
             if len(content) > MAX_CHARS_PER_MSG:
                 content = content[:MAX_CHARS_PER_MSG] + "…"

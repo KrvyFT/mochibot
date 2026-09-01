@@ -16,10 +16,21 @@ _SENSITIVE_KEY_RE = re.compile(
     r"(?:api[_-]?key|token|secret|password|credential|authorization|cookie)",
     re.IGNORECASE,
 )
+_FOLLOWUP_DEICTIC = (
+    r"(?:(?:刚才|刚刚)(?:那个|那条|的)?|上一个|上一条|这个|那个|它)"
+)
+_FOLLOWUP_OBJECT = r"(?:提醒|待办|打卡|设置|操作)?"
+_FOLLOWUP_ACTION = r"(?:改|修改|换|撤销|撤回|取消|不要|删|删除|重做|再来|再加)"
 _FOLLOWUP_RE = re.compile(
-    r"(?:刚才|刚刚|上一个|上一条|那个|这个|改成|改到|换成|撤销|取消掉|"
-    r"删掉|删除它|再来一次|再加一次|不是这个|不对|算了|"
-    r"previous|last one|that one|change it|undo|cancel it)",
+    rf"(?:{_FOLLOWUP_DEICTIC}(?:的)?{_FOLLOWUP_OBJECT}.{{0,8}}"
+    rf"{_FOLLOWUP_ACTION}|"
+    rf"{_FOLLOWUP_ACTION}.{{0,8}}{_FOLLOWUP_DEICTIC}(?:的)?"
+    rf"{_FOLLOWUP_OBJECT}|"
+    r"撤销|取消掉|删掉|删除它|再来一次|再加一次|"
+    r"\b(?:change|undo|cancel|delete|repeat|redo)\b.{0,12}"
+    r"\b(?:it|that|previous|last|reminder|todo|setting|check-?in|operation)\b|"
+    r"\b(?:this|that|previous|last)\b.{0,12}"
+    r"\b(?:change|undo|cancel|delete|repeat|redo)\b|\badd another\b)",
     re.IGNORECASE,
 )
 _FAILED_OUTPUT_RE = re.compile(
@@ -34,6 +45,7 @@ _NO_CHANGE_OUTPUT_RE = re.compile(
 _EXPLICIT_STATE_FACT_TOOLS = {
     "habit_progress",
     "edit_file",
+    "manage_tool_load",
     "manage_todo",
     "write_diary",
 }

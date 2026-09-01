@@ -6,7 +6,7 @@ type: tool
 
 ## Tools
 
-### run_checkup (on_demand)
+### run_checkup (on_demand, adaptive)
 检查自己当前是否运行正常，汇总上下文体积、记忆状态和近期错误。
 
 无需参数。
