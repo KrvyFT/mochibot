@@ -135,6 +135,54 @@ def _coerce_batch_index(value: object) -> int | None:
     return None
 
 
+# Whether a gateway omits or constant-stamps ``index`` is a property of the
+# deployment, not of a request, and the embedding client is built once per
+# process. Keyed by quirk kind rather than by the raw indexes so that batches
+# of different sizes from the same gateway do not each announce themselves.
+_reported_index_quirks: set[str] = set()
+
+
+def _classify_index_quirk(indexes: list[int | None]) -> str:
+    """Name the reason ``indexes`` cannot be read as a permutation.
+
+    ``absent`` and ``constant`` are systematic gateway traits for which
+    request order is the documented behaviour. ``inconsistent`` means the
+    gateway does populate indexes but contradicts itself, which is the only
+    case where falling back to response order is a guess rather than the
+    contract.
+    """
+    if all(index is None for index in indexes):
+        return "absent"
+    if len(set(indexes)) == 1:
+        return "constant"
+    return "inconsistent"
+
+
+def _report_index_fallback(indexes: list[int | None]) -> None:
+    """Announce the response-order fallback without repeating a known trait."""
+    kind = _classify_index_quirk(indexes)
+    if kind == "inconsistent":
+        # Self-contradicting indexes mean the gateway tracks order and got it
+        # wrong, so the response order may be wrong too. Keep reporting these.
+        log.warning(
+            "Embedding batch indexes disagree (%r); using response order",
+            indexes,
+        )
+        return
+    if kind in _reported_index_quirks:
+        log.debug(
+            "Embedding batch indexes %s (%r); using response order",
+            kind, indexes,
+        )
+        return
+    _reported_index_quirks.add(kind)
+    log.info(
+        "Embedding gateway returns %s batch indexes; using request order "
+        "for this and subsequent batches",
+        kind,
+    )
+
+
 def _resolve_batch_order(data: list, expected: int) -> list[int]:
     """Map each response item to the input position it belongs to.
 
@@ -155,10 +203,7 @@ def _resolve_batch_order(data: list, expected: int) -> list[int]:
         index is not None and 0 <= index < expected for index in indexes
     ):
         return indexes  # type: ignore[return-value]
-    log.warning(
-        "Embedding batch indexes unusable (%r); using response order",
-        indexes,
-    )
+    _report_index_fallback(indexes)
     return list(range(expected))
 
 

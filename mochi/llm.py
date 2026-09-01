@@ -26,6 +26,77 @@ log = logging.getLogger(__name__)
 # reasoning-model latency on slow third-party gateways but fails fast on hangs.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
 
+# Failures worth another attempt are those where the request never reached a
+# verdict, or the gateway explicitly said "later". A request the provider
+# rejected on its merits — bad schema, bad key, unknown model — fails
+# identically every time, so retrying it only delays the report to the owner.
+_RETRYABLE_STATUS_CODES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+_RETRYABLE_ERROR_NAMES = frozenset({
+    # openai / anthropic SDK transport failures, which carry no status code
+    "APIConnectionError",
+    "APITimeoutError",
+    "APIConnectionTimeoutError",
+    "InternalServerError",
+    "RateLimitError",
+    "OverloadedError",
+    # httpx
+    "ConnectError",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+    "TimeoutException",
+    "RemoteProtocolError",
+    # stdlib, for providers that surface the socket error directly
+    "TimeoutError",
+    "ConnectionError",
+})
+
+# Redacted before any failure text reaches the owner: gateway errors routinely
+# echo the request URL or Authorization header back in the message.
+_SECRET_PATTERNS = (
+    re.compile(r"sk-[A-Za-z0-9_\-]{8,}"),
+    re.compile(r"\b\d{8,}:[A-Za-z0-9_\-]{20,}\b"),
+    re.compile(r"(?i)\b(?:api[-_]?key|access[-_]?token|token)\b\s*[=:]\s*\S+"),
+    re.compile(r"(?i)\bbearer\s+\S+"),
+)
+
+
+def is_retryable_error(exc: BaseException) -> bool:
+    """Report whether a failed LLM call could succeed on another attempt.
+
+    Classified by HTTP status when the provider returned one, since that is the
+    provider's own verdict, and otherwise by exception type, since transport
+    failures never carry a status.
+
+    # Examples
+
+    >>> is_retryable_error(httpx.ConnectError("connection refused"))
+    True
+    >>> is_retryable_error(ValueError("bad schema"))
+    False
+    """
+    status = getattr(exc, "status_code", None)
+    if isinstance(status, int):
+        return status in _RETRYABLE_STATUS_CODES
+    names = {klass.__name__ for klass in type(exc).__mro__}
+    return bool(names & _RETRYABLE_ERROR_NAMES)
+
+
+def describe_error(exc: BaseException, *, limit: int = 300) -> str:
+    """Render a call failure as one compact line safe to show the owner.
+
+    Credentials are stripped and the result is truncated, because provider
+    error bodies can run to kilobytes of HTML.
+    """
+    text = f"{type(exc).__name__}: {exc}".strip()
+    for pattern in _SECRET_PATTERNS:
+        text = pattern.sub("[redacted]", text)
+    text = " ".join(text.split())
+    if len(text) > limit:
+        text = text[:limit] + "…"
+    return text or type(exc).__name__
+
 
 def _decode_data_image(block: dict) -> tuple[str, bytes]:
     """Decode one canonical OpenAI image_url block for native providers."""

@@ -337,6 +337,24 @@ TOOL_LOOP_DUPLICATE_LIMIT = max(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
+# LLM Retry / Owner Alerts
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Attempts per LLM call, counting the first. Only transport failures and
+# gateway "later" responses are retried; a request the provider rejected fails
+# at once so the error reaches the owner without delay.
+LLM_MAX_ATTEMPTS = max(1, min(_env_int("LLM_MAX_ATTEMPTS", 3), 6))
+# Wait before attempt N is LLM_RETRY_BASE_DELAY_S * 2**(N-2): 2s then 4s by
+# default. An immediate retry after a connection reset almost always fails the
+# same way, which is what made the old back-to-back retry ineffective.
+LLM_RETRY_BASE_DELAY_S = max(0.0, _env_float("LLM_RETRY_BASE_DELAY_S", 2.0))
+
+# Failures in scheduled work are invisible to the owner without this, since
+# those paths deliberately return no message.
+OWNER_ALERT_ENABLED = _env_bool("OWNER_ALERT_ENABLED", True)
+OWNER_ALERT_COOLDOWN_S = max(0, _env_int("OWNER_ALERT_COOLDOWN_S", 900))
+
+# ═══════════════════════════════════════════════════════════════════════════
 # Observer Thresholds
 # ═══════════════════════════════════════════════════════════════════════════
 

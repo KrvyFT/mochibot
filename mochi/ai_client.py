@@ -20,7 +20,13 @@ from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from mochi.llm import get_client_for_tier, LLMResponse
+from mochi.llm import (
+    LLMResponse,
+    describe_error,
+    get_client_for_tier,
+    is_retryable_error,
+)
+from mochi.owner_alert import alert_owner
 from mochi.prompt_loader import get_prompt, get_system_chat_modules
 from mochi.db import (
     save_message, save_message_once, log_usage,
@@ -930,6 +936,7 @@ async def chat(
         TOOL_ROUTER_ENABLED, TOOL_ESCALATION_ENABLED,
         TOOL_ESCALATION_MAX_PER_TURN, TOOL_LOOP_TOTAL_TOOL_LIMIT,
         TOOL_LOOP_DUPLICATE_LIMIT,
+        LLM_MAX_ATTEMPTS, LLM_RETRY_BASE_DELAY_S,
     )
 
     runtime_entry = runtime_entry or (
@@ -1511,8 +1518,8 @@ async def chat(
         if _free_time_cancelled():
             return ChatResult(disposition="invalid")
         round_availability = availability
-        model_attempts = 1 if is_autonomous else 2
-        for _attempt in range(model_attempts):
+        response = None
+        for attempt in range(1, LLM_MAX_ATTEMPTS + 1):
             try:
                 response = await asyncio.to_thread(
                     client.chat,
@@ -1526,15 +1533,43 @@ async def chat(
                 )
                 break
             except Exception as e:
-                if _attempt + 1 < model_attempts:
-                    log.warning("LLM call failed (attempt 1), retrying: %s", e)
+                retryable = is_retryable_error(e)
+                if retryable and attempt < LLM_MAX_ATTEMPTS:
+                    delay = LLM_RETRY_BASE_DELAY_S * 2 ** (attempt - 1)
+                    log.warning(
+                        "LLM call failed (attempt %d/%d), retrying in %.0fs: %s",
+                        attempt, LLM_MAX_ATTEMPTS, delay, e,
+                    )
+                    if delay:
+                        await asyncio.sleep(delay)
+                    if _free_time_cancelled():
+                        return ChatResult(disposition="invalid")
                     continue
                 log.error(
-                    "LLM call failed (attempt %d): %s",
-                    _attempt + 1,
+                    "LLM call failed (attempt %d/%d, %s): %s",
+                    attempt,
+                    LLM_MAX_ATTEMPTS,
+                    "retries exhausted" if retryable else "not retryable",
                     e,
                     exc_info=True,
                 )
+                detail = describe_error(e)
+                # Scheduled work returns no message, so without an alert the
+                # owner never learns these failed. Keyed by exception type: one
+                # notice per kind of outage, not one per missed run.
+                silent_entry = (
+                    "睡前问候" if is_bedtime
+                    else "定时提醒" if is_self_reminder
+                    else "Free Time 自主思考" if is_autonomous
+                    else "每周维护" if is_weekly
+                    else ""
+                )
+                if silent_entry:
+                    await alert_owner(
+                        f"llm_failure:{type(e).__name__}",
+                        f"{silent_entry}没做成，模型调用连续 {attempt} 次失败。"
+                        f"\n\n{detail}",
+                    )
                 if is_bedtime:
                     return ChatResult()
                 if is_self_reminder or is_autonomous:
@@ -1548,7 +1583,9 @@ async def chat(
                             "或换一张图片再试。"
                         )
                     )
-                return ChatResult(text=f"API 报错：{e}")
+                return ChatResult(
+                    text=f"模型调用失败（尝试 {attempt} 次）：{detail}"
+                )
 
         _log_main_usage(response)
         if recalled_memories and not recall_exposure_recorded:
