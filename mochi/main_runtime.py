@@ -57,7 +57,8 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry.kind == "weekly_maintenance":
         return ContextPolicy(
             diary_journal=False,
-            conversation_summary=True,
+            conversation_summary=False,
+            recent_history=False,
             auto_recall=False,
             recent_operations=False,
             prompt_sections=False,

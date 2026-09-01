@@ -156,10 +156,14 @@ ordinary chat tools:
   evidence messages;
 - one atomic relationship curation batch over the visible active user-life graph.
 
-Weekly context contains the previous seven logical days of archived Diary,
-recent conversation context, at most 40 new Memory Items, and at most 40
-text-related older items. Counts and truncation flags are explicit; unseen rows
-are never in scope. Main submits semantic decisions and minimal visible IDs;
+Weekly context is a system-owned, read-only data region containing the previous
+seven logical days of archived Diary, at most 40 new Memory Items, at most 40
+text-related older items, bounded recent user evidence, and active relationships.
+Ordinary conversation summary and history are omitted to avoid duplicating this
+package. Counts and truncation flags are explicit; unseen rows are never in
+scope. A separate ephemeral Weekly event gives Main the current reflective
+situation without presenting old chat history as the active turn. Main submits
+semantic decisions and minimal visible IDs;
 the framework binds those decisions to the captured Memory and relationship
 snapshots, including content and update-time conflict checks. Memory/Trash/FTS/
 vector/KG invalidation commits as one SQLite transaction.

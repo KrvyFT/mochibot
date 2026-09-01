@@ -170,7 +170,8 @@ _RELATIONSHIP_DEFINITION = {
             "整理用户与人物、宠物、地点之间值得长期保留的关系。每次新增或"
             "更新只需引用支持它的可见 Memory Item ID；归档只需引用可见关系 "
             "ID。框架会核对当时可见的版本、证据和范围并原子提交。没有变化时 "
-            "operations 可以为空。"
+            "operations 可以为空。如果本轮也有 Memory 整理能力，先调用 "
+            "curate_weekly_memory（即使 operations 为空），再整理关系。"
         ),
         "parameters": {
             "type": "object",

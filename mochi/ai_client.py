@@ -867,11 +867,10 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     elif is_self_reminder and not defer_runtime_situation:
         dynamic_live_context.append(_render_self_reminder_event(runtime_entry))
     elif is_weekly:
-        weekly_prompt = get_prompt("weekly_maintenance_entry")
-        if not weekly_prompt:
-            raise RuntimeError("Weekly maintenance entry prompt is missing")
         dynamic_live_context.append(
-            weekly_prompt.replace("{{weekly_context}}", weekly_context)
+            "<weekly_context source=\"system\" authority=\"read_only\">\n"
+            + weekly_context
+            + "\n</weekly_context>"
         )
 
     from mochi.db import get_last_user_message_time
@@ -1384,6 +1383,22 @@ async def chat(
             # that turn; it explicitly distinguishes itself from owner speech.
             "role": "user",
             "content": _render_self_reminder_event(runtime_entry),
+        })
+    elif is_weekly:
+        weekly_prompt = get_prompt("weekly_maintenance_entry")
+        if not weekly_prompt:
+            raise RuntimeError("Weekly maintenance entry prompt is missing")
+        messages.append({
+            # Provider APIs need one active turn. This is a system-owned Weekly
+            # situation, not a new user message.
+            "role": "user",
+            "content": (
+                "<weekly_runtime_event>\n"
+                "source: system\n"
+                "new_user_message: false\n\n"
+                f"{weekly_prompt}\n"
+                "</weekly_runtime_event>"
+            ),
         })
     if image:
         _replace_current_user_with_image(messages, stored_text, text, image)
