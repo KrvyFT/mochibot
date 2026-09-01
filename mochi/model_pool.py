@@ -124,6 +124,44 @@ def _resolve_embedding_config() -> tuple[str, str, str, str]:
     return ("none", "", "", "")
 
 
+def _coerce_batch_index(value: object) -> int | None:
+    """Normalize a provider batch index, or None when it is unusable."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _resolve_batch_order(data: list, expected: int) -> list[int]:
+    """Map each response item to the input position it belongs to.
+
+    Some OpenAI-compatible gateways return ``index`` as a string, or stamp
+    every item with the same value. Those responses are still usable because
+    the API contract yields results in request order, so fall back to that
+    order rather than dropping the whole batch. A size mismatch is not
+    recoverable — pairing embeddings with the wrong text would silently
+    corrupt recall.
+    """
+    if len(data) != expected:
+        raise ValueError(
+            f"Embedding batch size mismatch: sent {expected}, "
+            f"got {len(data)}"
+        )
+    indexes = [_coerce_batch_index(getattr(item, "index", None)) for item in data]
+    if len(set(indexes)) == expected and all(
+        index is not None and 0 <= index < expected for index in indexes
+    ):
+        return indexes  # type: ignore[return-value]
+    log.warning(
+        "Embedding batch indexes unusable (%r); using response order",
+        indexes,
+    )
+    return list(range(expected))
+
+
 def _make_embed_client(provider: str, api_key: str, model: str,
                        base_url: str) -> tuple:
     """Instantiate the OpenAI-compatible embedding client, or (None, "")."""
@@ -321,21 +359,17 @@ class ModelPool:
             resp = self._embed_client.embeddings.create(
                 model=self._embed_model, input=missing_keys,
             )
+            order = _resolve_batch_order(resp.data, len(missing_keys))
             packed_by_key: dict[str, bytes] = {}
-            for item in resp.data:
-                item_index = item.index
-                if (
-                    isinstance(item_index, bool)
-                    or not isinstance(item_index, int)
-                    or not 0 <= item_index < len(missing_keys)
-                    or missing_keys[item_index] in packed_by_key
-                ):
-                    raise ValueError("Embedding batch returned invalid indexes")
-                packed_by_key[missing_keys[item_index]] = struct.pack(
+            for position, item in zip(order, resp.data, strict=True):
+                key = missing_keys[position]
+                if key in packed_by_key:
+                    raise ValueError(
+                        "Embedding batch mapped two results to one input"
+                    )
+                packed_by_key[key] = struct.pack(
                     f"{len(item.embedding)}f", *item.embedding,
                 )
-            if len(packed_by_key) != len(missing_keys):
-                raise ValueError("Embedding batch returned incomplete results")
             for key, packed in packed_by_key.items():
                 self._embed_cache.put(key, packed)
                 for index in positions_by_key[key]:
