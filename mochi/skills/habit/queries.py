@@ -83,7 +83,8 @@ def deactivate_habit(user_id: int, habit_id: int) -> bool:
     """Deactivate (soft-delete) a habit. Returns True if updated."""
     conn = _connect()
     cursor = conn.execute(
-        "UPDATE habits SET active = 0 WHERE id = ? AND user_id = ?",
+        "UPDATE habits SET active = 0 "
+        "WHERE id = ? AND user_id = ? AND active = 1",
         (habit_id, user_id),
     )
     updated = cursor.rowcount > 0

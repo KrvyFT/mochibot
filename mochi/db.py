@@ -2430,6 +2430,75 @@ def get_memory_items_by_ids(user_id: int, item_ids: list[int]) -> list[dict]:
     return [by_id[item_id] for item_id in item_ids if item_id in by_id]
 
 
+def get_memory_evidence_receipt(
+    user_id: int,
+    item_id: int,
+    *,
+    max_message_chars: int = 2000,
+) -> dict | None:
+    """Load one owner's recorded source messages for lazy admin display."""
+    from mochi.memory_contract import decode_evidence_message_ids
+
+    max_chars = max(100, min(int(max_message_chars), 5000))
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id, content, importance, source, evidence_message_ids, "
+            "created_at, updated_at FROM memory_items "
+            "WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        ).fetchone()
+        if row is None:
+            return None
+
+        message_ids = decode_evidence_message_ids(row["evidence_message_ids"])
+        messages_by_id: dict[int, dict] = {}
+        if message_ids:
+            placeholders = ",".join("?" * len(message_ids))
+            messages = conn.execute(
+                f"SELECT id, content, created_at FROM messages "
+                f"WHERE user_id = ? AND role = 'user' "
+                f"AND id IN ({placeholders})",
+                (user_id, *message_ids),
+            ).fetchall()
+            messages_by_id = {
+                int(message["id"]): dict(message) for message in messages
+            }
+
+        source_messages: list[dict] = []
+        for message_id in message_ids:
+            message = messages_by_id.get(message_id)
+            if message is None:
+                source_messages.append({
+                    "message_id": message_id,
+                    "available": False,
+                })
+                continue
+            content = str(message["content"] or "")
+            source_messages.append({
+                "message_id": message_id,
+                "available": True,
+                "created_at": str(message["created_at"] or ""),
+                "content": content[:max_chars],
+                "truncated": len(content) > max_chars,
+            })
+
+        return {
+            "item": {
+                "id": row["id"],
+                "content": row["content"],
+                "importance": row["importance"],
+                "source": row["source"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            },
+            "source_status": "recorded" if message_ids else "not_recorded",
+            "source_messages": source_messages,
+        }
+    finally:
+        conn.close()
+
+
 def delete_memory_items(ids: list[int], deleted_by: str = "system") -> int:
     """Soft-delete memory items: copy to trash, clean indexes, then delete."""
     if not ids:

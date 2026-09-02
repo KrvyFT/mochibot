@@ -50,8 +50,14 @@ from mochi.main_runtime import (
     context_policy,
 )
 from mochi.request_tools import ToolLoopBudget, resolve_request
+from mochi.skills.base import SkillResult
 from mochi.token_estimator import estimate_tokens
-from mochi.tool_availability import ToolAvailability, unavailable_tool_error
+from mochi.tool_execution import model_result_for
+from mochi.tool_availability import (
+    ToolAvailability,
+    tool_call_error,
+    unavailable_tool_error,
+)
 from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
@@ -1746,7 +1752,11 @@ async def chat(
                     "type": "function",
                     "function": {
                         "name": tc["name"],
-                        "arguments": json.dumps(tc["arguments"]),
+                        "arguments": json.dumps(
+                            tc["arguments"]
+                            if isinstance(tc["arguments"], dict)
+                            else {}
+                        ),
                     },
                 }
                 for tc in response.tool_calls
@@ -1760,15 +1770,58 @@ async def chat(
         for tc in response.tool_calls:
             if _free_time_cancelled():
                 return ChatResult(disposition="invalid")
+            if not response.tool_calls_complete:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_call_error(
+                        tc["name"],
+                        "incomplete_tool_call",
+                        "The provider ended before this tool call was complete. "
+                        "It was not executed; retry it with complete arguments.",
+                    ),
+                })
+                continue
+            if tc["argument_error"]:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_call_error(
+                        tc["name"],
+                        "malformed_tool_arguments",
+                        "The tool arguments were malformed. The tool was not "
+                        "executed; retry with one valid JSON object.",
+                    ),
+                })
+                continue
+            if not round_availability.allows(tc["name"]):
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": unavailable_tool_error(tc["name"]),
+                })
+                continue
+            validation_error = round_availability.validate_arguments(
+                tc["name"], tc["arguments"],
+            )
+            if validation_error:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_call_error(
+                        tc["name"],
+                        "invalid_tool_arguments",
+                        f"{validation_error}. The tool was not executed; "
+                        "retry with arguments matching its schema.",
+                    ),
+                })
+                continue
+
+            arguments = tc["arguments"]
+            assert isinstance(arguments, dict)
+
             # ── Handle tool escalation ──
             if tc["name"] == "request_tools":
-                if not round_availability.allows("request_tools"):
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": unavailable_tool_error(tc["name"]),
-                    })
-                    continue
                 budget_error = tool_budget.claim_request(
                     TOOL_ESCALATION_MAX_PER_TURN,
                 )
@@ -1776,7 +1829,7 @@ async def chat(
                     request_result, additions = budget_error, []
                 else:
                     request_result, additions = resolve_request(
-                        tc["arguments"],
+                        arguments,
                         round_availability,
                         transport=transport,
                         user_id=user_id,
@@ -1791,18 +1844,13 @@ async def chat(
                 continue
 
             if tc["name"] == ENTER_BEDTIME_TOOL_NAME:
-                if not round_availability.allows(ENTER_BEDTIME_TOOL_NAME):
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc["id"],
-                        "content": unavailable_tool_error(tc["name"]),
-                    })
-                    continue
-                if tc["arguments"]:
-                    result_text = json.dumps({
-                        "ok": False,
-                        "error": "enter_bedtime accepts no arguments",
-                    }, ensure_ascii=False)
+                if arguments:
+                    result_text = model_result_for(SkillResult(
+                        output="enter_bedtime accepts no arguments",
+                        success=False,
+                        error_code="invalid_tool_arguments",
+                        retryable=True,
+                    ))
                 else:
                     bedtime_requested = True
                     result_text = json.dumps({
@@ -1861,14 +1909,6 @@ async def chat(
             log.info("Tool call: %s", tc["name"])
             log.debug("Tool args: %s(%s)", tc["name"], tc["arguments"])
 
-            if not round_availability.allows(tc["name"]):
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": unavailable_tool_error(tc["name"]),
-                })
-                continue
-
             budget_error = tool_budget.claim_tool(
                 tc["name"],
                 tc["arguments"],
@@ -1897,7 +1937,12 @@ async def chat(
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": "Tool is outside the Weekly entry scope.",
+                    "content": model_result_for(SkillResult(
+                        output="Tool is outside the Weekly entry scope.",
+                        success=False,
+                        error_code="tool_outside_runtime_scope",
+                        retryable=False,
+                    )),
                 })
                 continue
             if not is_weekly_tool:
@@ -1906,7 +1951,12 @@ async def chat(
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": decision.reason,
+                        "content": model_result_for(SkillResult(
+                            output=decision.reason,
+                            success=False,
+                            error_code="policy_denied",
+                            retryable=False,
+                        )),
                     })
                     continue
 
@@ -1932,8 +1982,8 @@ async def chat(
                 source=execution_source,
                 skill_name=skill_name,
                 tool_name=tc["name"],
-                action=action_for(tc["name"], tc["arguments"]),
-                arguments_json=serialized_arguments(tc["name"], tc["arguments"]),
+                action=action_for(tc["name"], arguments),
+                arguments_json=serialized_arguments(tc["name"], arguments),
             )
             dispatch_args = tc["arguments"]
             if tc["name"] == "update_core" and not is_weekly_tool:
@@ -1961,8 +2011,9 @@ async def chat(
             try:
                 if is_weekly_tool:
                     result = await weekly_session.execute(
-                        tc["name"], tc["arguments"],
+                        tc["name"], arguments,
                     )
+                    result.execution_started = True
                 else:
                     result = await skill_registry.dispatch(
                         tc["name"], dispatch_args,
@@ -1975,7 +2026,7 @@ async def chat(
                 if result.after_delivery:
                     after_delivery_actions.append(result.after_delivery)
                 outcome = outcome_for(
-                    skill_name, tc["name"], tc["arguments"], result,
+                    skill_name, tc["name"], arguments, result,
                 )
                 tool_audit.append({
                     "name": tc["name"],
@@ -2018,7 +2069,7 @@ async def chat(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": result.output,
+                "content": model_result_for(result),
             })
 
         if core_update_attempted:

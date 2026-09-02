@@ -120,9 +120,10 @@ class ToolLoopBudget:
         if duplicates >= duplicate_limit:
             return {
                 "ok": False,
-                "error": "repeated_tool_call",
-                "tool": tool_name,
-                "limit": duplicate_limit,
+                "code": "repeated_tool_call",
+                "started": False,
+                "retryable": False,
+                "changed": False,
                 "message": (
                     "The same tool call is repeating without new arguments. "
                     "Use the previous result or change the approach."
@@ -131,9 +132,13 @@ class ToolLoopBudget:
         if self.ordinary_attempts >= total_limit:
             return {
                 "ok": False,
-                "error": "tool_call_limit_reached",
-                "tool": tool_name,
-                "limit": total_limit,
+                "code": "tool_call_limit_reached",
+                "started": False,
+                "retryable": False,
+                "changed": False,
+                "message": (
+                    f"The tool-call limit of {total_limit} was reached."
+                ),
             }
         self.ordinary_attempts += 1
         self.duplicate_attempts[fingerprint] = duplicates + 1
@@ -143,7 +148,10 @@ class ToolLoopBudget:
 def error_result(code: str, message: str) -> dict:
     return {
         "ok": False,
-        "error": code,
+        "code": code,
+        "started": False,
+        "retryable": code == "invalid_request",
+        "changed": False,
         "message": message,
         "loaded": [],
         "already_loaded": [],

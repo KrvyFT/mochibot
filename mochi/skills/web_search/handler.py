@@ -771,7 +771,7 @@ class WebSearchSkill(Skill):
                 return SkillResult(output="Page URL is empty.", success=False)
             try:
                 result = await _read_web_page(url)
-                return SkillResult(output=result)
+                return SkillResult(output=result, content_source="external_web")
             except (httpx.HTTPError, ValueError, OSError) as exc:
                 log.error("Web page read failed: %s", exc)
                 return SkillResult(
@@ -810,7 +810,7 @@ class WebSearchSkill(Skill):
                 max_results=max_results,
                 recency=recency,
             )
-            return SkillResult(output=result)
+            return SkillResult(output=result, content_source="external_web")
         except (httpx.HTTPError, ValueError, OSError) as exc:
             error = _search_error_label(exc)
             log.error("Web search failed: %s", error)
