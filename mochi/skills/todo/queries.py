@@ -51,7 +51,8 @@ def complete_todo(user_id: int, todo_id: int) -> bool:
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     cursor = conn.execute(
-        "UPDATE todos SET done = 1, completed_at = ? WHERE id = ? AND user_id = ?",
+        "UPDATE todos SET done = 1, completed_at = ? "
+        "WHERE id = ? AND user_id = ? AND done = 0",
         (now, todo_id, user_id),
     )
     updated = cursor.rowcount > 0
@@ -82,10 +83,14 @@ def update_todo(user_id: int, todo_id: int, **fields) -> bool:
     if not to_set:
         return False
     set_clause = ", ".join(f"{k} = ?" for k in to_set)
-    params = list(to_set.values()) + [todo_id, user_id]
+    changed_clause = " OR ".join(f"NOT ({k} IS ?)" for k in to_set)
+    values = list(to_set.values())
+    params = values + [todo_id, user_id] + values
     conn = _connect()
     cursor = conn.execute(
-        f"UPDATE todos SET {set_clause} WHERE id = ? AND user_id = ?", params
+        f"UPDATE todos SET {set_clause} WHERE id = ? AND user_id = ? "
+        f"AND ({changed_clause})",
+        params,
     )
     updated = cursor.rowcount > 0
     conn.commit()

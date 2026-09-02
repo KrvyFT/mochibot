@@ -178,6 +178,15 @@ class HabitSkill(Skill):
         habit_id = args.get("habit_id")
         if not habit_id:
             return SkillResult(output="Error: 'habit_id' is required for remove.", success=False)
+        habit = next(
+            (
+                item for item in list_habits(user_id, active_only=False)
+                if item["id"] == int(habit_id)
+            ),
+            None,
+        )
+        if habit and not habit["active"]:
+            return SkillResult(output=f"Habit #{habit_id} was already inactive.")
         ok = deactivate_habit(user_id, int(habit_id))
         return SkillResult(
             output=f"Habit #{habit_id} deactivated." if ok else f"Habit #{habit_id} not found.",

@@ -274,6 +274,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         "name": "Read",
         "paused_until": "2026-09-10",
     }
+    original_list_habits = habit_handler.list_habits
     monkeypatch.setattr(habit_handler, "list_habits", lambda _user_id: [habit])
     monkeypatch.setattr(habit_handler, "pause_habit", lambda *_args: True)
     no_op = HabitSkill()._pause(1, {
@@ -282,6 +283,16 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     })
     assert no_op.success
     assert not no_op.state_changed
+
+    from mochi.skills.habit.queries import add_habit
+
+    monkeypatch.setattr(habit_handler, "list_habits", original_list_habits)
+    habit_id = add_habit(1, "Walk", "daily:1")
+    first_remove = HabitSkill()._remove(1, {"habit_id": habit_id})
+    repeated_remove = HabitSkill()._remove(1, {"habit_id": habit_id})
+    assert first_remove.state_changed
+    assert repeated_remove.success
+    assert not repeated_remove.state_changed
 
     import mochi.skills.sticker.handler as sticker_handler
     import mochi.skills.sticker.queries as sticker_queries

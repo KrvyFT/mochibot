@@ -96,8 +96,10 @@ def test_todo_lifecycle_respects_user_ownership():
     todo_id = create_todo(1, "Buy milk")
     assert update_todo(2, todo_id, task="Hijacked") is False
     assert update_todo(1, todo_id, task="Buy oat milk") is True
+    assert update_todo(1, todo_id, task="Buy oat milk") is False
     assert complete_todo(2, todo_id) is False
     assert complete_todo(1, todo_id) is True
+    assert complete_todo(1, todo_id) is False
 
     todos = get_todos(1, include_done=True)
     assert len(todos) == 1

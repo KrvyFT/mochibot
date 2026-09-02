@@ -64,6 +64,15 @@ class TodoSkill(Skill):
             todo_id = args.get("todo_id")
             if not todo_id:
                 return SkillResult(output="Error: 'todo_id' is required for complete.", success=False)
+            existing = next(
+                (
+                    todo for todo in get_todos(uid, include_done=True)
+                    if todo["id"] == int(todo_id)
+                ),
+                None,
+            )
+            if existing and existing["done"]:
+                return SkillResult(output=f"Todo #{todo_id} was already completed.")
             ok = complete_todo(uid, int(todo_id))
             receipt = f"Todo #{todo_id} completed!" if ok else f"Todo #{todo_id} not found."
             return SkillResult(
@@ -94,6 +103,21 @@ class TodoSkill(Skill):
                 return SkillResult(
                     output="Error: provide at least one field to update (task, nudge_date).",
                     success=False)
+            existing = next(
+                (
+                    todo for todo in get_todos(uid, include_done=True)
+                    if todo["id"] == int(todo_id)
+                ),
+                None,
+            )
+            if existing is None:
+                return SkillResult(
+                    output=f"Todo #{todo_id} not found.",
+                    success=False,
+                )
+            changed = any(existing.get(key) != value for key, value in fields.items())
+            if not changed:
+                return SkillResult(output=f"Todo #{todo_id} was already unchanged.")
             ok = update_todo(uid, int(todo_id), **fields)
             parts = ", ".join(f"{k}={v}" for k, v in fields.items())
             receipt = (
