@@ -22,30 +22,6 @@ _FOLLOWUP_RE = re.compile(
     r"previous|last one|that one|change it|undo|cancel it)",
     re.IGNORECASE,
 )
-_FAILED_OUTPUT_RE = re.compile(
-    r"^(?:error|failed|unknown|need\b|invalid\b)|not found|out of range|unavailable",
-    re.IGNORECASE,
-)
-_NO_CHANGE_OUTPUT_RE = re.compile(
-    r"already (?:completed|exists)|nothing to|no .* found|not found|"
-    r"similar line already exists|没有找到|无需|已经完成",
-    re.IGNORECASE,
-)
-
-_STATE_CHANGING_ACTIONS: dict[str, set[str]] = {
-    "manage_reminder": {"create", "delete"},
-    "manage_todo": {"add", "complete", "delete", "update"},
-    "checkin_habit": {"checkin", "undo_checkin"},
-    "edit_habit": {"add", "remove", "pause", "resume", "update"},
-    "edit_file": {"write"},
-    "memory_trash_bin": {"restore"},
-}
-_ALWAYS_STATE_CHANGING = {
-    "log_meal", "delete_meal", "update_core",
-    "delete_memory", "write_diary", "toggle_skill", "set_skill_config",
-}
-
-
 def is_followup_reference(text: str) -> bool:
     """Return whether a message likely refers to a recent system operation."""
     return bool(text and _FOLLOWUP_RE.search(text))
@@ -103,12 +79,6 @@ def action_for(tool_name: str, args: dict) -> str:
     return defaults.get(tool_name, "")
 
 
-def _state_changed(tool_name: str, action: str) -> bool:
-    if tool_name in _ALWAYS_STATE_CHANGING:
-        return True
-    return action in _STATE_CHANGING_ACTIONS.get(tool_name, set())
-
-
 def _compact_summary(tool_name: str, args: dict, result: SkillResult) -> str:
     if result.summary:
         summary = result.summary
@@ -141,11 +111,8 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
                 result: SkillResult) -> dict:
     """Build the durable outcome fields for one completed dispatch."""
     action = action_for(tool_name, args)
-    looks_failed = bool(_FAILED_OUTPUT_RE.search((result.output or "").strip()))
-    success = bool(result.success) and not looks_failed
-    changed = (
-        result.state_changed or _state_changed(tool_name, action)
-    ) if success and not _NO_CHANGE_OUTPUT_RE.search(result.output or "") else False
+    success = bool(result.success)
+    changed = bool(result.state_changed) if success else False
     return {
         "action": action,
         "status": "success" if success else "failed",
@@ -153,6 +120,25 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
         "entity_refs": _entity_refs(skill_name, args, result),
         "state_changed": changed,
     }
+
+
+def model_result_for(result: SkillResult) -> str:
+    """Serialize compact execution facts for the next model round."""
+    payload: dict[str, object] = {"ok": bool(result.success)}
+    if result.success:
+        if result.state_changed:
+            payload["changed"] = True
+        if result.output:
+            payload["result"] = result.output
+    else:
+        payload["code"] = result.error_code or "tool_failed"
+        payload["started"] = bool(result.execution_started)
+        if result.retryable is not None:
+            payload["retryable"] = bool(result.retryable)
+        if not result.state_change_unknown:
+            payload["changed"] = bool(result.state_changed)
+        payload["message"] = result.output or "Tool failed."
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def recent_operations_context(user_id: int, text: str,

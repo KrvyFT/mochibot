@@ -170,7 +170,8 @@ class HabitSkill(Skill):
         ctx_label = f" ({context})" if context else ""
         return SkillResult(
             output=f"Habit #{hid} created{imp_label}: {name} ({cycle_label} x{target}){ctx_label}"
-                   f"{f' [{category}]' if category else ''}"
+                   f"{f' [{category}]' if category else ''}",
+            state_changed=True,
         )
 
     def _remove(self, user_id: int, args: dict) -> SkillResult:
@@ -181,6 +182,7 @@ class HabitSkill(Skill):
         return SkillResult(
             output=f"Habit #{habit_id} deactivated." if ok else f"Habit #{habit_id} not found.",
             success=ok,
+            state_changed=ok,
         )
 
     def _pause(self, user_id: int, args: dict) -> SkillResult:
@@ -195,25 +197,45 @@ class HabitSkill(Skill):
             datetime.strptime(until, "%Y-%m-%d")
         except ValueError:
             return SkillResult(output=f"Error: invalid date '{until}', use YYYY-MM-DD.", success=False)
+        habit = next(
+            (h for h in list_habits(user_id) if h["id"] == int(habit_id)),
+            None,
+        )
+        changed = bool(habit and habit.get("paused_until") != until)
         ok = pause_habit(user_id, int(habit_id), until)
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
         name = habit["name"] if habit else f"#{habit_id}"
-        return SkillResult(output=f"⏸️ {name} paused until {until}.")
+        return SkillResult(
+            output=(
+                f"⏸️ {name} paused until {until}."
+                if changed
+                else f"⏸️ {name} was already paused until {until}."
+            ),
+            state_changed=changed,
+        )
 
     def _resume(self, user_id: int, args: dict) -> SkillResult:
         habit_id = args.get("habit_id")
         if not habit_id:
             return SkillResult(output="Error: 'habit_id' is required for resume.", success=False)
+        habit = next(
+            (h for h in list_habits(user_id) if h["id"] == int(habit_id)),
+            None,
+        )
+        changed = bool(habit and habit.get("paused_until"))
         ok = resume_habit(user_id, int(habit_id))
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
-        habits = list_habits(user_id)
-        habit = next((h for h in habits if h["id"] == int(habit_id)), None)
         name = habit["name"] if habit else f"#{habit_id}"
-        return SkillResult(output=f"▶️ {name} resumed.")
+        return SkillResult(
+            output=(
+                f"▶️ {name} resumed."
+                if changed
+                else f"▶️ {name} was already active."
+            ),
+            state_changed=changed,
+        )
 
     def _update(self, user_id: int, args: dict) -> SkillResult:
         habit_id = args.get("habit_id")
@@ -243,6 +265,13 @@ class HabitSkill(Skill):
         if "importance" in fields and fields["importance"] not in ("important", "normal"):
             return SkillResult(output="Error: importance must be 'important' or 'normal'.", success=False)
 
+        habit = next(
+            (h for h in list_habits(user_id) if h["id"] == int(habit_id)),
+            None,
+        )
+        if habit is None:
+            return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
+        changed = any(habit.get(key) != value for key, value in fields.items())
         try:
             ok = update_habit(int(habit_id), **fields)
         except sqlite3.IntegrityError:
@@ -251,7 +280,14 @@ class HabitSkill(Skill):
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
         parts = ", ".join(f"{k}={v}" for k, v in fields.items())
-        return SkillResult(output=f"Habit #{habit_id} updated: {parts}.")
+        return SkillResult(
+            output=(
+                f"Habit #{habit_id} updated: {parts}."
+                if changed
+                else f"Habit #{habit_id} unchanged: {parts}."
+            ),
+            state_changed=changed,
+        )
 
     # ── query_habit actions ──────────────────────────────────────────────
 
@@ -379,9 +415,15 @@ class HabitSkill(Skill):
 
         extra = f" (x{actual})" if actual > 1 else ""
         if remaining == 0:
-            return SkillResult(output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}")
+            return SkillResult(
+                output=f"✅ {habit['name']} completed! ({done}/{target}) 🎉{extra}",
+                state_changed=actual > 0,
+            )
         cycle_label = "today" if cycle == "daily" else "this week"
-        return SkillResult(output=f"✅ {habit['name']} checked in {done}/{target}, {remaining} left {cycle_label}{extra}")
+        return SkillResult(
+            output=f"✅ {habit['name']} checked in {done}/{target}, {remaining} left {cycle_label}{extra}",
+            state_changed=actual > 0,
+        )
 
     def _undo_checkin(self, user_id: int, args: dict) -> SkillResult:
         habit_id = args.get("habit_id")
@@ -404,9 +446,13 @@ class HabitSkill(Skill):
             return SkillResult(output=f"{habit['name']} has no checkins {cycle_label} — nothing to undo.")
 
         latest = existing[-1]
-        delete_habit_checkin(latest["id"])
+        deleted = delete_habit_checkin(latest["id"])
         remaining = len(existing) - 1
-        return SkillResult(output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})")
+        return SkillResult(
+            output=f"↩️ {habit['name']} last checkin undone ({remaining}/{target})",
+            success=deleted,
+            state_changed=deleted,
+        )
 
     # ── Diary integration ─────────────────────────────────────
 
@@ -458,4 +504,3 @@ class HabitSkill(Skill):
                 lines.append(f"- {imp}{name} ({done}/{target}){ctx_tag}{last_tag} ⏳")
 
         return lines if lines else None
-

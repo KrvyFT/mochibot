@@ -35,7 +35,9 @@ from mochi.main_runtime import (
     context_policy,
 )
 from mochi.request_tools import ToolLoopBudget, resolve_request
+from mochi.skills.base import SkillResult
 from mochi.token_estimator import estimate_tokens
+from mochi.tool_execution import model_result_for
 from mochi.tool_availability import (
     ToolAvailability,
     tool_call_error,
@@ -1203,10 +1205,12 @@ async def chat(
 
             if tc["name"] == ENTER_BEDTIME_TOOL_NAME:
                 if arguments:
-                    result_text = json.dumps({
-                        "ok": False,
-                        "error": "enter_bedtime accepts no arguments",
-                    }, ensure_ascii=False)
+                    result_text = model_result_for(SkillResult(
+                        output="enter_bedtime accepts no arguments",
+                        success=False,
+                        error_code="invalid_tool_arguments",
+                        retryable=True,
+                    ))
                 else:
                     bedtime_requested = True
                     result_text = json.dumps({
@@ -1252,7 +1256,12 @@ async def chat(
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
-                    "content": "Tool is outside the Weekly entry scope.",
+                    "content": model_result_for(SkillResult(
+                        output="Tool is outside the Weekly entry scope.",
+                        success=False,
+                        error_code="tool_outside_runtime_scope",
+                        retryable=False,
+                    )),
                 })
                 continue
             if not is_weekly_tool:
@@ -1261,7 +1270,12 @@ async def chat(
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tc["id"],
-                        "content": decision.reason,
+                        "content": model_result_for(SkillResult(
+                            output=decision.reason,
+                            success=False,
+                            error_code="policy_denied",
+                            retryable=False,
+                        )),
                     })
                     continue
 
@@ -1296,6 +1310,7 @@ async def chat(
                     result = await weekly_session.execute(
                         tc["name"], arguments,
                     )
+                    result.execution_started = True
                 else:
                     result = await skill_registry.dispatch(
                         tc["name"], arguments,
@@ -1339,7 +1354,7 @@ async def chat(
             messages.append({
                 "role": "tool",
                 "tool_call_id": tc["id"],
-                "content": result.output,
+                "content": model_result_for(result),
             })
 
         if pending_definitions:

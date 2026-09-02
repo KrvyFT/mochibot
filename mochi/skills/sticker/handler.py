@@ -167,5 +167,8 @@ class StickerSkill(Skill):
         deleted = delete_sticker(file_id)
         if deleted:
             log.info("Deleted sticker: %.20s...", file_id)
-            return SkillResult(output="已删除该表情包，以后不会再发了！")
+            return SkillResult(
+                output="已删除该表情包，以后不会再发了！",
+                state_changed=True,
+            )
         return SkillResult(output="该表情包已经不在库中了。")

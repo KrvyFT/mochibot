@@ -1,3 +1,5 @@
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -60,7 +62,7 @@ def test_admin_accepts_https_compatible_endpoint_and_rejects_unsafe_urls(monkeyp
         )
 
 
-def test_openai_compatible_chat_handles_text_and_tools():
+def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     tool_call = SimpleNamespace(
         id="call-1",
         function=SimpleNamespace(name="weather", arguments='{"city":"Tokyo"}'),
@@ -188,3 +190,111 @@ def test_openai_compatible_chat_handles_text_and_tools():
     assert availability.validate_arguments(
         "nullable", {"value": "wrong"},
     ) == "arguments.value must be one of ['integer', 'null']"
+
+    from mochi.skills.base import Skill, SkillContext, SkillResult
+    from mochi.tool_availability import tool_call_error
+    from mochi.tool_execution import model_result_for, outcome_for
+
+    pre_dispatch = json.loads(tool_call_error(
+        "manage_todo",
+        "invalid_tool_arguments",
+        "arguments.todo_id is required",
+    ))
+    assert pre_dispatch == {
+        "ok": False,
+        "code": "invalid_tool_arguments",
+        "started": False,
+        "retryable": True,
+        "changed": False,
+        "message": "arguments.todo_id is required",
+    }
+
+    class _SemanticFailureSkill(Skill):
+        async def execute(self, context):
+            return SkillResult(
+                output="todo_id is required",
+                success=False,
+                error_code="invalid_arguments",
+                retryable=True,
+            )
+
+    semantic_failure = asyncio.run(_SemanticFailureSkill().run(SkillContext(
+        trigger="tool_call",
+        tool_name="manage_todo",
+    )))
+    assert json.loads(model_result_for(semantic_failure)) == {
+        "ok": False,
+        "code": "invalid_arguments",
+        "started": True,
+        "retryable": True,
+        "changed": False,
+        "message": "todo_id is required",
+    }
+
+    class _ExplodingSkill(Skill):
+        async def execute(self, context):
+            raise RuntimeError("write outcome unknown")
+
+    execution_failure = asyncio.run(_ExplodingSkill().run(SkillContext(
+        trigger="tool_call",
+        tool_name="example_write",
+    )))
+    uncertain = json.loads(model_result_for(execution_failure))
+    assert uncertain == {
+        "ok": False,
+        "code": "skill_exception",
+        "started": True,
+        "retryable": False,
+        "message": "Skill error: write outcome unknown",
+    }
+    assert "changed" not in uncertain
+
+    successful_mutation = SkillResult(
+        output="Error-shaped prose is still only prose.",
+        state_changed=True,
+        execution_started=True,
+    )
+    assert json.loads(model_result_for(successful_mutation)) == {
+        "ok": True,
+        "changed": True,
+        "result": "Error-shaped prose is still only prose.",
+    }
+    assert outcome_for(
+        "example",
+        "example_write",
+        {},
+        successful_mutation,
+    )["state_changed"] is True
+
+    import mochi.skills.habit.handler as habit_handler
+    from mochi.skills.habit.handler import HabitSkill
+
+    habit = {
+        "id": 7,
+        "name": "Read",
+        "paused_until": "2026-09-10",
+    }
+    monkeypatch.setattr(habit_handler, "list_habits", lambda _user_id: [habit])
+    monkeypatch.setattr(habit_handler, "pause_habit", lambda *_args: True)
+    no_op = HabitSkill()._pause(1, {
+        "habit_id": 7,
+        "until": "2026-09-10",
+    })
+    assert no_op.success
+    assert not no_op.state_changed
+
+    import mochi.skills.sticker.handler as sticker_handler
+    import mochi.skills.sticker.queries as sticker_queries
+    from mochi.skills.sticker.handler import StickerSkill
+
+    monkeypatch.setattr(
+        sticker_handler,
+        "get_last_sent_sticker",
+        lambda _chat_id: "sticker-file",
+    )
+    monkeypatch.setattr(
+        sticker_queries,
+        "delete_sticker",
+        lambda _file_id: True,
+    )
+    assert StickerSkill._delete_last(1).state_changed

@@ -103,7 +103,8 @@ class MemorySkill(Skill):
             if count > 0:
                 return SkillResult(
                     output=f"Memory #{mid} moved to trash (kept 30 days, restorable). "
-                           "Use memory_trash_bin to recover if needed."
+                           "Use memory_trash_bin to recover if needed.",
+                    state_changed=True,
                 )
             return SkillResult(output=f"Memory #{mid} not found.", success=False)
 
@@ -165,7 +166,10 @@ class MemorySkill(Skill):
                     )
                 new_id = db_restore_trash(tid, uid)
                 if new_id:
-                    return SkillResult(output=f"Restored from trash! New memory #{new_id}.")
+                    return SkillResult(
+                        output=f"Restored from trash! New memory #{new_id}.",
+                        state_changed=True,
+                    )
                 return SkillResult(output=f"Trash item #{tid} not found.", success=False)
 
             return SkillResult(output=f"Unknown action: {action}", success=False)

@@ -63,7 +63,7 @@ class SkillManagementSkill(Skill):
 
     def _toggle_skill(self, skill_name: str, enabled: bool) -> SkillResult:
         from mochi.skills import get_skill, refresh_capability_summary
-        from mochi.db import set_skill_enabled
+        from mochi.db import get_disabled_skills, set_skill_enabled
 
         skill = get_skill(skill_name)
         if not skill:
@@ -84,10 +84,14 @@ class SkillManagementSkill(Skill):
                 success=False,
             )
 
+        was_enabled = skill_name not in get_disabled_skills()
         set_skill_enabled(skill_name, enabled)
         refresh_capability_summary()
         action = "已启用" if enabled else "已禁用"
-        return SkillResult(output=f"技能 '{skill_name}' {action}，立即生效。")
+        return SkillResult(
+            output=f"技能 '{skill_name}' {action}，立即生效。",
+            state_changed=was_enabled != enabled,
+        )
 
     # ── get_skill_config ─────────────────────────────────────
 
@@ -139,7 +143,11 @@ class SkillManagementSkill(Skill):
 
     def _set_skill_config(self, skill_name: str, key: str, value: str) -> SkillResult:
         from mochi.skills import get_skill, refresh_capability_summary
-        from mochi.db import set_skill_config, delete_skill_config
+        from mochi.db import (
+            delete_skill_config,
+            get_skill_config,
+            set_skill_config,
+        )
         from mochi.skill_config_resolver import _cast
 
         skill = get_skill(skill_name)
@@ -156,12 +164,14 @@ class SkillManagementSkill(Skill):
 
         # Empty value = clear DB override
         if not value:
+            changed = key in get_skill_config(skill_name)
             delete_skill_config(skill_name, key)
             skill.refresh_config()
             new_val = skill.config.get(key)
             refresh_capability_summary()
             return SkillResult(
                 output=f"已清除 '{skill_name}.{key}' 的自定义值，当前使用: {new_val}",
+                state_changed=changed,
             )
 
         # Validate type
@@ -174,10 +184,12 @@ class SkillManagementSkill(Skill):
                 success=False,
             )
 
+        changed = get_skill_config(skill_name).get(key) != value
         set_skill_config(skill_name, key, value)
         skill.refresh_config()
         new_val = skill.config.get(key)
         refresh_capability_summary()
         return SkillResult(
             output=f"已设置 '{skill_name}.{key}' = {new_val}（已保存到数据库，立即生效）",
+            state_changed=changed,
         )

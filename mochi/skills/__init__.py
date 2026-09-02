@@ -318,22 +318,44 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
     """Dispatch a tool call to the appropriate skill."""
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
-        return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
+        return SkillResult(
+            output=f"Unknown tool: {tool_name}",
+            success=False,
+            error_code="unknown_tool",
+            retryable=False,
+        )
 
     if skill_name in _get_disabled_skills():
-        return SkillResult(output=f"Skill '{skill_name}' is currently disabled.", success=False)
+        return SkillResult(
+            output=f"Skill '{skill_name}' is currently disabled.",
+            success=False,
+            error_code="skill_disabled",
+            retryable=False,
+        )
 
     skill = _skills.get(skill_name)
     if not skill:
-        return SkillResult(output=f"Skill not found: {skill_name}", success=False)
+        return SkillResult(
+            output=f"Skill not found: {skill_name}",
+            success=False,
+            error_code="skill_not_found",
+            retryable=False,
+        )
 
     if get_missing_config(skill):
-        return SkillResult(output=f"Skill '{skill_name}' is unavailable (missing config).", success=False)
+        return SkillResult(
+            output=f"Skill '{skill_name}' is unavailable (missing config).",
+            success=False,
+            error_code="missing_config",
+            retryable=False,
+        )
 
     if transport and transport in skill.exclude_transports:
         return SkillResult(
             output=f"Skill '{skill_name}' is not available on this platform.",
             success=False,
+            error_code="transport_unavailable",
+            retryable=False,
         )
 
     context = SkillContext(

@@ -1,5 +1,7 @@
 """E2E tests for the chat flow: message → LLM → tool dispatch → DB → response."""
 
+import json
+
 import pytest
 
 from mochi.transport import IncomingMessage
@@ -128,7 +130,13 @@ class TestSimpleReply:
             recovered = await chat(_msg(f"invalid call {index}", user_id=index))
 
             assert expected_error in recovered.text
-            assert expected_error in mock.call_log[1]["messages"][-1]["content"]
+            model_error = json.loads(
+                mock.call_log[1]["messages"][-1]["content"]
+            )
+            assert model_error["code"] == expected_error
+            assert model_error["started"] is False
+            assert model_error["retryable"] is True
+            assert model_error["changed"] is False
             assert read_core() == unchanged_core
 
 class TestToolCallReminder:

@@ -111,16 +111,25 @@ class ToolLoopBudget:
         if current >= per_tool_limit:
             return {
                 "ok": False,
-                "error": "per_tool_limit_reached",
-                "tool": tool_name,
-                "limit": per_tool_limit,
+                "code": "per_tool_limit_reached",
+                "started": False,
+                "retryable": False,
+                "changed": False,
+                "message": (
+                    f"Tool '{tool_name}' may be called at most "
+                    f"{per_tool_limit} times per turn."
+                ),
             }
         if self.ordinary_attempts >= total_limit:
             return {
                 "ok": False,
-                "error": "tool_call_limit_reached",
-                "tool": tool_name,
-                "limit": total_limit,
+                "code": "tool_call_limit_reached",
+                "started": False,
+                "retryable": False,
+                "changed": False,
+                "message": (
+                    f"The tool-call limit of {total_limit} was reached."
+                ),
             }
         self.ordinary_attempts += 1
         self.per_tool_attempts[tool_name] = current + 1
@@ -130,7 +139,10 @@ class ToolLoopBudget:
 def error_result(code: str, message: str) -> dict:
     return {
         "ok": False,
-        "error": code,
+        "code": code,
+        "started": False,
+        "retryable": code == "invalid_request",
+        "changed": False,
         "message": message,
         "loaded": [],
         "already_loaded": [],

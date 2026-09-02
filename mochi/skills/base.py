@@ -85,6 +85,9 @@ class SkillResult:
     - summary: deterministic cross-turn receipt (never LLM-generated)
     - entity_refs: stable references such as reminder:27
     - state_changed: whether this call changed durable user state
+    - error_code/retryable: optional machine-readable failure facts
+    - execution_started: whether the skill handler was entered
+    - state_change_unknown: an exception may have happened after a side effect
     """
     output: str = ""
     actions: list[dict] = field(default_factory=list)
@@ -92,6 +95,10 @@ class SkillResult:
     summary: str = ""
     entity_refs: list[str] = field(default_factory=list)
     state_changed: bool = False
+    error_code: str = ""
+    retryable: bool | None = None
+    execution_started: bool = False
+    state_change_unknown: bool = False
 
 
 @dataclass
@@ -722,9 +729,17 @@ class Skill(ABC):
         log.info("Skill %s triggered by %s", self.name, context.trigger)
         try:
             result = await self.execute(context)
+            result.execution_started = True
         except Exception as e:
             log.error("Skill %s failed: %s", self.name, e, exc_info=True)
-            return SkillResult(output=f"Skill error: {e}", success=False)
+            return SkillResult(
+                output=f"Skill error: {e}",
+                success=False,
+                error_code="skill_exception",
+                retryable=False,
+                execution_started=True,
+                state_change_unknown=True,
+            )
 
         if result.success and type(self).diary_status is not Skill.diary_status:
             try:

@@ -79,7 +79,10 @@ provider schema and dispatch allowlist are derived from that same snapshot, so
 a tool cannot execute merely because it exists in the global registry. Main
 dispatches only provider-completed tool-call rounds whose arguments parse and
 match that snapshot's schema; rejected calls receive paired, turn-local tool
-errors so the model can recover without recording or executing them.
+errors so the model can recover without recording or executing them. Every
+paired result states whether it succeeded; failures also state whether the
+skill handler started and include retry and durable-state facts when known.
+These facts come from execution contracts, never by interpreting result prose.
 
 Tool metadata uses `resident`, `routed`, or `on_demand`. Resident tools enter
 the turn directly; the Lite pre-router sees only routed skills; and

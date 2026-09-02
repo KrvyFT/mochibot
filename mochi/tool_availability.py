@@ -6,6 +6,9 @@ import json
 from dataclasses import dataclass
 from typing import Iterable
 
+from mochi.skills.base import SkillResult
+from mochi.tool_execution import model_result_for
+
 
 @dataclass(frozen=True)
 class AvailableTool:
@@ -115,23 +118,26 @@ class ToolAvailability:
 
 def unavailable_tool_error(tool_name: object) -> str:
     """Stable provider-facing error without revealing hidden registry contents."""
-    return json.dumps({
-        "ok": False,
-        "error": "tool_not_available_this_turn",
-        "tool": tool_name if isinstance(tool_name, str) else "",
-        "hint": "Use request_tools first",
-    }, ensure_ascii=False)
+    name = tool_name if isinstance(tool_name, str) else ""
+    return model_result_for(SkillResult(
+        output=(
+            f"Tool '{name}' is not available this turn. "
+            "Use request_tools first."
+        ),
+        success=False,
+        error_code="tool_not_available_this_turn",
+        retryable=True,
+    ))
 
 
 def tool_call_error(tool_name: object, code: str, message: str) -> str:
     """Build a paired model-facing failure for a call that was not executed."""
-    return json.dumps({
-        "ok": False,
-        "error": code,
-        "tool": tool_name if isinstance(tool_name, str) else "",
-        "message": message,
-        "retryable": True,
-    }, ensure_ascii=False)
+    return model_result_for(SkillResult(
+        output=message,
+        success=False,
+        error_code=code,
+        retryable=True,
+    ))
 
 
 def _validate_schema(value: object, schema: dict, *, path: str) -> str | None:
