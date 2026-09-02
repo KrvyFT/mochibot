@@ -60,6 +60,7 @@ cd mochibot
 | --- | --- |
 | `/diary` | 查看今天的状态和日记 |
 | `/core` | 查看 Mochi 当前的核心记忆与关系认知 |
+| `/update_core` | 立刻整理 Core（仅 Telegram，钉住段保留，只更新后半） |
 | `/cost` | 查看今日、本月 Token 总量及各模型明细 |
 
 你也可以直接告诉 Mochi：
@@ -110,6 +111,7 @@ Telegram 和微信均支持以下命令：
 | `/heartbeat` | 查看主动陪伴运行状态 |
 | `/cost` | 查看今日、本月 Token 总量及各模型明细 |
 | `/core` | 查看 Core |
+| `/update_core` | 立刻整理 Core（仅 Telegram） |
 | `/diary` | 查看今日日记 |
 | `/skilloff` | 暂时进入轻量闲聊模式 |
 | `/skillon` | 恢复完整能力 |
