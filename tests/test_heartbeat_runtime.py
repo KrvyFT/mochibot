@@ -1,14 +1,17 @@
 """Free Time window and daily quota planning."""
 
 import random
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 
 import pytest
 
 from mochi.db import _connect
 from mochi.config import FREE_TIME_DAILY_MAX, FREE_TIME_MIN_GAP_MINUTES
 from mochi.heartbeat_runtime import (
+    FREE_TIME_AWAKE_END,
+    FREE_TIME_AWAKE_START,
     ensure_daily_free_time_plan,
+    free_time_clock_capacity,
     free_time_plan_bounds,
     in_free_time_window,
     max_free_time_slots,
@@ -23,6 +26,11 @@ UTC = timezone.utc
 def _runtime_tz(monkeypatch):
     import mochi.heartbeat_runtime as runtime
     monkeypatch.setattr(runtime, "TZ", UTC)
+    monkeypatch.setattr(
+        runtime,
+        "free_time_awake_clock",
+        lambda: (runtime.FREE_TIME_AWAKE_START, runtime.FREE_TIME_AWAKE_END),
+    )
 
 
 def _pending_keys(prefix: str) -> list[str]:
@@ -55,6 +63,126 @@ def test_plan_date_after_0030_is_today_and_gap_until_8am():
     assert start == datetime(2026, 9, 2, 8, 0, tzinfo=UTC)
     assert end == datetime(2026, 9, 3, 0, 30, tzinfo=UTC)
     assert not in_free_time_window(now)
+
+
+def test_same_day_window_stays_on_today(monkeypatch):
+    import mochi.heartbeat_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime, "free_time_awake_clock", lambda: (time(9, 0), time(22, 0)),
+    )
+    now = datetime(2026, 9, 2, 10, 0, tzinfo=UTC)
+    plan_date, start, end = free_time_plan_bounds(now)
+    assert plan_date == "2026-09-02"
+    assert start == datetime(2026, 9, 2, 9, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 2, 22, 0, tzinfo=UTC)
+    assert in_free_time_window(now)
+    assert not in_free_time_window(datetime(2026, 9, 2, 23, 0, tzinfo=UTC))
+    overnight = datetime(2026, 9, 3, 0, 15, tzinfo=UTC)
+    plan_date, start, end = free_time_plan_bounds(overnight)
+    assert plan_date == "2026-09-03"
+    assert start == datetime(2026, 9, 3, 9, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 3, 22, 0, tzinfo=UTC)
+    assert not in_free_time_window(overnight)
+
+
+def test_custom_wrap_window_keeps_hours_before_end_on_yesterday(monkeypatch):
+    import mochi.heartbeat_runtime as runtime
+
+    monkeypatch.setattr(
+        runtime, "free_time_awake_clock", lambda: (time(22, 0), time(6, 0)),
+    )
+    now = datetime(2026, 9, 2, 3, 0, tzinfo=UTC)
+    plan_date, start, end = free_time_plan_bounds(now)
+    assert plan_date == "2026-09-01"
+    assert start == datetime(2026, 9, 1, 22, 0, tzinfo=UTC)
+    assert end == datetime(2026, 9, 2, 6, 0, tzinfo=UTC)
+    assert in_free_time_window(now)
+    evening = datetime(2026, 9, 2, 22, 30, tzinfo=UTC)
+    plan_date, start, end = free_time_plan_bounds(evening)
+    assert plan_date == "2026-09-02"
+    assert in_free_time_window(evening)
+
+
+def test_default_clock_capacity_matches_hard_ceiling():
+    assert free_time_clock_capacity(
+        FREE_TIME_AWAKE_START, FREE_TIME_AWAKE_END,
+    ) == FREE_TIME_DAILY_MAX
+
+
+def test_timezone_change_rebuilds_plan_utc_instants(monkeypatch):
+    import mochi.heartbeat_runtime as runtime
+    from datetime import tzinfo
+
+    class OffsetTZ(tzinfo):
+        def __init__(self, hours: int):
+            self._hours = hours
+
+        def utcoffset(self, dt):
+            return timedelta(hours=self._hours)
+
+        def dst(self, dt):
+            return timedelta(0)
+
+        def tzname(self, dt):
+            return f"UTC{self._hours:+d}"
+
+    plus8 = OffsetTZ(8)
+    monkeypatch.setattr(runtime, "TZ", plus8)
+    ensure_daily_free_time_plan(
+        user_id=1,
+        channel_id=1,
+        transport="telegram",
+        now=datetime(2026, 9, 1, 8, 0, tzinfo=plus8),
+        max_daily=4,
+        rng=random.Random(0),
+    )
+    conn = _connect()
+    try:
+        before = [
+            datetime.fromisoformat(row["next_attempt_at"]).astimezone(UTC)
+            for row in conn.execute(
+                "SELECT next_attempt_at FROM heartbeat_runs "
+                "WHERE entry_kind = 'free_time' AND status = 'pending' "
+                "ORDER BY next_attempt_at",
+            )
+        ]
+        marker_before = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'",
+        ).fetchone()["wake_reason"]
+    finally:
+        conn.close()
+    assert "tz=8" in marker_before
+
+    plus0 = OffsetTZ(0)
+    monkeypatch.setattr(runtime, "TZ", plus0)
+    ensure_daily_free_time_plan(
+        user_id=1,
+        channel_id=1,
+        transport="telegram",
+        now=datetime(2026, 9, 1, 8, 0, tzinfo=plus0),
+        max_daily=4,
+        rng=random.Random(0),
+    )
+    conn = _connect()
+    try:
+        after = [
+            datetime.fromisoformat(row["next_attempt_at"]).astimezone(UTC)
+            for row in conn.execute(
+                "SELECT next_attempt_at FROM heartbeat_runs "
+                "WHERE entry_kind = 'free_time' AND status = 'pending' "
+                "ORDER BY next_attempt_at",
+            )
+        ]
+        marker_after = conn.execute(
+            "SELECT wake_reason FROM heartbeat_schedules "
+            "WHERE entry_kind = 'free_time_plan'",
+        ).fetchone()["wake_reason"]
+    finally:
+        conn.close()
+    assert "tz=0" in marker_after
+    assert before != after
 
 
 def test_schedules_at_least_configured_count_across_overnight_window():

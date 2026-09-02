@@ -10,7 +10,6 @@ from dataclasses import replace
 from datetime import datetime, time, timedelta, timezone
 
 from mochi.config import (
-    FREE_TIME_DAILY_MAX,
     FREE_TIME_MIN_GAP_MINUTES,
     FREE_TIME_SEARCH_SHARE,
     FREE_TIME_UNAVAILABLE_FLOOR_MINUTES,
@@ -21,7 +20,7 @@ from mochi.main_runtime import DurableChatResult, MainRuntimeEntry
 
 
 UTC = timezone.utc
-# Window belongs to the calendar date it starts on and crosses midnight.
+# Default window; live bounds come from system config and may wrap midnight.
 FREE_TIME_AWAKE_START = time(8, 0)
 FREE_TIME_AWAKE_END = time(0, 30)
 FREE_TIME_MISSED_GRACE = timedelta(seconds=45)
@@ -66,20 +65,87 @@ def _day_prefix(local_date: str) -> str:
     return f"free_time:{local_date}:%"
 
 
-def free_time_plan_bounds(now: datetime) -> tuple[str, datetime, datetime]:
-    """Return ``(plan_date, start, end)`` for the 08:00–00:30 window.
+def try_parse_clock_time(value: object) -> time | None:
+    """Parse ``HH:MM``; return None when the value is not a valid clock."""
+    if isinstance(value, time):
+        return value.replace(second=0, microsecond=0)
+    text = str(value or "").strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})(?::(\d{2}))?", text)
+    if not match:
+        return None
+    hour = int(match.group(1))
+    minute = int(match.group(2))
+    second = int(match.group(3) or 0)
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return time(hour, minute)
 
-    Hours before 00:30 still belong to yesterday's plan.
+
+def parse_clock_time(value: object, fallback: time) -> time:
+    """Parse ``HH:MM``; invalid values fall back instead of raising."""
+    parsed = try_parse_clock_time(value)
+    return parsed if parsed is not None else fallback
+
+
+def format_clock_time(value: time) -> str:
+    return f"{value.hour:02d}:{value.minute:02d}"
+
+
+def free_time_awake_clock() -> tuple[time, time]:
+    """Return the configured Free Time window, falling back to defaults."""
+    fallback_start = FREE_TIME_AWAKE_START
+    fallback_end = FREE_TIME_AWAKE_END
+    try:
+        from mochi.admin.admin_db import get_system_config
+
+        start = parse_clock_time(
+            get_system_config("FREE_TIME_AWAKE_START"), fallback_start,
+        )
+        end = parse_clock_time(
+            get_system_config("FREE_TIME_AWAKE_END"), fallback_end,
+        )
+    except Exception:
+        start, end = fallback_start, fallback_end
+    if start == end:
+        return fallback_start, fallback_end
+    return start, end
+
+
+def free_time_clock_capacity(start: time, end: time) -> int:
+    """How many min-gap slots fit in the clock window, wrapping if needed."""
+    if start == end:
+        return 0
+    anchor = datetime(2000, 1, 1, tzinfo=timezone.utc)
+    begin = datetime.combine(anchor.date(), start, tzinfo=timezone.utc)
+    if start < end:
+        finish = datetime.combine(anchor.date(), end, tzinfo=timezone.utc)
+    else:
+        finish = datetime.combine(
+            anchor.date() + timedelta(days=1), end, tzinfo=timezone.utc,
+        )
+    return max_free_time_slots(begin, finish)
+
+
+def free_time_plan_bounds(now: datetime) -> tuple[str, datetime, datetime]:
+    """Return ``(plan_date, start, end)`` for the configured awake window.
+
+    Same-calendar-day windows stay on today. Windows that wrap midnight keep
+    hours before the end clock on yesterday's plan.
     """
+    start_clock, end_clock = free_time_awake_clock()
     local_now = now.astimezone(TZ)
-    if local_now.time() < FREE_TIME_AWAKE_END:
+    wraps = start_clock >= end_clock
+    if wraps and local_now.time() < end_clock:
         plan_date = local_now.date() - timedelta(days=1)
     else:
         plan_date = local_now.date()
-    start = datetime.combine(plan_date, FREE_TIME_AWAKE_START, tzinfo=TZ)
-    end = datetime.combine(
-        plan_date + timedelta(days=1), FREE_TIME_AWAKE_END, tzinfo=TZ,
-    )
+    start = datetime.combine(plan_date, start_clock, tzinfo=TZ)
+    if wraps:
+        end = datetime.combine(
+            plan_date + timedelta(days=1), end_clock, tzinfo=TZ,
+        )
+    else:
+        end = datetime.combine(plan_date, end_clock, tzinfo=TZ)
     return plan_date.isoformat(), start, end
 
 
@@ -247,13 +313,16 @@ def ensure_daily_free_time_plan(
     local_now = now.astimezone(TZ)
     local_date, start, end = free_time_plan_bounds(local_now)
     now_iso = _iso(local_now)
-    max_daily = max(0, min(FREE_TIME_DAILY_MAX, int(max_daily)))
+    start_clock, end_clock = free_time_awake_clock()
+    capacity = max_free_time_slots(start, end)
+    max_daily = max(0, min(capacity, int(max_daily)))
     share = min(1.0, max(0.0, float(FREE_TIME_SEARCH_SHARE)))
     gap_minutes = int(FREE_TIME_MIN_GAP_MINUTES)
+    tz_hours = (local_now.utcoffset() or timedelta(0)).total_seconds() / 3600.0
     marker = (
         f"{local_date}:{max_daily}:{user_id}:{channel_id}:{transport}:"
-        f"{FREE_TIME_AWAKE_START.isoformat()}-{FREE_TIME_AWAKE_END.isoformat()}:"
-        f"search={share:.4f}:gap={gap_minutes}"
+        f"{format_clock_time(start_clock)}-{format_clock_time(end_clock)}:"
+        f"tz={tz_hours:g}:search={share:.4f}:gap={gap_minutes}"
     )
     created: list[str] = []
 

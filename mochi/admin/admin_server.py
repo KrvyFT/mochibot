@@ -880,77 +880,70 @@ if HAS_FASTAPI:
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _preference_ranges() -> dict[str, tuple[float, float]]:
-        """Accepted bounds per preference; the Free Time cap is shared config."""
-        from mochi.config import FREE_TIME_DAILY_MAX
-
-        return {
-            "TIMEZONE_OFFSET_HOURS": (-12.0, 14.0),
-            "MAX_DAILY_FREE_TIME": (0, FREE_TIME_DAILY_MAX),
-        }
-
-    @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
-    async def api_get_preferences():
+    def _preference_payload() -> dict:
         from mochi.admin.admin_db import (
             SYSTEM_DEFAULTS,
             get_system_config,
             get_system_overrides,
         )
+        from mochi.admin.preferences import (
+            PREFERENCE_KEYS,
+            resolve_free_time_capacity,
+        )
 
         overrides = get_system_overrides()
-        ranges = _preference_ranges()
-        return {
-            key: {
-                "value": get_system_config(key),
+        values = {key: get_system_config(key) for key in PREFERENCE_KEYS}
+        try:
+            free_time_max = resolve_free_time_capacity(values)
+        except ValueError:
+            from mochi.config import FREE_TIME_DAILY_MAX
+            free_time_max = FREE_TIME_DAILY_MAX
+        payload = {}
+        for key in PREFERENCE_KEYS:
+            item = {
+                "value": values[key],
                 "default": SYSTEM_DEFAULTS[key][1],
                 "source": "user" if key in overrides else "default",
-                # Sent so the UI validates against the same bounds the API
-                # enforces, instead of duplicating them client-side.
-                "min": minimum,
-                "max": maximum,
             }
-            for key, (minimum, maximum) in ranges.items()
-        }
+            if key == "TIMEZONE_OFFSET_HOURS":
+                item["kind"] = "float"
+                item["min"] = -12.0
+                item["max"] = 14.0
+            elif key == "MAX_DAILY_FREE_TIME":
+                item["kind"] = "int"
+                item["min"] = 0
+                # Bound matches the currently configured Free Time window.
+                item["max"] = free_time_max
+            elif key in {"SLEEP_AFTER_HOUR", "WAKE_EARLIEST_HOUR"}:
+                item["kind"] = "hour"
+                item["min"] = 0
+                item["max"] = 23
+            else:
+                item["kind"] = "clock"
+            payload[key] = item
+        return payload
+
+    @app.get("/api/preferences", dependencies=[Depends(_verify_token)])
+    async def api_get_preferences():
+        return _preference_payload()
 
     @app.put("/api/preferences", dependencies=[Depends(_verify_token)])
     async def api_set_preferences(request: Request):
-        from mochi.admin.admin_db import set_system_override
+        from mochi.admin.admin_db import get_system_config, set_system_override
+        from mochi.admin.preferences import (
+            PREFERENCE_KEYS,
+            normalize_preference_updates,
+        )
 
         body = await request.json()
-        if not isinstance(body, dict) or not body:
-            raise HTTPException(400, "preferences must be a non-empty object")
-
-        ranges = _preference_ranges()
-        unknown = sorted(set(body) - set(ranges))
-        if unknown:
-            raise HTTPException(400, f"Unknown preference: {', '.join(unknown)}")
-
-        normalized: dict[str, int | float] = {}
-        for key, raw_value in body.items():
-            if isinstance(raw_value, bool):
-                raise HTTPException(400, f"{key} must be a number")
-            try:
-                if key == "MAX_DAILY_FREE_TIME":
-                    value = int(raw_value)
-                    if isinstance(raw_value, float) and not raw_value.is_integer():
-                        raise ValueError
-                    if isinstance(raw_value, str) and str(value) != raw_value.strip():
-                        raise ValueError
-                else:
-                    value = float(raw_value)
-            except (TypeError, ValueError):
-                raise HTTPException(400, f"{key} must be a number")
-
-            minimum, maximum = ranges[key]
-            if not minimum <= value <= maximum:
-                raise HTTPException(
-                    400,
-                    f"{key} must be between {minimum:g} and {maximum:g}",
-                )
-            normalized[key] = value
+        current = {key: get_system_config(key) for key in PREFERENCE_KEYS}
+        try:
+            normalized = normalize_preference_updates(body, current)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
         for key, value in normalized.items():
-            set_system_override(key, str(value))
+            set_system_override(key, value)
         return {"ok": True, "updated": list(normalized)}
 
     # ── Generic .env writer ───────────────────────────────────────────────
