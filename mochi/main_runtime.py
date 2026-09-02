@@ -298,6 +298,7 @@ class DurableChatResult:
 
     text: str = ""
     stickers: tuple[str, ...] = ()
+    images: tuple[str, ...] = ()
     pending_history: dict | None = None
     tool_audit: tuple[dict, ...] = ()
     successful_effects: bool = False
@@ -309,6 +310,7 @@ class DurableChatResult:
                 "version": 1,
                 "text": self.text,
                 "stickers": list(self.stickers),
+                "images": list(self.images),
                 "pending_history": self.pending_history,
                 "tool_audit": list(self.tool_audit),
                 "successful_effects": self.successful_effects,
@@ -325,6 +327,7 @@ class DurableChatResult:
             raise ValueError("unsupported durable chat result")
         text = payload.get("text", "")
         stickers = payload.get("stickers", [])
+        images = payload.get("images", [])
         pending_history = payload.get("pending_history")
         tool_audit = payload.get("tool_audit", [])
         disposition = payload.get("disposition", "invalid")
@@ -334,6 +337,10 @@ class DurableChatResult:
             isinstance(item, str) and item for item in stickers
         ):
             raise ValueError("durable chat result stickers are invalid")
+        if not isinstance(images, list) or not all(
+            isinstance(item, str) and item for item in images
+        ):
+            raise ValueError("durable chat result images are invalid")
         if pending_history is not None and not isinstance(pending_history, dict):
             raise ValueError("durable chat result history is invalid")
         if not isinstance(tool_audit, list) or not all(
@@ -345,6 +352,7 @@ class DurableChatResult:
         return cls(
             text=text,
             stickers=tuple(stickers),
+            images=tuple(images),
             pending_history=pending_history,
             tool_audit=tuple(tool_audit),
             successful_effects=bool(payload.get("successful_effects")),

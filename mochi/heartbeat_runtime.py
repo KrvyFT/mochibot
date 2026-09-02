@@ -763,6 +763,10 @@ def remove_delivered_component(
 ) -> DurableChatResult:
     if kind == "text":
         return replace(durable, text="")
+    if kind == "image":
+        images = list(durable.images)
+        images.remove(value)
+        return replace(durable, images=tuple(images))
     stickers = list(durable.stickers)
     stickers.remove(value)
     return replace(durable, stickers=tuple(stickers))

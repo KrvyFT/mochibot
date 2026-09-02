@@ -262,7 +262,7 @@ async def main():
                 transport=_t.name,
             )
             result = await chat(runtime_entry=entry)
-            if not result.text and not result.stickers:
+            if not result.text and not result.stickers and not result.images:
                 return False
             delivered = await _t.send_chat_result(user_id, result)
             if delivered:

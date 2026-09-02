@@ -266,7 +266,7 @@ async def _prepare_self_reminder(
         )
         return None
     if durable.disposition != "deliver" or not (
-        durable.text or durable.stickers
+        durable.text or durable.stickers or durable.images
     ):
         await _persist_failure(
             claimed, "Main returned no deliverable or handled outcome",
@@ -339,12 +339,14 @@ async def _deliver_self_reminder(
     if remaining.text:
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
+    components.extend(("image", item) for item in remaining.images)
     for component_kind, value in components:
-        component = (
-            ChatResult(text=value)
-            if component_kind == "text"
-            else ChatResult(stickers=[value])
-        )
+        if component_kind == "text":
+            component = ChatResult(text=value)
+        elif component_kind == "sticker":
+            component = ChatResult(stickers=[value])
+        else:
+            component = ChatResult(images=[value])
         try:
             delivered = await _self_delivery_callback(
                 claimed["channel_id"], component,
@@ -364,6 +366,10 @@ async def _deliver_self_reminder(
             return False
         if component_kind == "text":
             remaining = replace(remaining, text="")
+        elif component_kind == "image":
+            images = list(remaining.images)
+            images.remove(value)
+            remaining = replace(remaining, images=tuple(images))
         else:
             stickers = list(remaining.stickers)
             stickers.remove(value)

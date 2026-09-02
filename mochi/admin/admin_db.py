@@ -22,8 +22,9 @@ from mochi.admin.admin_crypto import encrypt_api_key, decrypt_api_key
 
 log = logging.getLogger(__name__)
 
-_VALID_TIERS = frozenset({"lite", "main"})
-_TIER_ORDER = ("main", "lite")
+_VALID_TIERS = frozenset({"lite", "main", "draw"})
+_TIER_ORDER = ("main", "lite", "draw")
+_REQUIRED_TIERS = ("main", "lite")
 _VALID_PROVIDERS = frozenset({"openai", "anthropic"})
 
 __KEEP__ = "__KEEP__"
@@ -237,12 +238,18 @@ def set_tier_assignment(tier: str, model_name: str) -> None:
 
 
 def clear_tier_assignment(tier: str) -> None:
-    """Reject clearing required product tier assignments."""
+    """Clear an optional tier. Required product tiers cannot be emptied."""
     if tier not in _VALID_TIERS:
         raise ValueError(f"Invalid tier: {tier!r}")
-    raise ValueError(
-        f"{tier.capitalize()} is required; assign another model instead"
-    )
+    if tier in _REQUIRED_TIERS:
+        raise ValueError(
+            f"{tier.capitalize()} is required; assign another model instead"
+        )
+    conn = _connect()
+    conn.execute("DELETE FROM tier_assignments WHERE tier = ?", (tier,))
+    conn.commit()
+    conn.close()
+    log.info("Cleared tier assignment '%s'", tier)
 
 
 def get_tier_effective_config() -> dict[str, dict]:
@@ -304,7 +311,20 @@ def are_required_tiers_ready(
         and config[tier].get("supported")
         and config[tier].get("model")
         and config[tier].get("api_key_set")
-        for tier in _TIER_ORDER
+        for tier in _REQUIRED_TIERS
+    )
+
+
+def is_draw_tier_ready(tier_config: dict[str, dict] | None = None) -> bool:
+    """Return whether the optional draw tier can generate images."""
+    config = tier_config if tier_config is not None else get_tier_effective_config()
+    draw = config.get("draw", {})
+    return bool(
+        draw.get("assigned_name")
+        and draw.get("supported")
+        and draw.get("model")
+        and draw.get("api_key_set")
+        and str(draw.get("provider") or "").strip().lower() == "openai"
     )
 
 
