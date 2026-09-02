@@ -26,6 +26,9 @@ log = logging.getLogger(__name__)
 # which silently masks slow gateways. Read=120s is well above worst-case
 # reasoning-model latency on slow third-party gateways but fails fast on hangs.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
+# Gemini-style image models often spend 30–90s thinking before the first byte.
+# 60s cut off in-flight generations; extra_body retries then stacked more waits.
+_IMAGE_HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=10.0)
 
 # Failures worth another attempt are those where the request never reached a
 # verdict, or the gateway explicitly said "later". A request the provider
@@ -154,6 +157,17 @@ class LLMProvider(ABC):
         the framework-layer markdown fence strip.
         """
         ...
+
+    def generate_image(
+        self,
+        prompt: str,
+        *,
+        reference_images: list[tuple[str, bytes]] | None = None,
+    ) -> bytes:
+        """Generate one image via chat.completions."""
+        raise NotImplementedError(
+            f"{self.provider_name()} does not support image generation"
+        )
 
     @abstractmethod
     def provider_name(self) -> str:
@@ -486,6 +500,211 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         if json_mode and response.content:
             response.content = extract_json(response.content)
         return response
+
+    def generate_image(
+        self,
+        prompt: str,
+        *,
+        reference_images: list[tuple[str, bytes]] | None = None,
+    ) -> bytes:
+        client = self._client.with_options(timeout=_IMAGE_HTTP_TIMEOUT)
+        return generate_image_via_chat(
+            client, self._model, prompt, reference_images=reference_images or [],
+        )
+
+
+_DATA_URI_RE = re.compile(
+    r"data:image/[^;]+;base64,([A-Za-z0-9+/=\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _bytes_from_image_url(url: str, *, download=None) -> bytes | None:
+    if not url or not isinstance(url, str):
+        return None
+    match = _DATA_URI_RE.search(url)
+    if match:
+        return base64.b64decode(re.sub(r"\s+", "", match.group(1)))
+    if url.startswith("http://") or url.startswith("https://"):
+        getter = download or _download_image_url
+        return getter(url)
+    return None
+
+
+def _extract_part_url(part: Any) -> str:
+    if isinstance(part, str):
+        return part
+    if not part:
+        return ""
+    if isinstance(part, dict):
+        image_url = part.get("image_url")
+        if isinstance(image_url, dict):
+            return str(image_url.get("url") or "")
+        if isinstance(image_url, str):
+            return image_url
+        inline = part.get("inline_data") or part.get("inlineData") or {}
+        if isinstance(inline, dict) and inline.get("data"):
+            mime = inline.get("mime_type") or inline.get("mimeType") or "image/png"
+            return f"data:{mime};base64,{inline['data']}"
+        if part.get("data") and (
+            str(part.get("type") or "").startswith("image")
+            or part.get("mime_type")
+            or part.get("mimeType")
+        ):
+            mime = part.get("mime_type") or part.get("mimeType") or "image/png"
+            return f"data:{mime};base64,{part['data']}"
+        return str(part.get("url") or "")
+    image_url = getattr(part, "image_url", None)
+    if isinstance(image_url, str):
+        return image_url
+    if image_url is not None:
+        return str(getattr(image_url, "url", "") or "")
+    return str(getattr(part, "url", "") or "")
+
+
+def _message_as_mapping(message: Any) -> dict:
+    if isinstance(message, dict):
+        return message
+    if hasattr(message, "model_dump"):
+        try:
+            dumped = message.model_dump()
+            if isinstance(dumped, dict):
+                extra = getattr(message, "model_extra", None) or {}
+                if extra:
+                    dumped = {**dumped, **extra}
+                return dumped
+        except Exception:
+            pass
+    extra = getattr(message, "model_extra", None)
+    mapping: dict[str, Any] = {}
+    if isinstance(extra, dict):
+        mapping.update(extra)
+    for key in ("images", "image", "content"):
+        if hasattr(message, key):
+            mapping[key] = getattr(message, key)
+    return mapping
+
+
+def _walk_for_image_bytes(obj: Any, *, download=None, depth: int = 0) -> bytes | None:
+    if obj is None or depth > 8:
+        return None
+    if isinstance(obj, str):
+        return _bytes_from_image_url(obj, download=download)
+    if isinstance(obj, dict):
+        data = _bytes_from_image_url(_extract_part_url(obj), download=download)
+        if data:
+            return data
+        for value in obj.values():
+            data = _walk_for_image_bytes(value, download=download, depth=depth + 1)
+            if data:
+                return data
+        return None
+    if isinstance(obj, (list, tuple)):
+        for item in obj:
+            data = _walk_for_image_bytes(item, download=download, depth=depth + 1)
+            if data:
+                return data
+        return None
+    if hasattr(obj, "model_dump"):
+        try:
+            return _walk_for_image_bytes(
+                obj.model_dump(), download=download, depth=depth + 1,
+            )
+        except Exception:
+            return None
+    return _bytes_from_image_url(_extract_part_url(obj), download=download)
+
+
+def image_bytes_from_chat_message(message: Any, *, download=None) -> bytes:
+    """Pull image bytes from a chat.completions image-generation message."""
+    mapping = _message_as_mapping(message)
+    data = _walk_for_image_bytes(mapping, download=download)
+    if data:
+        return data
+    raise RuntimeError("Chat image response contained no image")
+
+
+def generate_image_via_chat(
+    client: Any,
+    model: str,
+    prompt: str,
+    *,
+    reference_images: list[tuple[str, bytes]] | None = None,
+) -> bytes:
+    """Generate an image through chat.completions."""
+    content: str | list[dict]
+    if reference_images:
+        blocks: list[dict] = [{"type": "text", "text": prompt}]
+        for mime, data in reference_images:
+            encoded = base64.b64encode(data).decode("ascii")
+            blocks.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+            })
+        content = blocks
+    else:
+        content = prompt
+    messages = [{"role": "user", "content": content}]
+    extra_bodies = (
+        {"modalities": ["text", "image"]},
+        {"modalities": ["image", "text"]},
+        {"generationConfig": {"responseModalities": ["TEXT", "IMAGE"]}},
+        {"generation_config": {"responseModalities": ["TEXT", "IMAGE"]}},
+        {},
+    )
+    last_exc: BaseException | None = None
+    log.info(
+        "Chat image create model=%s refs=%s",
+        model, len(reference_images or []),
+    )
+    for extra_body in extra_bodies:
+        kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if extra_body:
+            kwargs["extra_body"] = extra_body
+        try:
+            resp = client.chat.completions.create(**kwargs)
+        except Exception as exc:
+            last_exc = exc
+            log.info("Chat image create failed (%s): %s", extra_body, describe_error(exc))
+            if not _chat_image_extra_rejected(exc):
+                raise
+            continue
+        try:
+            message = resp.choices[0].message
+        except (AttributeError, IndexError, TypeError) as exc:
+            last_exc = exc
+            continue
+        try:
+            return image_bytes_from_chat_message(message)
+        except RuntimeError:
+            last_exc = RuntimeError("Chat image response contained no image")
+            continue
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("Chat image generation produced no image")
+
+
+def _chat_image_extra_rejected(exc: BaseException) -> bool:
+    """Whether the gateway rejected this extra_body, so another shape is worth trying.
+
+    Timeouts and 5xx mean the request was accepted and still running or the
+    upstream failed; cycling modalities would only stack more waits.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in (400, 422):
+        return True
+    names = {klass.__name__ for klass in type(exc).__mro__}
+    return bool(names & {"BadRequestError", "UnprocessableEntityError"})
+
+
+def _download_image_url(url: str) -> bytes:
+    with httpx.Client(timeout=_IMAGE_HTTP_TIMEOUT, follow_redirects=True) as http:
+        response = http.get(url)
+        response.raise_for_status()
+        return response.content
 
 
 class AnthropicProvider(LLMProvider):

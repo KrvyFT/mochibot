@@ -1453,14 +1453,15 @@ async function loadSettings() {
     const tierDescriptions = {
       main: 'Agent 主体',
       lite: '打工模型，不和你直接对话',
+      draw: '绘图（可选）',
     };
-    const tierLabels = {main: 'Main', lite: 'Lite'};
+    const tierLabels = {main: 'Main', lite: 'Lite', draw: 'Draw'};
     html += `<div class="settings-grid"><div class="card">
       <div class="settings-section-head">
         <div><div class="settings-section-title">模型</div><div class="settings-section-copy">Agent 如何思考</div></div>
         <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=advanced]').click()">管理</button>
       </div>`;
-    for (const tier of ['main', 'lite']) {
+    for (const tier of ['main', 'lite', 'draw']) {
       const cfg = tiers[tier] || {};
       const selected = cfg.model || '';
       html += `<div class="settings-tier">
@@ -1928,17 +1929,24 @@ async function loadAdvanced() {
     let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、联网搜索与语义检索。正常使用通常无需调整这里。</p>';
 
     html += '<div class="card"><div class="card-title">Agent 模型</div>';
-    for (const tier of ['main', 'lite']) {
-      const selected = tiers[tier]?.assigned_name || '';
-      const label = tier === 'main' ? 'Main · Agent 主体' : 'Lite · 后台整理';
-      html += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0${tier==='main'?';border-bottom:1px solid var(--border)':''}">
-        <div style="min-width:180px;flex:1;font-size:13px;font-weight:600">${label}</div>
-        <select class="form-input" style="width:260px" onchange="assignTier('${tier}',this.value)">
-          <option value="" disabled ${selected?'':'selected'}>请选择模型</option>
+    const agentTiers = [
+      {id: 'main', label: 'Main · Agent 主体', optional: false},
+      {id: 'lite', label: 'Lite · 后台整理', optional: false},
+      {id: 'draw', label: 'Draw · 绘图', optional: true},
+    ];
+    agentTiers.forEach((spec, index) => {
+      const selected = tiers[spec.id]?.assigned_name || '';
+      const emptyLabel = spec.optional ? '未配置' : '请选择模型';
+      const emptyDisabled = spec.optional ? '' : 'disabled';
+      const border = index < agentTiers.length - 1 ? ';border-bottom:1px solid var(--border)' : '';
+      html += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0${border}">
+        <div style="min-width:180px;flex:1;font-size:13px;font-weight:600">${spec.label}</div>
+        <select class="form-input" style="width:260px" onchange="assignTier('${spec.id}',this.value)">
+          <option value="" ${emptyDisabled} ${selected?'':'selected'}>${emptyLabel}</option>
           ${models.map(m=>`<option value="${esc(m.name)}" ${selected===m.name?'selected':''} ${m.supported?'':'disabled'}>${esc(m.name)}${m.supported?'':'（不支持）'}</option>`).join('')}
         </select>
       </div>`;
-    }
+    });
     html += '</div>';
 
     // Model Registry

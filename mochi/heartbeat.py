@@ -674,7 +674,7 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
         log_heartbeat(_state, f"{claimed['entry_kind']}_tools_only")
         return None
     if durable.disposition != "deliver" or not (
-        durable.text or durable.stickers
+        durable.text or durable.stickers or durable.images
     ):
         complete_without_delivery(claimed, durable, "no_effect")
         log_heartbeat(_state, "free_time_no_effect")
@@ -715,6 +715,7 @@ async def _deliver_autonomous(
     if remaining.text:
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
+    components.extend(("image", item) for item in remaining.images)
     for kind, value in components:
         if not free_time_turn_available(
             int(claimed.get("_chat_activity_generation") or 0)
@@ -722,11 +723,12 @@ async def _deliver_autonomous(
             complete_without_delivery(claimed, remaining, "active_chat")
             log_heartbeat(_state, "free_time_active_chat")
             return False
-        component = (
-            ChatResult(text=value)
-            if kind == "text"
-            else ChatResult(stickers=[value])
-        )
+        if kind == "text":
+            component = ChatResult(text=value)
+        elif kind == "sticker":
+            component = ChatResult(stickers=[value])
+        else:
+            component = ChatResult(images=[value])
         try:
             delivered = await _runtime_delivery_callback(
                 claimed["channel_id"], component,

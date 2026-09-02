@@ -7,6 +7,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from telegram import Update, ReactionTypeEmoji
 from telegram.ext import (
     Application, CommandHandler, MessageHandler,
@@ -54,6 +55,7 @@ _TOOL_STATUS_LABELS: dict[str, str] = {
     "get_weather": "正在查天气…",
     "run_checkup": "正在检查…",
     "send_sticker": "正在选贴纸…",
+    "send_photo": "在找照片…",
     "request_tools": "正在加载工具…",
 }
 _TOOL_STATUS_DEFAULT = "正在处理…"
@@ -239,6 +241,22 @@ class TelegramTransport(Transport):
             log.error("Failed to send sticker: %s", e)
             return False
 
+    async def send_photo_file(self, chat_id: int, path: str) -> bool:
+        """Send a local image file as a Telegram photo."""
+        if not self._app:
+            return False
+        file_path = Path(path)
+        if not file_path.is_file():
+            log.error("Photo file missing: %s", path)
+            return False
+        try:
+            with file_path.open("rb") as handle:
+                await self._app.bot.send_photo(chat_id=chat_id, photo=handle)
+            return True
+        except Exception as e:
+            log.error("Failed to send photo: %s", e)
+            return False
+
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
             "我是你的 AI 伙伴，会记住我们的对话，在需要时提醒你。\n\n"
@@ -400,7 +418,7 @@ class TelegramTransport(Transport):
         clear_silent_pause()
 
     async def send_chat_result(self, chat_id: int, result) -> bool:
-        """Send a ChatResult — text message + any pending stickers."""
+        """Send a ChatResult — text message + any pending stickers/photos."""
         attempted = False
         delivered = True
         if result.text:
@@ -416,6 +434,10 @@ class TelegramTransport(Transport):
             sticker_skill = skill_registry.get_skill("sticker")
             if sticker_delivered and sticker_skill:
                 sticker_skill.record_last_sent(chat_id, file_id)
+        for path in getattr(result, "images", None) or []:
+            attempted = True
+            photo_delivered = await self.send_photo_file(chat_id, path)
+            delivered = photo_delivered and delivered
         if not result.text and attempted and delivered:
             result.confirm_delivered()
         return attempted and delivered
@@ -496,11 +518,31 @@ class TelegramTransport(Transport):
             except Exception:
                 pass
 
+            if text:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                except Exception as e:
+                    log.debug("Interim chat line failed (ignored): %s", e)
+                return
+
             # Reaction: set 👨‍💻 on first tool call (last user message in a batch)
             if TG_STATUS_REACTIONS_ENABLED and tool_name is not None:
                 if status.reaction_state != "working":
                     status.reaction_state = "working"
                     await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F468\u200D\U0001F4BB")
+
+            # send_photo talks in character; drop the robotic status bubble.
+            if tool_name == "send_photo":
+                if status.status_msg_id:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=chat_id, message_id=status.status_msg_id,
+                        )
+                    except Exception:
+                        pass
+                    status.status_msg_id = None
+                    status.last_label = ""
+                return
 
             # Status message
             if not TG_STATUS_MESSAGE_ENABLED or tool_name is None:
@@ -588,6 +630,7 @@ class TelegramTransport(Transport):
                         result.disposition == "handled"
                         and not result.text
                         and not result.stickers
+                        and not getattr(result, "images", None)
                     ):
                         if TG_STATUS_REACTIONS_ENABLED:
                             status.reaction_state = ""
@@ -649,6 +692,11 @@ class TelegramTransport(Transport):
                             sticker_skill = skill_registry.get_skill("sticker")
                             if sticker_delivered and sticker_skill:
                                 sticker_skill.record_last_sent(chat_id, file_id)
+                        for path in getattr(result, "images", None) or []:
+                            photo_delivered = await self.send_photo_file(
+                                chat_id, path,
+                            )
+                            delivered = photo_delivered and delivered
                     except Exception:
                         # Fallback: send normally if edit fails
                         delivered = await self.send_chat_result(chat_id, result)

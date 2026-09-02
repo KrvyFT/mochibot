@@ -1,8 +1,9 @@
 """Multi-model pool — tier-based routing for LLM tasks.
 
-Two tiers:
+Tiers:
     lite  — cheap/fast model for classification, tagging, simple tasks
     main  — Mochi's conversation and background reasoning model
+    draw  — optional image-generation model (chat.completions)
 
 All tier config comes from DB. .env model vars are seed data only —
 auto-imported on first startup via seed_models_from_env().
@@ -23,7 +24,8 @@ from mochi.llm import LLMProvider, _make_client
 
 log = logging.getLogger(__name__)
 
-VALID_TIERS = frozenset({"lite", "main"})
+VALID_TIERS = frozenset({"lite", "main", "draw"})
+_OPTIONAL_TIERS = frozenset({"draw"})
 _OFFICIAL_EMBEDDING_BASE_URLS = frozenset({
     "",
     "https://api.openai.com/v1",
@@ -323,7 +325,7 @@ class ModelPool:
                     continue
                 if not cfg.get("model") or not cfg.get("assigned_name"):
                     self.clear_tier(tier)
-                    if tier not in self._tiers:
+                    if tier not in self._tiers and tier not in _OPTIONAL_TIERS:
                         log.warning("Tier '%s' has no model assigned", tier)
                     continue
                 try:

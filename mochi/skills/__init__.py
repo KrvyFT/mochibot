@@ -404,7 +404,7 @@ def get_recent_multi_turn_skill_names(user_id: int) -> list[str]:
 async def dispatch(tool_name: str, args: dict, user_id: int = 0,
                    channel_id: int = 0, transport: str = "",
                    actor: str = "", source: str = "",
-                   turn_id: str = "") -> SkillResult:
+                   turn_id: str = "", on_interim=None) -> SkillResult:
     """Dispatch a tool call to the appropriate skill."""
     skill_name = _tool_map.get(tool_name)
     if not skill_name:
@@ -458,6 +458,7 @@ async def dispatch(tool_name: str, args: dict, user_id: int = 0,
         turn_id=turn_id,
         tool_name=tool_name,
         args=args,
+        on_interim=on_interim,
     )
 
     return await skill.run(context)

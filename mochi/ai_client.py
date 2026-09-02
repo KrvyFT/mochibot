@@ -72,6 +72,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
+IMAGE_FILE_RE = re.compile(r"\[IMAGE_FILE:([^\]]+)\]")
 _WEEKDAY_NAMES = (
     "星期一", "星期二", "星期三", "星期四",
     "星期五", "星期六", "星期日",
@@ -79,7 +80,7 @@ _WEEKDAY_NAMES = (
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
 _TOOL_HISTORY_EXCLUDE = frozenset({
-    "request_tools", "send_sticker", ENTER_BEDTIME_TOOL_NAME,
+    "request_tools", "send_sticker", "send_photo", ENTER_BEDTIME_TOOL_NAME,
 })
 
 
@@ -112,6 +113,20 @@ def _deployment_environment() -> str:
         "Linux": "Linux 环境",
         "Darwin": "macOS 环境",
     }.get(system, "其他系统环境")
+
+
+def _history_placeholder(reply: str, stickers: list[str], images: list[str]) -> str:
+    if reply:
+        return reply
+    if images:
+        return "[图片]"
+    if stickers:
+        return "[贴纸]"
+    return ""
+
+
+def _has_visible_payload(reply: str, stickers: list[str], images: list[str]) -> bool:
+    return bool(reply or stickers or images)
 
 
 def _image_content(text: str, image: ImageAttachment) -> list[dict]:
@@ -623,9 +638,10 @@ def _schedule_continuous_memory(user_id: int) -> None:
 
 @dataclass
 class ChatResult:
-    """Result returned by chat() — text reply + optional sticker file_ids."""
+    """Result returned by chat() — text reply + optional sticker/image payloads."""
     text: str = ""
     stickers: list[str] = field(default_factory=list)
+    images: list[str] = field(default_factory=list)
     tool_audit: list[dict] = field(default_factory=list)
     successful_effects: bool = False
     bedtime_requested: bool = False
@@ -668,6 +684,7 @@ class ChatResult:
         return DurableChatResult(
             text=self.text,
             stickers=tuple(self.stickers),
+            images=tuple(self.images),
             pending_history=self._pending_history,
             tool_audit=tuple(self.tool_audit),
             successful_effects=self.successful_effects,
@@ -679,6 +696,7 @@ class ChatResult:
         return cls(
             text=result.text,
             stickers=list(result.stickers),
+            images=list(result.images),
             tool_audit=list(result.tool_audit),
             successful_effects=result.successful_effects,
             disposition=result.disposition,
@@ -1089,6 +1107,7 @@ async def chat(
         else uuid.uuid4().hex
     )
     pending_stickers: list[str] = []
+    pending_images: list[str] = []
 
     # ── Sticker learning: intercept sticker metadata from transport ──
     raw = message.raw or {} if message is not None else {}
@@ -1619,19 +1638,25 @@ async def chat(
     def _final_result(reply: str) -> ChatResult:
         if is_bedtime or bedtime_requested:
             reply, _ = _parse_runtime_reply(reply)
+        if pending_images:
+            from mochi.skills.photo.handler import finish_line_for_user
+            reply = finish_line_for_user(reply)
         tool_history_json = (
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
         )
         if is_bedtime:
-            if not reply and not pending_stickers:
+            if not _has_visible_payload(reply, pending_stickers, pending_images):
                 return ChatResult()
             return ChatResult(
                 text=reply,
                 stickers=pending_stickers,
+                images=pending_images,
                 _pending_history={
                     "user_id": user_id,
-                    "content": reply or "[贴纸]",
+                    "content": _history_placeholder(
+                        reply, pending_stickers, pending_images,
+                    ),
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": message is None,
@@ -1639,12 +1664,15 @@ async def chat(
             )
         if is_self_reminder or is_autonomous:
             reply, skipped = _parse_runtime_reply(reply)
-            if skipped and not successful_effects and not pending_stickers:
+            if pending_images:
+                from mochi.skills.photo.handler import finish_line_for_user
+                reply = finish_line_for_user(reply)
+            if skipped and not successful_effects and not pending_stickers and not pending_images:
                 return ChatResult(
                     tool_audit=tool_audit,
                     disposition="skip",
                 )
-            if not reply and not pending_stickers:
+            if not _has_visible_payload(reply, pending_stickers, pending_images):
                 return ChatResult(
                     tool_audit=tool_audit,
                     successful_effects=successful_effects,
@@ -1655,7 +1683,9 @@ async def chat(
                 if is_autonomous and not reply
                 else {
                     "user_id": user_id,
-                    "content": reply or "[贴纸]",
+                    "content": _history_placeholder(
+                        reply, pending_stickers, pending_images,
+                    ),
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": True,
@@ -1664,6 +1694,7 @@ async def chat(
             return ChatResult(
                 text=reply,
                 stickers=pending_stickers,
+                images=pending_images,
                 tool_audit=tool_audit,
                 successful_effects=successful_effects,
                 disposition="deliver",
@@ -1675,7 +1706,9 @@ async def chat(
                 successful_effects=successful_effects,
                 disposition="handled" if successful_effects else "skip",
             )
-        if bedtime_requested and not reply and not pending_stickers:
+        if bedtime_requested and not _has_visible_payload(
+            reply, pending_stickers, pending_images,
+        ):
             return ChatResult(
                 bedtime_requested=True,
                 tool_audit=tool_audit,
@@ -1685,11 +1718,14 @@ async def chat(
         return ChatResult(
             text=reply,
             stickers=pending_stickers,
+            images=pending_images,
             bedtime_requested=bedtime_requested,
             _after_delivery=list(after_delivery_actions),
             _pending_history={
                 "user_id": user_id,
-                "content": reply,
+                "content": reply or _history_placeholder(
+                    reply, pending_stickers, pending_images,
+                ),
                 "tool_history": tool_history_json,
                 "turn_id": turn_id,
                 "processed": False,
@@ -2076,6 +2112,7 @@ async def chat(
                         actor="main",
                         source=execution_source,
                         turn_id=turn_id,
+                        on_interim=on_interim,
                     )
                 if result.after_delivery:
                     after_delivery_actions.append(result.after_delivery)
@@ -2115,10 +2152,14 @@ async def chat(
             if tc["name"] not in _TOOL_HISTORY_EXCLUDE:
                 tool_names_used.append(tc["name"])
 
-            # Extract [STICKER:file_id] markers from tool result
+            # Extract [STICKER:file_id] / [IMAGE_FILE:path] markers from tool result
             if outcome["status"] == "success":
                 for m in STICKER_RE.finditer(result.output):
                     pending_stickers.append(m.group(1).strip())
+                for m in IMAGE_FILE_RE.finditer(result.output):
+                    path = m.group(1).strip()
+                    if path:
+                        pending_images.append(path)
 
             messages.append({
                 "role": "tool",

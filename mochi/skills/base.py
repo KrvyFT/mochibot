@@ -13,7 +13,7 @@ import os
 import re
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 log = logging.getLogger(__name__)
@@ -76,6 +76,10 @@ class SkillContext:
     tool_name: str = ""     # only set for trigger="tool_call"
     args: dict = field(default_factory=dict)
     observation: dict | None = None  # only set for trigger="heartbeat"
+    on_interim: Callable[..., Awaitable[None]] | None = field(
+        default=None,
+        repr=False,
+    )
 
 
 @dataclass
