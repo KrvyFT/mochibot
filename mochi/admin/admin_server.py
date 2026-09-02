@@ -1244,6 +1244,24 @@ if HAS_FASTAPI:
             OWNER_USER_ID or 0, SUMMARY_BATCH_SIZE,
         )
 
+    @app.get(
+        "/api/memory-items/{item_id}/evidence",
+        dependencies=[Depends(_verify_token)],
+    )
+    async def api_get_memory_item_evidence(item_id: int):
+        """Return one owner's recorded source messages for lazy receipt display."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import get_memory_evidence_receipt
+
+        receipt = get_memory_evidence_receipt(
+            OWNER_USER_ID or 0,
+            item_id,
+            max_message_chars=2000,
+        )
+        if receipt is None:
+            raise HTTPException(404, f"Memory item {item_id} not found")
+        return receipt
+
     @app.post("/api/memory-items/delete", dependencies=[Depends(_verify_token)])
     async def api_delete_memory_items(request: Request):
         """Delete one or more L2 memory items (soft-delete to trash)."""
