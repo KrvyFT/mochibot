@@ -1,23 +1,12 @@
 """Workspace skill — diary read/write and markdown file editing."""
 
-from collections import OrderedDict
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
 import logging
-import os
-import re
 from pathlib import Path
-import tempfile
 
-from mochi.diary import DiaryConflictError, diary
+from mochi.diary import diary
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
-
-_WEEKDAY_PREFIX = (
-    r"(?:周[一二三四五六日天]|星期[一二三四五六日天]|"
-    r"Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)"
-)
 
 _DATA_DIR = Path(__file__).resolve().parent.parent.parent.parent / "data"
 _CORE_PRIVATE_PATHS = frozenset({
@@ -33,333 +22,85 @@ _CORE_PRIVATE_DIRS = frozenset({
     "notes_retirement_backup",
     "core_weekly_receipts",
 })
-_SYSTEM_PRIVATE_DIRS = frozenset({"prompts"})
-_DIARY_PRIVATE_PATHS = frozenset({"diary.md", "diary_tomorrow.json"})
-_DIARY_PRIVATE_DIRS = frozenset({"diary_archive"})
-_MAX_LISTED_FILES = 100
-_MAX_LIST_DEPTH = 4
-_MAX_FILE_SNAPSHOTS = 64
-
-
-@dataclass(frozen=True)
-class _FileSnapshot:
-    content: str | None
-
-
-class _FileConflictError(ValueError):
-    pass
 
 
 class WorkspaceSkill(Skill):
-
-    def __init__(self) -> None:
-        super().__init__()
-        self._file_snapshots: OrderedDict[
-            tuple[int, str, str], _FileSnapshot
-        ] = OrderedDict()
 
     async def execute(self, context: SkillContext) -> SkillResult:
         tool_name, args = context.tool_name, context.args
         if tool_name == "write_diary":
             return self._write_diary(args)
         elif tool_name == "read_diary":
-            return SkillResult(output=self._read_diary(args))
-        elif tool_name == "list_files":
-            return SkillResult(output=self._list_files())
+            return self._read_diary(args)
         elif tool_name == "edit_file":
-            return self._edit_file(context)
+            return self._edit_file(args)
         return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
 
     def _write_diary(self, args: dict) -> SkillResult:
-        content = args.get("content")
-        expected = args.get("_expected_content")
-        day = args.get("day", "today")
-        source_date = args.get("_source_date")
-        target_date = args.get("_target_date")
-        if not isinstance(content, str):
-            return SkillResult(output="Error: content is required.", success=False)
-        if day not in {"today", "tomorrow"}:
-            return SkillResult(
-                output="Error: day must be today or tomorrow.",
-                success=False,
-            )
-        if not isinstance(expected, str) and day == "today":
-            return SkillResult(
-                output="Diary update context is unavailable. Try again next turn.",
-                success=False,
-            )
-        if not isinstance(source_date, str) or not isinstance(target_date, str):
-            return SkillResult(
-                output="Diary target context is unavailable. Try again next turn.",
-                success=False,
-            )
-        try:
-            source = date.fromisoformat(source_date)
-            target = date.fromisoformat(target_date)
-        except ValueError:
-            return SkillResult(
-                output="Diary target context is invalid. Try again next turn.",
-                success=False,
-            )
-        expected_target = source if day == "today" else source + timedelta(days=1)
-        if target != expected_target:
-            return SkillResult(
-                output="Diary target changed during this turn. Try again.",
-                success=False,
-            )
-        lines = content.strip().splitlines()
-        if lines and re.fullmatch(
-            rf"#\s+Diary\s+{re.escape(target_date)}"
-            rf"\s+{_WEEKDAY_PREFIX}\s*[。.!：:]?",
-            lines[0].strip(),
-            flags=re.IGNORECASE,
-        ):
-            lines = lines[1:]
-        content = "\n".join(lines).strip()
-        if day == "tomorrow" and not isinstance(expected, str):
-            try:
-                current = diary.read_tomorrow_draft(target_date)
-            except ValueError as exc:
-                return SkillResult(
-                    output=f"Tomorrow Diary draft is unavailable: {exc}",
-                    success=False,
-                )
-            return SkillResult(
-                output=(
-                    "Tomorrow's journal needs a current snapshot; no write was "
-                    f"applied.\n\nCurrent journal:\n{current}"
-                ),
-                success=False,
-            )
-        try:
-            if day == "today":
-                result = diary.replace_section_exact(
-                    "今日日記",
-                    expected_content=expected,
-                    content=content,
-                    target_date=target_date,
-                )
-            else:
-                result = diary.replace_tomorrow_exact(
-                    source_date=source_date,
-                    target_date=target_date,
-                    expected_content=expected,
-                    content=content,
-                )
-        except (DiaryConflictError, ValueError) as exc:
-            try:
-                current = (
-                    diary.read(section="今日日記")
-                    if day == "today"
-                    else diary.read_tomorrow_draft(target_date)
-                )
-            except ValueError:
-                current = "(draft unavailable)"
-            return SkillResult(
-                output=(
-                    f"Diary update rejected: {exc}\n\n"
-                    f"Current journal:\n{current}"
-                ),
-                success=False,
-            )
-        label = "Today's" if day == "today" else "Tomorrow's"
-        receipt = (
-            f"{label} journal ({target_date}) "
-            f"{'updated' if result['changed'] else 'unchanged'} "
-            f"({result['chars']} chars)."
-        )
+        entry = (args.get("entry") or "").strip()
+        if not entry:
+            return SkillResult(output="Error: entry is required.", success=False)
+        before = diary.read_raw()
+        output = diary.append(entry, source="chat", section="今日日記")
         return SkillResult(
-            output=receipt,
-            summary=receipt,
-            entity_refs=[f"diary:{target_date}"],
-            state_changed=result["changed"],
+            output=output,
+            state_changed=diary.read_raw() != before,
         )
 
-    def _read_diary(self, args: dict) -> str:
+    def _read_diary(self, args: dict) -> SkillResult:
         date_str = (args.get("date") or "").strip()
         if not date_str:
-            return diary.read(section="今日日記")
+            content = diary.read_raw()
+            return SkillResult(
+                output=content if content else "Today's diary is empty."
+            )
 
         try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-        except ValueError:
-            return "Error: date must use YYYY-MM-DD."
-        if date_str == diary.current_date():
-            return diary.read(section="今日日記")
+            year_month = date_str[:7]
+            archive_dir = diary.path.parent / "diary_archive"
+            archive_path = archive_dir / f"{year_month}.md"
+            if not archive_path.exists():
+                return SkillResult(
+                    output=f"No diary archive found for {year_month}.",
+                    success=False,
+                )
 
-        archive_path = (
-            diary.path.parent / "diary_archive" / f"{date_str[:7]}.md"
-        )
-        if not archive_path.exists():
-            return f"No diary archive found for {date_str[:7]}."
-        raw = archive_path.read_text(encoding="utf-8")
-        block = dict(diary._archive_blocks(raw)).get(date_str)
-        if block is None:
-            return f"No diary entry found for {date_str}."
-        try:
-            return diary._section_content(block, "今日日記")
-        except ValueError:
-            return f"No journal section found for {date_str}."
-
-    @staticmethod
-    def _private_path_reason(relative: Path) -> str | None:
-        normalized_path = relative.as_posix().casefold()
-        normalized_parts = tuple(part.casefold() for part in relative.parts)
-        if (
-            normalized_path in _CORE_PRIVATE_PATHS
-            or (
-                normalized_parts
-                and normalized_parts[0] in _CORE_PRIVATE_DIRS
-            )
-        ):
-            return (
-                "Core storage is private; use update_core or the admin "
-                "Core editor."
-            )
-        if (
-            normalized_path in _DIARY_PRIVATE_PATHS
-            or (
-                normalized_parts
-                and normalized_parts[0] in _DIARY_PRIVATE_DIRS
-            )
-        ):
-            return "Diary storage is private; use read_diary or write_diary."
-        if normalized_parts and normalized_parts[0] in _SYSTEM_PRIVATE_DIRS:
-            return "Internal prompt storage is private."
-        return None
-
-    def _list_files(self) -> str:
-        data_root = _DATA_DIR.resolve()
-        if not data_root.exists():
-            return "No Markdown files found under data/."
-
-        paths: list[str] = []
-        truncated = False
-        for current_root, dirs, files in os.walk(data_root, followlinks=False):
-            current = Path(current_root)
-            relative_root = current.relative_to(data_root)
-            depth = len(relative_root.parts)
-            dirs[:] = sorted(
-                directory
-                for directory in dirs
-                if depth < _MAX_LIST_DEPTH
-                and self._private_path_reason(
-                    relative_root / directory
-                ) is None
-            )
-            for filename in sorted(files):
-                if Path(filename).suffix.casefold() != ".md":
-                    continue
-                relative = relative_root / filename
-                if self._private_path_reason(relative) is not None:
-                    continue
-                if len(paths) >= _MAX_LISTED_FILES:
-                    truncated = True
+            raw = archive_path.read_text(encoding="utf-8")
+            lines = raw.split("\n")
+            collecting = False
+            result: list[str] = []
+            for line in lines:
+                if line.startswith("# Diary ") and date_str in line:
+                    collecting = True
+                    result.append(line)
+                elif collecting and line.startswith("# Diary "):
                     break
-                paths.append(relative.as_posix())
-            if truncated:
-                break
+                elif collecting:
+                    result.append(line)
 
-        if not paths:
-            return "No Markdown files found under data/."
-        output = "\n".join(paths)
-        if truncated:
-            output += f"\n... (showing first {_MAX_LISTED_FILES} files)"
-        return output
-
-    def _remember_snapshot(
-        self,
-        key: tuple[int, str, str],
-        *,
-        content: str | None,
-    ) -> None:
-        self._file_snapshots[key] = _FileSnapshot(content=content)
-        self._file_snapshots.move_to_end(key)
-        while len(self._file_snapshots) > _MAX_FILE_SNAPSHOTS:
-            self._file_snapshots.popitem(last=False)
-
-    def _snapshot_for_write(
-        self,
-        key: tuple[int, str, str],
-    ) -> _FileSnapshot | None:
-        snapshot = self._file_snapshots.get(key)
-        if snapshot is not None:
-            self._file_snapshots.move_to_end(key)
-            return snapshot
-
-        user_id, normalized_path, _ = key
-        inherited = next(
-            (
-                candidate
-                for candidate_key, candidate in reversed(
-                    self._file_snapshots.items()
+            if not result:
+                return SkillResult(
+                    output=f"No diary entry found for {date_str}.",
+                    success=False,
                 )
-                if candidate_key[:2] == (user_id, normalized_path)
-            ),
-            None,
-        )
-        if inherited is not None:
-            self._remember_snapshot(key, content=inherited.content)
-        return inherited
-
-    @staticmethod
-    def _read_file_content(target: Path) -> str | None:
-        if not target.exists():
-            return None
-        return target.read_text(encoding="utf-8")
-
-    @staticmethod
-    def _replace_file(
-        target: Path,
-        *,
-        expected_content: str | None,
-        content: str,
-    ) -> None:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temp_path: Path | None = None
-        try:
-            with tempfile.NamedTemporaryFile(
-                "w",
-                encoding="utf-8",
-                newline="",
-                dir=target.parent,
-                prefix=f".{target.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as temp:
-                temp_path = Path(temp.name)
-                temp.write(content)
-                temp.flush()
-                os.fsync(temp.fileno())
-            current = (
-                target.read_text(encoding="utf-8")
-                if target.exists()
-                else None
+            return SkillResult(output="\n".join(result).strip())
+        except Exception as e:
+            return SkillResult(
+                output=f"Error reading diary archive: {e}",
+                success=False,
             )
-            if current != expected_content:
-                raise _FileConflictError(
-                    "File changed while the replacement was prepared."
-                )
-            os.replace(temp_path, target)
-            temp_path = None
-        finally:
-            if temp_path is not None:
-                try:
-                    temp_path.unlink(missing_ok=True)
-                except OSError:
-                    log.warning(
-                        "edit_file: failed to clean temporary file %s",
-                        temp_path,
-                        exc_info=True,
-                    )
 
-    def _edit_file(self, context: SkillContext) -> SkillResult:
-        args = context.args
+    def _edit_file(self, args: dict) -> SkillResult:
         action = (args.get("action") or "").lower()
         rel_path = (args.get("path") or "").strip()
 
         if not rel_path:
             return SkillResult(output="Error: path is required.", success=False)
+        if not rel_path.endswith(".md"):
+            return SkillResult(
+                output="Error: only .md files are supported.",
+                success=False,
+            )
 
         data_root = _DATA_DIR.resolve()
         target = (data_root / rel_path).resolve()
@@ -369,130 +110,51 @@ class WorkspaceSkill(Skill):
                 success=False,
             )
         relative = target.relative_to(data_root)
-        private_reason = self._private_path_reason(relative)
-        if private_reason:
+        normalized_path = relative.as_posix().casefold()
+        normalized_parts = tuple(part.casefold() for part in relative.parts)
+        if (
+            normalized_path in _CORE_PRIVATE_PATHS
+            or (
+                normalized_parts
+                and normalized_parts[0] in _CORE_PRIVATE_DIRS
+            )
+        ):
             return SkillResult(
-                output=f"Error: {private_reason}",
+                output=(
+                    "Error: Core storage is private; use update_core or "
+                    "the admin Core editor."
+                ),
                 success=False,
             )
-        if Path(rel_path).suffix.casefold() != ".md":
-            return SkillResult(
-                output="Error: only .md files are supported.",
-                success=False,
-            )
-        key = (
-            context.user_id,
-            os.path.normcase(str(relative)),
-            context.turn_id,
-        )
 
         if action == "read":
-            try:
-                content = self._read_file_content(target)
-            except OSError as exc:
+            if not target.exists():
                 return SkillResult(
-                    output=f"File read failed: {exc}",
+                    output=f"File not found: {rel_path}",
                     success=False,
                 )
-            self._remember_snapshot(
-                key,
-                content=content,
-            )
-            if content is None:
-                return SkillResult(
-                    output=f"File not found: {relative.as_posix()}",
-                    success=False,
-                )
-            return SkillResult(output=content)
+            return SkillResult(output=target.read_text(encoding="utf-8"))
 
         elif action == "write":
             content = args.get("content")
-            if not isinstance(content, str):
+            if content is None:
                 return SkillResult(
                     output="Error: content is required for write.",
                     success=False,
                 )
-            try:
-                current = self._read_file_content(target)
-            except OSError as exc:
-                return SkillResult(
-                    output=f"File read failed before write: {exc}",
-                    success=False,
-                )
-            snapshot = self._snapshot_for_write(key)
-            if snapshot is None:
-                self._remember_snapshot(
-                    key,
-                    content=current,
-                )
-                current_text = current if current is not None else "(file missing)"
-                return SkillResult(
-                    output=(
-                        "File write needs a current read snapshot; no write was "
-                        f"applied.\n\nCurrent content:\n{current_text}"
-                    ),
-                )
-            if snapshot.content != current:
-                self._remember_snapshot(
-                    key,
-                    content=current,
-                )
-                current_text = current if current is not None else "(file missing)"
-                return SkillResult(
-                    output=(
-                        "File changed after it was read; no write was applied. "
-                        "The snapshot is now refreshed.\n\n"
-                        f"Current content:\n{current_text}"
-                    ),
-                )
-
-            changed = current != content
-            if changed:
-                try:
-                    self._replace_file(
-                        target,
-                        expected_content=current,
-                        content=content,
-                    )
-                except _FileConflictError:
-                    refreshed = self._read_file_content(target)
-                    self._remember_snapshot(
-                        key,
-                        content=refreshed,
-                    )
-                    current_text = (
-                        refreshed if refreshed is not None else "(file missing)"
-                    )
-                    return SkillResult(
-                        output=(
-                            "File changed while the write was prepared; no "
-                            "write was applied. The snapshot is now refreshed."
-                            f"\n\nCurrent content:\n{current_text}"
-                        ),
-                    )
-                except OSError as exc:
-                    return SkillResult(
-                        output=f"File write failed: {exc}",
-                        success=False,
-                    )
-                log.info(
-                    "edit_file: wrote %s (%d chars)",
-                    relative.as_posix(),
-                    len(content),
-                )
-            self._remember_snapshot(
-                key,
-                content=content,
+            previous = (
+                target.read_text(encoding="utf-8")
+                if target.exists()
+                else None
             )
-            receipt = (
-                f"OK: {relative.as_posix()} "
-                f"{'written' if changed else 'unchanged'} ({len(content)} chars)."
-            )
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp = target.with_suffix(".md.tmp")
+            tmp.write_text(content, encoding="utf-8")
+            tmp.replace(target)
+            log.info("edit_file: wrote %s (%d chars)", rel_path, len(content))
             return SkillResult(
-                output=receipt,
-                summary=receipt,
-                entity_refs=[f"file:{relative.as_posix()}"],
-                state_changed=changed,
+                output=f"OK: {rel_path} written ({len(content)} chars).",
+                state_changed=previous != content,
             )
 
         return SkillResult(
