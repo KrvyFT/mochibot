@@ -161,3 +161,117 @@ def normalize_preference_updates(
             _as_daily_count(body["MAX_DAILY_FREE_TIME"], capacity)
         )
     return normalized
+
+
+BASIC_BOOL_KEYS = frozenset({
+    "MAINTENANCE_ENABLED",
+    "WEEKLY_MAINTENANCE_ENABLED",
+    "RELATIONSHIP_MORNING_ENABLED",
+    "CORE_REFRESH_ENABLED",
+    "BEDTIME_ENTRY_ENABLED",
+})
+BASIC_HOUR_KEYS = frozenset({
+    "MAINTENANCE_HOUR",
+    "RELATIONSHIP_MORNING_HOUR",
+    "FALLBACK_WAKE_HOUR",
+})
+
+
+def _as_bool(key: str, raw_value: object) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, (int, float)) and not isinstance(raw_value, bool):
+        if raw_value in (0, 1):
+            return bool(raw_value)
+        raise ValueError(f"{key} must be a boolean")
+    if isinstance(raw_value, str):
+        text = raw_value.strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+    raise ValueError(f"{key} must be a boolean")
+
+
+def _as_int_range(key: str, raw_value: object, minimum: int, maximum: int) -> int:
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{key} must be a number")
+    try:
+        if isinstance(raw_value, str):
+            text = raw_value.strip()
+            value = int(text)
+            if str(value) != text:
+                raise ValueError
+        elif isinstance(raw_value, float):
+            if not raw_value.is_integer():
+                raise ValueError
+            value = int(raw_value)
+        else:
+            value = int(raw_value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{key} must be a number") from exc
+    if not minimum <= value <= maximum:
+        raise ValueError(f"{key} must be between {minimum} and {maximum}")
+    return value
+
+
+def _as_core_refresh_hours(raw_value: object) -> str:
+    if isinstance(raw_value, (list, tuple)):
+        parts = [str(item).strip() for item in raw_value]
+    else:
+        parts = str(raw_value or "").split(",")
+    hours = []
+    for part in parts:
+        text = part.strip()
+        if not text:
+            continue
+        hour = _as_int_range("CORE_REFRESH_HOURS", text, 0, 23)
+        if hour not in hours:
+            hours.append(hour)
+    if not hours:
+        raise ValueError("CORE_REFRESH_HOURS must list at least one hour")
+    return ",".join(str(hour) for hour in hours)
+
+
+def normalize_basic_updates(body: dict, current: dict[str, object]) -> dict[str, str]:
+    """Validate 基本配置 PUT body. Null clears a DB override."""
+    from mochi.admin.admin_db import BASIC_CONFIG_KEYS
+
+    if not isinstance(body, dict) or not body:
+        raise ValueError("basic config must be a non-empty object")
+    unknown = sorted(set(body) - set(BASIC_CONFIG_KEYS))
+    if unknown:
+        raise ValueError(f"Unknown basic config: {', '.join(unknown)}")
+
+    normalized: dict[str, str | None] = {}
+    for key, raw_value in body.items():
+        if raw_value is None:
+            normalized[key] = None
+            continue
+        if key in BASIC_BOOL_KEYS:
+            value: object = _as_bool(key, raw_value)
+        elif key in BASIC_HOUR_KEYS:
+            value = _as_int_range(key, raw_value, 0, 23)
+        elif key == "WEEKLY_MAINTENANCE_MINUTE":
+            value = _as_int_range(key, raw_value, 0, 59)
+        elif key == "AI_CHAT_MAX_COMPLETION_TOKENS":
+            value = _as_int_range(key, raw_value, 256, 32768)
+        elif key == "SILENCE_PAUSE_DAYS":
+            if isinstance(raw_value, bool):
+                raise ValueError("SILENCE_PAUSE_DAYS must be a number")
+            try:
+                pause = float(raw_value)  # type: ignore[arg-type]
+            except (TypeError, ValueError) as exc:
+                raise ValueError("SILENCE_PAUSE_DAYS must be a number") from exc
+            if pause < 0 or pause > 365:
+                raise ValueError("SILENCE_PAUSE_DAYS must be between 0 and 365")
+            value = pause
+        elif key == "CORE_REFRESH_HOURS":
+            value = _as_core_refresh_hours(raw_value)
+        else:
+            raise ValueError(f"Unknown basic config: {key}")
+        if isinstance(value, bool):
+            normalized[key] = "true" if value else "false"
+        else:
+            normalized[key] = str(value)
+    return normalized

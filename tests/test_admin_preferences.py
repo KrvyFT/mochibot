@@ -91,3 +91,35 @@ def test_rejects_hour_clock_with_minutes():
 def test_rejects_unknown_preference():
     with pytest.raises(ValueError, match="Unknown preference"):
         normalize_preference_updates({"NOT_A_KEY": 1}, CURRENT)
+
+
+def test_basic_config_accepts_core_refresh_hours():
+    from mochi.admin.preferences import normalize_basic_updates
+
+    out = normalize_basic_updates(
+        {
+            "AI_CHAT_MAX_COMPLETION_TOKENS": 8192,
+            "CORE_REFRESH_HOURS": "12, 23",
+            "MAINTENANCE_ENABLED": True,
+            "SILENCE_PAUSE_DAYS": 3,
+        },
+        {},
+    )
+    assert out["AI_CHAT_MAX_COMPLETION_TOKENS"] == "8192"
+    assert out["CORE_REFRESH_HOURS"] == "12,23"
+    assert out["MAINTENANCE_ENABLED"] == "true"
+    assert out["SILENCE_PAUSE_DAYS"] == "3.0"
+
+
+def test_basic_config_null_clears_override():
+    from mochi.admin.preferences import normalize_basic_updates
+
+    out = normalize_basic_updates({"MAINTENANCE_HOUR": None}, {})
+    assert out["MAINTENANCE_HOUR"] is None
+
+
+def test_basic_config_rejects_unknown():
+    from mochi.admin.preferences import normalize_basic_updates
+
+    with pytest.raises(ValueError, match="Unknown basic config"):
+        normalize_basic_updates({"NOT_A_KEY": 1}, {})

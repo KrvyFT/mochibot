@@ -597,6 +597,7 @@ def get_skill_info_all() -> list[dict]:
             },
             "has_observer": s.has_observer,
             "locked": getattr(s, "locked", False),
+            "core": getattr(s, "locked", False),
             "diary_tags": s.diary_tags,
             "config_missing": config_missing,
             "config_schema": s.config_schema,

@@ -67,6 +67,16 @@ body { font-family: -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-seri
 .settings-tier-copy { font-size:11px; color:var(--text-soft); }
 .settings-model-value { padding:9px 12px; border-radius:8px; background:var(--bg); color:var(--text-heading); font-size:13px; font-weight:600; }
 .settings-model-value.empty { color:var(--warning); font-weight:500; }
+.setup-banner { background:#E8F5E9; color:#2E7D32; padding:12px 16px; border-radius:12px; font-size:14px; font-weight:600; margin-bottom:16px; }
+.setup-step { display:flex; gap:14px; align-items:flex-start; padding:16px 4px; border-bottom:1px solid var(--border); cursor:pointer; }
+.setup-step:last-child { border-bottom:0; }
+.setup-step:hover { background:var(--primary-bg); border-radius:10px; padding-left:10px; padding-right:10px; }
+.setup-step-mark { width:28px; height:28px; flex:0 0 28px; border-radius:50%; display:grid; place-items:center; font-size:13px; font-weight:700; color:#fff; background:var(--border); }
+.setup-step-mark.done { background:var(--success); }
+.setup-step-mark.todo { background:var(--primary); }
+.setup-step-title { font-size:15px; font-weight:700; color:var(--text-heading); }
+.setup-step-copy { margin-top:3px; font-size:12px; color:var(--text-soft); }
+.setup-pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
 /* ── Buttons ──────────────────────────── */
 .btn { display:inline-flex; align-items:center; gap:6px; padding:8px 18px; border-radius:20px; font-size:13px; font-weight:600; cursor:pointer; border:1px solid transparent; transition:all .15s; }
 .btn-primary { background:var(--primary); color:#fff; border-color:var(--primary); }
@@ -123,6 +133,16 @@ select.form-input { cursor:pointer; }
 .stat-card { background:var(--card); border:1px solid var(--border); border-radius:var(--radius); padding:16px; text-align:center; }
 .stat-number { font-size:28px; font-weight:700; color:var(--primary); }
 .stat-label { font-size:12px; color:var(--text-soft); margin-top:4px; }
+/* ── Skill card ───────────────────────── */
+.skill-card { border:1px solid var(--border); border-radius:var(--radius); padding:16px; margin-bottom:12px; background:var(--card); }
+.skill-card.disabled .skill-header, .skill-card.disabled .skill-desc, .skill-card.disabled .skill-tools { opacity:.55; }
+.skill-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:8px; }
+.skill-name { font-size:16px; font-weight:700; color:var(--text-heading); }
+.skill-desc { font-size:13px; color:var(--text-soft); margin-bottom:8px; }
+.skill-tools { display:flex; flex-wrap:wrap; gap:4px; margin-bottom:8px; }
+.pill { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; background:#f0ebe5; color:var(--text); }
+.config-list { margin-top:8px; }
+.config-item { display:flex; align-items:center; gap:6px; font-size:13px; padding:3px 0; }
 /* ── Loading ──────────────────────────── */
 .loading { text-align:center; padding:40px; color:var(--text-soft); }
 .spinner { display:inline-block; width:24px; height:24px; border:3px solid var(--border); border-top-color:var(--primary); border-radius:50%; animation:spin .6s linear infinite; }
@@ -177,9 +197,13 @@ select.form-input { cursor:pointer; }
   </div>
   <nav class="sidebar-nav" id="sidebar-nav">
     <button class="nav-item active" data-page="settings"><span class="nav-icon">🏠</span> 设置</button>
-    <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆</button>
-    <button class="nav-item" data-page="advanced"><span class="nav-icon">🛠️</span> 高级</button>
-    <button class="nav-item" data-page="system"><span class="nav-icon">⚙️</span> 系统</button>
+    <button class="nav-item" data-page="models"><span class="nav-icon">🤖</span> 模型</button>
+    <button class="nav-item" data-page="heartbeat"><span class="nav-icon">💓</span> Heartbeat</button>
+    <button class="nav-item" data-page="basic"><span class="nav-icon">⚙️</span> 基本配置</button>
+    <button class="nav-item" data-page="skills"><span class="nav-icon">⚡</span> 技能</button>
+    <button class="nav-item" data-page="persona"><span class="nav-icon">📝</span> 人格 & Prompts</button>
+    <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆库</button>
+    <button class="nav-item" data-page="migrate"><span class="nav-icon">📦</span> 搬家</button>
   </nav>
   <div style="padding:8px 12px; border-top:1px solid var(--border);">
     <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启 Agent</button>
@@ -189,15 +213,37 @@ select.form-input { cursor:pointer; }
 <main class="content">
 <!-- ═══════ Settings ═══════ -->
 <section id="page-settings" class="page active">
-  <h2 class="page-title">设置</h2>
+  <h2 class="page-title">🍡 设置向导</h2>
   <div id="settings-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
-<!-- ═══════ Memory ═══════ -->
-<section id="page-memory" class="page">
-  <h2 class="page-title">记忆</h2>
+<!-- ═══════ Models ═══════ -->
+<section id="page-models" class="page">
+  <h2 class="page-title">模型配置</h2>
+  <div id="advanced-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
 
-  <!-- Core -->
+<!-- ═══════ Heartbeat ═══════ -->
+<section id="page-heartbeat" class="page">
+  <h2 class="page-title">Heartbeat 配置</h2>
+  <div id="heartbeat-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Basic ═══════ -->
+<section id="page-basic" class="page">
+  <h2 class="page-title">基本配置</h2>
+  <div id="system-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Skills ═══════ -->
+<section id="page-skills" class="page">
+  <h2 class="page-title">技能管理</h2>
+  <div id="skills-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
+</section>
+
+<!-- ═══════ Persona ═══════ -->
+<section id="page-persona" class="page">
+  <h2 class="page-title">人格 & Prompts</h2>
   <div class="card" style="margin-bottom:20px">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div class="card-title" style="margin-bottom:0">Core</div>
@@ -207,8 +253,11 @@ select.form-input { cursor:pointer; }
       <div class="loading"><div class="spinner"></div> 加载中...</div>
     </div>
   </div>
+</section>
 
-  <!-- Memory Items -->
+<!-- ═══════ Memory ═══════ -->
+<section id="page-memory" class="page">
+  <h2 class="page-title">记忆库</h2>
   <div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
       <div class="card-title" style="margin-bottom:0">记忆条目</div>
@@ -233,25 +282,14 @@ select.form-input { cursor:pointer; }
       <div class="loading"><div class="spinner"></div> 加载中...</div>
     </div>
   </div>
+</section>
 
-  <div style="margin-top:24px">
-    <h3 style="font-size:17px;color:var(--text-heading);margin-bottom:12px">📦 搬家</h3>
-    <div id="migration-content">
-      <div class="loading"><div class="spinner"></div> 加载中...</div>
-    </div>
+<!-- ═══════ Migrate ═══════ -->
+<section id="page-migrate" class="page">
+  <h2 class="page-title">搬家</h2>
+  <div id="migration-content">
+    <div class="loading"><div class="spinner"></div> 加载中...</div>
   </div>
-</section>
-
-<!-- ═══════ Advanced ═══════ -->
-<section id="page-advanced" class="page">
-  <h2 class="page-title">高级设置</h2>
-  <div id="advanced-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
-</section>
-
-<!-- ═══════ System ═══════ -->
-<section id="page-system" class="page">
-  <h2 class="page-title">系统</h2>
-  <div id="system-content"><div class="loading"><div class="spinner"></div> 加载中...</div></div>
 </section>
 
 </main>
@@ -357,7 +395,17 @@ function statusIcon(type) {
 const loaded = {};
 let _settingsRequestGeneration = 0;
 let _systemRequestGeneration = 0;
-const loaders = { settings:loadSettings, memory:loadMemory, advanced:loadAdvanced, system:loadSystem };
+let _heartbeatRequestGeneration = 0;
+const loaders = {
+  settings: loadSettings,
+  models: loadAdvanced,
+  heartbeat: loadHeartbeat,
+  basic: loadSystem,
+  skills: loadSkills,
+  persona: loadMemory,
+  memory: loadMemoryBank,
+  migrate: loadMigration,
+};
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
   const item = e.target.closest('.nav-item');
@@ -368,10 +416,13 @@ document.getElementById('sidebar-nav').addEventListener('click', e => {
   document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
   item.classList.add('active');
   document.getElementById('page-' + page).classList.add('active');
-  if (page === 'settings') { loaded.settings = false; loadSettings(); }
-  else if (page === 'system') { loaded.system = true; loadSystem(); }
-  else if (!loaded[page]) { loaded[page] = true; loaders[page]?.(); }
-  // mobile
+  if (page === 'settings' || page === 'heartbeat' || page === 'basic') {
+    loaded[page] = false;
+    loaders[page]?.();
+  } else if (!loaded[page]) {
+    loaded[page] = true;
+    loaders[page]?.();
+  }
   document.getElementById('sidebar').classList.remove('open');
   document.getElementById('sidebar-backdrop').classList.remove('open');
 });
@@ -1387,17 +1438,25 @@ async function refreshCheckup() {
   }
 }
 
+function goToPage(page) {
+  const item = document.querySelector('[data-page="' + page + '"]');
+  if (item) item.click();
+}
+
 async function loadSettings() {
   const generation = ++_settingsRequestGeneration;
   const el = document.getElementById('settings-content');
   try {
-    const [s, botStatus, tiers, prefs] = await Promise.all([
+    const [s, botStatus, tiers, skillsResp, mem, checkupData] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
       api('GET', '/tiers'),
-      api('GET', '/preferences'),
+      api('GET', '/skills').catch(() => ({skills: []})),
+      api('GET', '/memory').catch(() => ({content: ''})),
+      api('GET', '/checkup').catch(() => null),
     ]);
     if (generation !== _settingsRequestGeneration) return;
+
     const hasMainModel = Boolean(tiers.main?.assigned_name && tiers.main?.supported && tiers.main?.api_key_set);
     const hasLiteModel = Boolean(tiers.lite?.assigned_name && tiers.lite?.supported && tiers.lite?.api_key_set);
     const hasModel = hasMainModel && hasLiteModel;
@@ -1408,152 +1467,212 @@ async function loadSettings() {
     ) || _weixinConnected;
     const hasTransport = tgConfigured || wxConfigured;
     const ownerBound = s.config_status.owner_user_id?.set || false;
-    const preferencesConfigured = (
-      prefs.TIMEZONE_OFFSET_HOURS?.source === 'user'
-      && prefs.MAX_DAILY_FREE_TIME?.source === 'user'
-    );
-    const setupComplete = hasModel && hasTransport && preferencesConfigured;
+    const hasPersonality = Boolean(String(mem.content || '').trim());
+    const skills = Array.isArray(skillsResp) ? skillsResp : (skillsResp.skills || []);
+    const actualSkills = skills.filter(sk => sk.type !== 'observer');
+    const skillsNeedConfig = actualSkills.filter(sk => sk.config_missing && sk.config_missing.length > 0);
+    const skillsDisabled = actualSkills.filter(sk => !sk.enabled);
+    const transportOk = hasTransport && botStatus.running;
+    const allDone = hasModel && transportOk && hasPersonality;
     const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
     const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
-    const mainModel = tiers.main?.model || '';
+
+    const stepCircle = (n, active) => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:2px solid ${active?'var(--primary)':'var(--border)'};font-size:12px;color:${active?'var(--primary)':'var(--text-soft)'};font-weight:700">${n}</span>`;
+    const stepDone = () => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;font-size:14px;flex-shrink:0">✓</span>`;
+
     let html = '';
-
-    const heroTitle = botStatus.running
-      ? 'Mochi 正在运行 (｡•̀ᴗ-)✧'
-      : setupComplete ? 'Mochi 已准备好' : '一起把 Mochi 准备好';
-    const heroCopy = botStatus.running
-      ? `${activeIcon} ${activeTransport || '消息平台'} 已连接${mainModel ? ` · Main 使用 ${esc(mainModel)}` : ''}`
-      : setupComplete
-        ? `配置已经就绪，启动后会通过 ${activeTransport} 联系你。`
-        : '完成下面三项设置，Mochi 就可以开始陪你。';
-    html += `<div class="settings-hero">
-      <div>
-        <div class="settings-hero-main">
-          <div class="settings-hero-mark">🍡</div>
-          <div>
-            <div class="settings-hero-title">${heroTitle}</div>
-            <div class="settings-hero-copy">${heroCopy}</div>
-          </div>
-        </div>`;
-    if (!setupComplete) {
-      html += `<div class="setup-progress">
-        <div class="setup-progress-item${hasModel?' complete':''}">${hasModel?statusIcon('ok'):statusIcon('off')} 模型</div>
-        <div class="setup-progress-item${hasTransport?' complete':''}">${hasTransport?statusIcon('ok'):statusIcon('off')} 消息平台</div>
-        <div class="setup-progress-item${preferencesConfigured?' complete':''}">${preferencesConfigured?statusIcon('ok'):statusIcon('off')} 相处偏好</div>
-      </div>`;
+    html += '<div class="card">';
+    html += '<div class="card-title">Setup Guide</div>';
+    if (!allDone) {
+      const configDone = hasModel && hasTransport && hasPersonality;
+      if (configDone && !transportOk) {
+        html += '<p style="font-size:13px;color:var(--warning);margin-bottom:12px">配置已完成，但 Agent 未在运行。</p>';
+      } else {
+        html += '<p style="font-size:13px;color:var(--text-soft);margin-bottom:12px">按顺序完成以下步骤，让 MochiBot 跑起来 🍡</p>';
+      }
+    } else {
+      html += '<p style="font-size:13px;color:var(--success);margin-bottom:12px">基础配置已完成！可以和 bot 聊天了。</p>';
     }
-    html += '</div><div class="settings-hero-actions">';
+    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">';
     if (botStatus.running) {
-      html += '<button class="btn btn-ghost" data-agent-stop-btn onclick="stopAgentAndRefresh()">关闭 Agent</button>';
-    } else if (setupComplete) {
-      html += '<button class="btn btn-primary" data-restart-btn onclick="startBotAndRefresh()">启动 Mochi</button>';
-    }
-    html += '</div></div>';
-
-    const tierDescriptions = {
-      main: 'Agent 主体',
-      lite: '打工模型，不和你直接对话',
-      draw: '绘图（可选）',
-    };
-    const tierLabels = {main: 'Main', lite: 'Lite', draw: 'Draw'};
-    html += `<div class="settings-grid"><div class="card">
-      <div class="settings-section-head">
-        <div><div class="settings-section-title">模型</div><div class="settings-section-copy">Agent 如何思考</div></div>
-        <button class="btn btn-ghost btn-sm" onclick="document.querySelector('[data-page=advanced]').click()">管理</button>
-      </div>`;
-    for (const tier of ['main', 'lite', 'draw']) {
-      const cfg = tiers[tier] || {};
-      const selected = cfg.model || '';
-      html += `<div class="settings-tier">
-        <div class="settings-tier-label"><strong>${tierLabels[tier]}</strong><span class="settings-tier-copy">${tierDescriptions[tier]}</span></div>
-        <div class="settings-model-value${selected?'':' empty'}">${selected ? esc(selected) : '未配置'}</div>
-      </div>`;
+      html += '<button class="btn btn-ghost btn-sm" data-agent-stop-btn onclick="stopAgentAndRefresh()">关闭 Agent</button>';
+    } else if (hasModel && hasTransport) {
+      html += '<button class="btn btn-primary btn-sm" data-restart-btn onclick="startBotAndRefresh()">启动 Mochi</button>';
     }
     html += '</div>';
 
+    const tierLabels = {main:'main', lite:'lite', draw:'draw'};
+    let modelBadges = '';
+    for (const t of ['main','lite','draw']) {
+      const name = tiers[t]?.model || s.config_status.tier_models?.[t];
+      if (name) modelBadges += `<span class="badge badge-ok" style="margin-right:4px">${esc(tierLabels[t])}: ${esc(name)}</span>`;
+    }
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasModel?stepDone():stepCircle(1, true)}</span>
+      <div style="flex:1">
+        <strong>配置模型</strong>
+        <div style="font-size:12px;color:var(--text-soft)">Main + Lite 必填，Draw 可选绘图档</div>
+        ${hasModel ? '<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">'+modelBadges+'</div>':''}
+      </div>
+      ${!hasModel?'<button class="btn btn-primary btn-sm" onclick="goToPage(\'models\')">去配置 →</button>':'<button class="btn btn-ghost btn-sm" onclick="goToPage(\'models\')">管理 →</button>'}
+    </div>`;
+
     let transportStatus = '';
     if (hasTransport) {
-      const statusBadge = botStatus.weixin_session_expired
-        ? '<span class="badge badge-err">会话过期</span>'
-        : '';
-      transportStatus = `<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <strong>${activeIcon} ${activeTransport}</strong>${statusBadge}
-        ${botStatus.running?'<button class="btn btn-ghost btn-sm" data-restart-btn onclick="startBotAndRefresh()">重启</button>':''}
-        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="unbindTransport('${activeTransport}')">解绑</button>
-      </div>`;
-      if (tgConfigured) {
-        transportStatus += ownerBound
-          ? '<div style="font-size:12px;color:var(--success);margin-top:6px">✓ Owner 已绑定</div>'
-          : '<div style="font-size:12px;color:var(--warning);margin-top:6px">⚠ 在 Telegram 中向 Bot 发送一条消息即可绑定 Owner</div>';
+      let statusBadge = '';
+      if (botStatus.running) {
+        statusBadge = '<span class="badge badge-ok">运行中</span>'
+          + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
+      } else if (botStatus.weixin_session_expired) {
+        statusBadge = '<span class="badge badge-err">会话过期</span>';
+      } else {
+        statusBadge = '<span class="badge badge-warn">已配置</span>';
       }
+      transportStatus = '<div style="display:flex;align-items:center;gap:8px;margin-top:4px;flex-wrap:wrap">'
+        + '<strong style="font-size:13px">' + activeIcon + ' ' + activeTransport + '</strong> ' + statusBadge
+        + ' <button class="btn btn-ghost btn-sm" style="padding:2px 8px;font-size:11px;color:var(--danger)" onclick="unbindTransport(\'' + activeTransport + '\')">解绑</button>'
+        + '</div>';
+    }
+    let ownerLine = '';
+    if (tgConfigured) {
+      ownerLine = ownerBound
+        ? '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定</div>'
+        : '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ 在 Telegram 中向 Bot 发送一条消息即可绑定 Owner</div>';
+    }
+    let transportConfigArea = '';
+    if (!hasTransport) {
+      transportConfigArea = `
+        <div style="margin-top:6px;font-size:12px;color:var(--text-soft)">推荐 Telegram — 支持表情包、语音、照片</div>
+        <div class="tp-cfg-btns" style="margin-top:8px">
+          <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">配置 Telegram</button>
+          <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">配置 WeChat</button>
+        </div>`;
     }
 
-    html += `<div class="card"><div class="settings-section-head">
-      <div><div class="settings-section-title">消息平台</div><div class="settings-section-copy">Mochi 从哪里联系你</div></div>
-    </div>`;
-    if (hasTransport) {
-      html += transportStatus;
-    } else {
-      html += `<p style="font-size:12px;color:var(--text-soft);margin-bottom:10px">选择一个聊天入口。推荐 Telegram，支持图片和表情包。</p>
-        <div class="tp-cfg-btns">
-          <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">Telegram</button>
-          <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">微信</button>
-        </div>
-        <div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border);flex-wrap:wrap">
+      <span class="check-icon" style="font-size:20px">${transportOk?stepDone():stepCircle(2, hasModel)}</span>
+      <div style="flex:1">
+        <strong>消息平台</strong>
+        <div style="font-size:12px;color:var(--text-soft)">${hasTransport ? '已绑定消息平台' : '选择并配置一个消息平台'}</div>
+        ${transportStatus}
+        ${ownerLine}
+        ${transportConfigArea}
+        ${!hasTransport ? `<div id="transport-cfg" style="display:${_openTransportCfg==='telegram'?'block':'none'};margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
-            <div class="form-group"><label class="form-label">Telegram Bot Token</label>
-              <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="123456:ABC-DEF..."></div>
+            <div style="font-weight:600;margin-bottom:8px">Telegram 配置</div>
+            <div class="form-group"><label class="form-label">Bot Token</label>
+            <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="123456:ABC-DEF..."></div>
             <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>
             <div id="tg-connect-status" style="margin-top:10px"></div>
           </div>
         </div>
         <div id="weixin-cfg" style="display:${_openTransportCfg==='weixin'?'block':'none'};margin-top:10px">
           <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
+            <div style="font-weight:600;margin-bottom:8px">WeChat 配置</div>
             <div id="wx-qr-section">
-              <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入。</p>
-              <div style="text-align:center">
-                <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
-                <button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>
-              </div>
-              <div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>
-              <div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>
+            <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>
+            <div style="text-align:center">
+            <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
+            <button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>
+            </div>
+            <div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>
+            <div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>
             </div>
             <div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>
             <div id="wx-manual-input" style="display:none;margin-top:10px">
-              <div class="form-group"><label class="form-label">Bot Token</label>
-                <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="580ba3c1dc75@im.bot:..."></div>
-              <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
-                <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
-              <button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>
-              <div id="wx-connect-status" style="margin-top:10px"></div>
+            <div class="form-group"><label class="form-label">Bot Token</label>
+            <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="580ba3c1dc75@im.bot:..."></div>
+            <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
+            <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
+            <button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>
+            <div id="wx-connect-status" style="margin-top:10px"></div>
             </div>
           </div>
-        </div>`;
-    }
-    html += '</div></div>';
+        </div>` : ''}
+      </div>
+    </div>`;
 
-    const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
-    const browserTimezone = -(new Date().getTimezoneOffset() / 60);
-    const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
-    const freeTime = prefs.MAX_DAILY_FREE_TIME || {};
-    const freeTimeEnabled = Number(freeTime.value) > 0;
-    const sleepAfter = prefs.SLEEP_AFTER_HOUR || {value: 1, default: 1};
-    const wakeEarliest = prefs.WAKE_EARLIEST_HOUR || {value: 6, default: 6};
-    const ftStart = prefs.FREE_TIME_AWAKE_START || {value: '08:00', default: '08:00'};
-    const ftEnd = prefs.FREE_TIME_AWAKE_END || {value: '00:30', default: '00:30'};
-    const sleepStartClock = hourToClock(sleepAfter.value, 1);
-    const wakeClock = hourToClock(wakeEarliest.value, 6);
-    const ftStartClock = clockValue(ftStart.value, '08:00');
-    const ftEndClock = clockValue(ftEnd.value, '00:30');
-    // Bounds and the fallback number come from the API so the form can never
-    // offer — and silently save — a value the server would reject.
-    _freeTimeMax = Number(freeTime.max) || windowCapacity(ftStartClock, ftEndClock) || _freeTimeMax;
-    const freeTimeLimit = freeTimeEnabled
-      ? Number(freeTime.value)
-      : Number(freeTime.default);
-    html += `<div class="card"><div class="settings-section-head">
-      <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间、睡眠和 Free Time</div></div>
-    </div>
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${hasPersonality?stepDone():stepCircle(3, hasTransport)}</span>
+      <div style="flex:1">
+        <strong>配置人格</strong>
+        <div style="font-size:12px;color:var(--text-soft)">Core 是每轮都会读的人设与关系文本</div>
+      </div>
+      ${hasPersonality?'<span class="badge badge-ok" style="margin-right:6px">'+(mem.chars||String(mem.content||'').length)+' 字符</span>':''}
+      <button class="btn btn-ghost btn-sm" onclick="goToPage('persona')">去编辑 →</button>
+    </div>`;
+
+    html += `<div class="check-row" style="padding:10px 0;border-bottom:1px solid var(--border)">
+      <span class="check-icon" style="font-size:20px">${stepCircle(4, false)}</span>
+      <div style="flex:1">
+        <strong>Heartbeat</strong>
+        <div style="font-size:12px;color:var(--text-soft)">睡眠、时区、Free Time 相处偏好</div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="goToPage('heartbeat')">去配置 →</button>
+    </div>`;
+
+    html += `<div class="check-row" style="padding:10px 0">
+      <span class="check-icon" style="font-size:20px">${stepCircle(5, false)}</span>
+      <div style="flex:1">
+        <strong>技能管理</strong>
+        <div style="font-size:12px;color:var(--text-soft)">开关技能、配置 API Key</div>
+        <div style="display:flex;gap:8px;margin-top:4px;flex-wrap:wrap">
+          <span class="badge badge-info">${actualSkills.length} 个技能</span>
+          ${skillsDisabled.length?'<span class="badge badge-gray">'+skillsDisabled.length+' 个已禁用</span>':''}
+          ${skillsNeedConfig.length?'<span class="badge badge-warn">'+skillsNeedConfig.length+' 个需要配置</span>':''}
+        </div>
+      </div>
+      <button class="btn btn-ghost btn-sm" onclick="goToPage('skills')">去查看 →</button>
+    </div>`;
+    html += '</div>';
+
+    html += '<div class="stat-grid">';
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_count || actualSkills.length}</div><div class="stat-label">技能</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${s.skills_disabled || skillsDisabled.length}</div><div class="stat-label">已禁用</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state || 'UNKNOWN')}</div><div class="stat-label">Heartbeat</div></div>`;
+    html += '</div>';
+
+    if (checkupData && checkupData.ok) html += renderCheckupCard(checkupData);
+
+    el.innerHTML = html;
+    if (_wxQrPollTimer && _wxQrActiveContent) {
+      const canvas = document.getElementById('wx-qr-canvas');
+      if (canvas) { renderQRToCanvas(canvas, _wxQrActiveContent, 220); canvas.style.display = 'block'; }
+      const qrStatus = document.getElementById('wx-qr-status');
+      if (qrStatus && _wxQrStatusHtml) qrStatus.innerHTML = _wxQrStatusHtml;
+      const qrButton = document.getElementById('wx-qr-btn');
+      if (qrButton) qrButton.style.display = 'none';
+      const cancel = document.getElementById('wx-qr-cancel');
+      if (cancel) cancel.style.display = 'inline-block';
+    }
+    _settingsLastRunning = botStatus.running;
+    _settingsLastOwner = ownerBound;
+    if (document.getElementById('page-settings').classList.contains('active')) {
+      startSettingsPolling();
+    }
+  } catch(e) {
+    if (generation !== _settingsRequestGeneration) return;
+    el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
+  }
+}
+
+function renderPreferenceCard(prefs) {
+  const timezone = prefs.TIMEZONE_OFFSET_HOURS || {value: 8, default: 8, source: 'default'};
+  const browserTimezone = -(new Date().getTimezoneOffset() / 60);
+  const timezoneValue = timezone.source === 'default' ? browserTimezone : timezone.value;
+  const freeTime = prefs.MAX_DAILY_FREE_TIME || {};
+  const freeTimeEnabled = Number(freeTime.value) > 0;
+  const sleepAfter = prefs.SLEEP_AFTER_HOUR || {value: 1, default: 1};
+  const wakeEarliest = prefs.WAKE_EARLIEST_HOUR || {value: 6, default: 6};
+  const ftStart = prefs.FREE_TIME_AWAKE_START || {value: '08:00', default: '08:00'};
+  const ftEnd = prefs.FREE_TIME_AWAKE_END || {value: '00:30', default: '00:30'};
+  const sleepStartClock = hourToClock(sleepAfter.value, 1);
+  const wakeClock = hourToClock(wakeEarliest.value, 6);
+  const ftStartClock = clockValue(ftStart.value, '08:00');
+  const ftEndClock = clockValue(ftEnd.value, '00:30');
+  _freeTimeMax = Number(freeTime.max) || windowCapacity(ftStartClock, ftEndClock) || _freeTimeMax;
+  const freeTimeLimit = freeTimeEnabled ? Number(freeTime.value) : Number(freeTime.default);
+  return `<div class="card"><div class="card-title">相处偏好</div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
         <div style="min-width:220px;flex:1;font-size:14px">Free Time 自主思考</div>
@@ -1591,28 +1710,305 @@ async function loadSettings() {
       <div style="margin-top:14px"><button class="btn btn-primary" onclick="savePreferences()">保存偏好</button>
         <span style="font-size:11px;color:var(--text-soft);margin-left:8px">约一分钟内生效</span></div>
     </div>`;
+}
 
+async function loadHeartbeat() {
+  const generation = ++_heartbeatRequestGeneration;
+  const el = document.getElementById('heartbeat-content');
+  try {
+    const [prefs, state, basic] = await Promise.all([
+      api('GET', '/preferences'),
+      api('GET', '/heartbeat/state').catch(() => ({})),
+      api('GET', '/basic/config').catch(() => ({})),
+    ]);
+    if (generation !== _heartbeatRequestGeneration) return;
+    let html = '<div class="stat-grid">';
+    html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(state.state||'UNKNOWN')}</div><div class="stat-label">状态</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.free_time_thoughts_today||0}</div><div class="stat-label">今日 Free Time</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${state.free_time_thought_limit??'—'}</div><div class="stat-label">每日上限</div></div>`;
+    html += '</div>';
+    html += renderPreferenceCard(prefs);
+
+    const extraKeys = [
+      ['FALLBACK_WAKE_HOUR', '兜底唤醒时间', '睡眠状态下到几点自动唤醒'],
+      ['SILENCE_PAUSE_DAYS', '静默暂停（天）', '用户消失多少天后暂停主动消息'],
+      ['BEDTIME_ENTRY_ENABLED', '睡前整理', '到点后是否进入睡前整理'],
+    ];
+    html += '<div class="card"><div class="card-title">心跳补充</div>';
+    for (const [key, label, tip] of extraKeys) {
+      const c = basic[key];
+      if (!c) continue;
+      html += renderBasicRow(key, c, label, tip);
+    }
+    html += '<div style="margin-top:12px"><button class="btn btn-primary btn-sm" onclick="saveHeartbeatExtras()">保存补充项</button></div></div>';
     el.innerHTML = html;
-    if (_wxQrPollTimer && _wxQrActiveContent) {
-      const canvas = document.getElementById('wx-qr-canvas');
-      if (canvas) { renderQRToCanvas(canvas, _wxQrActiveContent, 220); canvas.style.display = 'block'; }
-      const qrStatus = document.getElementById('wx-qr-status');
-      if (qrStatus && _wxQrStatusHtml) qrStatus.innerHTML = _wxQrStatusHtml;
-      const qrButton = document.getElementById('wx-qr-btn');
-      if (qrButton) qrButton.style.display = 'none';
-      const cancel = document.getElementById('wx-qr-cancel');
-      if (cancel) cancel.style.display = 'inline-block';
-    }
-    _settingsLastRunning = botStatus.running;
-    _settingsLastOwner = ownerBound;
-    if (document.getElementById('page-settings').classList.contains('active')) {
-      startSettingsPolling();
-    }
     syncFreeTimeCap();
   } catch(e) {
-    if (generation !== _settingsRequestGeneration) return;
+    if (generation !== _heartbeatRequestGeneration) return;
     el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`;
   }
+}
+
+function renderBasicRow(key, c, label, tip) {
+  const val = c.value;
+  const isDefault = String(val) === String(c.default);
+  const resetBtn = !isDefault ? `<button class="btn btn-ghost btn-sm" onclick="resetBasicParam('${key}')">恢复默认</button>` : '';
+  if (c.type === 'bool') {
+    return `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <label class="toggle"><input type="checkbox" data-basic-key="${key}" ${val===true||val==='true'?'checked':''} onchange="markBasicDirty()"><span class="slider"></span></label>
+      <div style="flex:1"><div style="font-size:14px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+      ${resetBtn}
+    </div>`;
+  }
+  const step = c.type === 'float' ? ' step="0.1"' : '';
+  const width = key === 'CORE_REFRESH_HOURS' ? '160px' : '100px';
+  return `<div class="config-form-row" style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+    <div style="min-width:220px"><div style="font-size:13px">${esc(label)}</div>${tip?`<div style="font-size:11px;color:var(--text-soft);margin-top:2px">${esc(tip)}</div>`:''}</div>
+    <input class="form-input" style="width:${width}" type="${key==='CORE_REFRESH_HOURS'?'text':'number'}"${step} data-basic-key="${key}" value="${esc(val)}" oninput="markBasicDirty()">
+    <span style="font-size:11px;color:var(--text-soft)">默认: ${esc(c.default)}</span>
+    ${resetBtn}
+  </div>`;
+}
+
+function markBasicDirty() {
+  const btn = document.getElementById('basic-save-btn');
+  const hint = document.getElementById('basic-save-hint');
+  if (btn) btn.disabled = false;
+  if (hint) hint.textContent = '有未保存的修改';
+}
+
+function _collectBasicValues(scope) {
+  const root = scope ? document.getElementById(scope) : document;
+  const body = {};
+  (root || document).querySelectorAll('[data-basic-key]').forEach(el => {
+    const key = el.dataset.basicKey;
+    if (el.type === 'checkbox') body[key] = el.checked;
+    else body[key] = el.value;
+  });
+  return body;
+}
+
+async function saveHeartbeatExtras() {
+  const body = {};
+  document.getElementById('heartbeat-content').querySelectorAll('[data-basic-key]').forEach(el => {
+    body[el.dataset.basicKey] = el.type === 'checkbox' ? el.checked : el.value;
+  });
+  try {
+    await api('PUT', '/basic/config', body);
+    showToast('配置已保存');
+    loaded.heartbeat = false;
+    loadHeartbeat();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function saveAllBasic() {
+  const btn = document.getElementById('basic-save-btn');
+  const hint = document.getElementById('basic-save-hint');
+  if (btn) { btn.disabled = true; btn.textContent = '保存中...'; }
+  try {
+    const body = {};
+    document.getElementById('system-content').querySelectorAll('[data-basic-key]').forEach(el => {
+      body[el.dataset.basicKey] = el.type === 'checkbox' ? el.checked : el.value;
+    });
+    await api('PUT','/basic/config', body);
+    showToast('配置已保存');
+    if (hint) hint.textContent = '';
+    if (btn) btn.textContent = '保存';
+    loaded.basic = false;
+    loadSystem();
+  } catch(e) {
+    showToast('错误: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '保存'; }
+  }
+}
+
+async function resetBasicParam(key) {
+  try {
+    await api('PUT','/basic/config', {[key]: null});
+    showToast(key + ' 已恢复默认值');
+    if (document.getElementById('page-heartbeat').classList.contains('active')) loadHeartbeat();
+    else loadSystem();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+function renderBasicConfigCards(cfg) {
+  const groups = [
+    { title:'对话', keys:[['AI_CHAT_MAX_COMPLETION_TOKENS','对话最大 tokens','单次对话回复的 token 上限']] },
+    { title:'维护', keys:[
+      ['MAINTENANCE_ENABLED','启用每日维护','是否启用每日自动维护'],
+      ['MAINTENANCE_HOUR','维护时间（时）','每天几点执行维护任务'],
+      ['WEEKLY_MAINTENANCE_ENABLED','启用每周维护','关系图与周整理'],
+      ['WEEKLY_MAINTENANCE_MINUTE','每周维护分钟','整点后的分钟偏移'],
+      ['CORE_REFRESH_ENABLED','静默刷新 Core','每天按点静默整理 Core'],
+      ['CORE_REFRESH_HOURS','Core 刷新时刻','逗号分隔的小时，如 12,23'],
+    ]},
+    { title:'关系晨间', keys:[
+      ['RELATIONSHIP_MORNING_ENABLED','启用晨间关系整理',''],
+      ['RELATIONSHIP_MORNING_HOUR','晨间整理小时',''],
+    ]},
+  ];
+  let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">维护相关配置立即生效。时区、睡眠和 Free Time 在 Heartbeat 页。</p>';
+  for (const g of groups) {
+    html += `<div class="card"><div class="card-title">${esc(g.title)}</div>`;
+    for (const [key, label, tip] of g.keys) {
+      const c = cfg[key];
+      if (!c) continue;
+      html += renderBasicRow(key, c, label, tip);
+    }
+    html += '</div>';
+  }
+  html += '<div style="margin:0 0 16px;display:flex;align-items:center;gap:12px">'
+    + '<button class="btn btn-primary" id="basic-save-btn" onclick="saveAllBasic()" disabled>保存</button>'
+    + '<span id="basic-save-hint" style="font-size:12px;color:var(--text-soft)"></span>'
+    + '</div>';
+  return html;
+}
+
+async function loadSkills() {
+  const el = document.getElementById('skills-content');
+  try {
+    const [skillsResp, statusData] = await Promise.all([
+      api('GET','/skills'),
+      api('GET','/status'),
+    ]);
+    const skills = Array.isArray(skillsResp) ? skillsResp : (skillsResp.skills || []);
+    const activeTransports = [];
+    const cs = statusData && statusData.config_status || {};
+    if (cs.telegram_bot_token && cs.telegram_bot_token.set) activeTransports.push('telegram');
+    if (cs.weixin_enabled && cs.weixin_enabled.set) activeTransports.push('wechat');
+    if (skills.length === 0) {
+      el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">没有注册的技能。</p></div>';
+      return;
+    }
+    const typeIcons = { tool:'🔧', automation:'🤖', hybrid:'⚡', observer:'👁' };
+    const typeLabels = { tool:'工具', automation:'自动化', hybrid:'混合', observer:'观察器' };
+    skills.sort((a, b) => (b.core || b.locked ? 1 : 0) - (a.core || a.locked ? 1 : 0));
+    let html = '';
+    for (const s of skills) {
+      const icon = typeIcons[s.type] || '📦';
+      const typeLabel = typeLabels[s.type] || s.type;
+      const senseBadge = s.has_observer ? ' <span class="badge badge-info">观察器</span>' : '';
+      const configMissing = s.config_missing && s.config_missing.length > 0;
+      const excludedOn = (s.exclude_transports || []).filter(t => activeTransports.includes(t));
+      const transportExcluded = excludedOn.length > 0;
+      const isCore = s.core || s.locked;
+      let toggleHtml;
+      if (isCore) {
+        toggleHtml = '<span class="badge" style="background:var(--text-soft);color:#fff;font-size:11px">🔒 核心</span>';
+      } else if (s.auto_disabled) {
+        toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>'
+          + ' <span style="font-size:11px;color:var(--danger)">需要配置</span>';
+      } else if (transportExcluded) {
+        const label = excludedOn.map(t => t === 'wechat' ? '微信' : 'Telegram').join('、');
+        toggleHtml = '<label class="toggle" title="此渠道不支持"><input type="checkbox" disabled><span class="slider"></span></label>'
+          + ` <span style="font-size:11px;color:var(--text-soft)">${label}不可用</span>`;
+      } else {
+        toggleHtml = `<label class="toggle"><input type="checkbox" ${s.enabled?'checked':''} onchange="toggleSkill('${esc(s.name)}',this.checked)"><span class="slider"></span></label>`;
+      }
+      html += `<div class="skill-card ${s.enabled && !transportExcluded?'':'disabled'}">
+        <div class="skill-header">
+          <div><span class="skill-name">${icon} ${esc(s.name)}</span> <span class="badge badge-gray">${esc(typeLabel)}</span>${senseBadge}</div>
+          ${toggleHtml}
+        </div>
+        ${s.description?`<div class="skill-desc">${esc(s.description)}</div>`:''}
+        <div class="skill-tools">${(s.tools||[]).map(t=>`<span class="pill">${esc(t)}</span>`).join('')}</div>`;
+      const schemaKeys = (s.config_schema || []).filter(e => !e.internal);
+      const schemaKeySet = new Set(schemaKeys.map(e => e.key));
+      const requireKeys = (s.requires_config || []).filter(k => !schemaKeySet.has(k));
+      if (schemaKeys.length || requireKeys.length) {
+        const configKeys = [
+          ...requireKeys.map(k => ({key:k, secret:true, desc:'', isSet: s.config_status && s.config_status[k]})),
+          ...schemaKeys.map(e => ({key:e.key, secret:e.secret, desc:e.description, isSet: s.config_status && s.config_status[e.key]})),
+        ];
+        html += '<div class="config-list"><div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">配置</div>';
+        for (const c of configKeys) {
+          html += `<div class="config-item">${c.isSet?statusIcon('ok'):statusIcon('err')}<code style="font-size:12px">${esc(c.key)}</code>`;
+          if (c.desc) html += ` <span style="font-size:11px;color:var(--text-soft);margin-left:4px">${esc(c.desc)}</span>`;
+          html += '</div>';
+        }
+        html += `<button class="btn btn-ghost btn-sm" style="margin-top:6px" onclick="toggleSkillConfig('${esc(s.name)}')">配置</button>`;
+        html += `<div id="skill-cfg-${esc(s.name)}" style="display:${configMissing?'block':'none'};margin-top:8px">`;
+        for (const c of configKeys) {
+          const inputType = c.secret ? 'password' : 'text';
+          html += `<div class="form-group"><label class="form-label">${esc(c.key)}</label><input class="form-input" id="scfg-${esc(s.name)}-${esc(c.key)}" type="${inputType}" autocomplete="off" placeholder="${esc(c.desc||c.key)}"></div>`;
+        }
+        html += `<button class="btn btn-primary btn-sm" onclick="saveSkillConfig('${esc(s.name)}')">保存</button>`;
+        html += `<span style="font-size:11px;color:var(--text-soft);margin-left:8px">保存到数据库（立即生效）</span>`;
+        html += '</div></div>';
+      }
+      if (s.name === 'habit') html += '<div id="habit-list-section" style="margin-top:8px"></div>';
+      html += '</div>';
+    }
+    el.innerHTML = html;
+    loadHabitList();
+  } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
+}
+
+async function loadHabitList() {
+  const el = document.getElementById('habit-list-section');
+  if (!el) return;
+  try {
+    const data = await api('GET', '/skills/habit/habits');
+    const habits = data.habits || [];
+    if (!habits.length) {
+      el.innerHTML = '<div style="font-size:12px;color:var(--text-soft);padding:4px 0">暂无习惯 — 通过对话添加</div>';
+      return;
+    }
+    let h = '<div style="font-size:12px;font-weight:600;color:var(--text-soft);margin-bottom:4px">当前习惯</div>';
+    h += '<table class="tbl" style="font-size:12px"><thead><tr><th>名称</th><th>频率</th><th>重要性</th><th>状态</th></tr></thead><tbody>';
+    for (const hab of habits) {
+      let status, badge;
+      if (!hab.active) { status = '已停用'; badge = 'badge-gray'; }
+      else if (hab.paused_until) { status = '暂停至 ' + hab.paused_until; badge = 'badge-warn'; }
+      else { status = '活跃'; badge = 'badge-ok'; }
+      const imp = hab.importance === 'important' ? '<span class="badge badge-err" style="font-size:10px">重要</span>' : '';
+      h += `<tr><td>${esc(hab.name)}${hab.context ? ' <span style="color:var(--text-soft)">(' + esc(hab.context) + ')</span>' : ''}</td><td>${esc(hab.frequency||'')}</td><td>${imp || '普通'}</td><td><span class="badge ${badge}" style="font-size:10px">${esc(status)}</span></td></tr>`;
+    }
+    h += '</tbody></table>';
+    el.innerHTML = h;
+  } catch(e) { /* skip if unavailable */ }
+}
+
+async function toggleSkill(name, enabled) {
+  try {
+    const r = await api('PUT','/skills/'+encodeURIComponent(name)+'/enabled', {enabled});
+    if (r.ok === false) { showToast('❌ ' + r.error); loaded.skills = false; loadSkills(); return; }
+    showToast(name + (enabled?' 已启用':' 已禁用'));
+    loaded.skills = false;
+    loadSkills();
+  } catch(e) { showToast('错误: ' + e.message); loaded.skills = false; loadSkills(); }
+}
+
+function toggleSkillConfig(name) {
+  const el = document.getElementById('skill-cfg-' + name);
+  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveSkillConfig(name) {
+  const cfgDiv = document.getElementById('skill-cfg-' + name);
+  if (!cfgDiv) return;
+  const inputs = cfgDiv.querySelectorAll('.form-input');
+  const body = {};
+  let hasValue = false;
+  for (const input of inputs) {
+    if (input.value.trim()) {
+      const key = input.id.replace('scfg-' + name + '-', '');
+      body[key] = input.value.trim();
+      hasValue = true;
+    }
+  }
+  if (!hasValue) return showToast('没有要保存的值');
+  try {
+    await api('PUT','/skills/'+encodeURIComponent(name)+'/config', body);
+    showToast('✅ 配置已保存（立即生效）');
+    loaded.skills = false;
+    loadSkills();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function loadMemoryBank() {
+  loadMemoryExtractionStatus();
+  searchMemoryItems(1);
 }
 
 function hourToClock(value, fallbackHour) {
@@ -1738,8 +2134,8 @@ async function savePreferences() {
       FREE_TIME_AWAKE_END: ftEnd,
     });
     showToast('✅ 偏好已保存');
-    loaded.settings = false;
-    loadSettings();
+    loaded.heartbeat = false;
+    loadHeartbeat();
   } catch(e) {
     showToast('保存失败: ' + e.message);
   }
@@ -1749,13 +2145,15 @@ async function loadSystem() {
   const generation = ++_systemRequestGeneration;
   const el = document.getElementById('system-content');
   try {
-    const [s, botStatus, checkupData] = await Promise.all([
+    const [s, botStatus, checkupData, basicCfg] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
       api('GET', '/checkup').catch(() => null),
+      api('GET', '/basic/config').catch(() => ({})),
     ]);
     if (generation !== _systemRequestGeneration) return;
-    let html = '<div class="stat-grid">';
+    let html = renderBasicConfigCards(basicCfg);
+    html += '<div class="stat-grid">';
     html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${botStatus.running?'运行中':'未运行'}</div><div class="stat-label">Agent</div></div>`;
     html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(s.heartbeat_state)}</div><div class="stat-label">Heartbeat</div></div>`;
     html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">v${esc(s.version || 'unknown')}</div><div class="stat-label">版本</div></div>`;
@@ -1926,7 +2324,7 @@ async function loadAdvanced() {
       api('GET','/embedding/config'),
       api('GET','/search/config'),
     ]);
-    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">管理模型服务、联网搜索与语义检索。正常使用通常无需调整这里。</p>';
+    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">注册模型、分配 Main / Lite / Draw，以及联网搜索与语义检索。</p>';
 
     html += '<div class="card"><div class="card-title">Agent 模型</div>';
     const agentTiers = [
@@ -2226,8 +2624,8 @@ async function saveModelFromModal(stayOpen) {
     if (!stayOpen) {
       closeModelModal();
       loaded.settings = false;
-      loaded.advanced = false;
-      if (document.getElementById('page-advanced').classList.contains('active')) loadAdvanced();
+      loaded.models = false;
+      if (document.getElementById('page-models').classList.contains('active')) loadAdvanced();
       else loadSettings();
     }
     return result;
@@ -2245,7 +2643,7 @@ async function deleteModel(name) {
     await api('DELETE','/models/'+encodeURIComponent(name));
     showToast('已删除');
     loaded.settings = false;
-    loaded.advanced = false;
+    loaded.models = false;
     loadAdvanced();
   }
   catch(e) { showToast('错误: ' + e.message); }
@@ -2257,7 +2655,7 @@ let _migrationLoaded = false;
 
 async function loadMemory() {
   const generation = ++_coreRequestGeneration;
-  loaded.memory = true;
+  loaded.persona = true;
   const el = document.getElementById('memory-content');
   const badge = document.getElementById('memory-token-badge');
   el.innerHTML = '<div class="loading"><div class="spinner"></div> 加载中...</div>';
@@ -2292,13 +2690,6 @@ async function loadMemory() {
   } catch (e) {
     if (generation !== _coreRequestGeneration) return;
     el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
-  }
-  // Also load L2 memory
-  loadMemoryExtractionStatus();
-  searchMemoryItems(1);
-  if (!_migrationLoaded) {
-    _migrationLoaded = true;
-    loadMigration();
   }
 }
 
@@ -2581,9 +2972,9 @@ async function assignTier(tier, modelName) {
     if (modelName) { await api('PUT','/tiers/'+tier, {model_name:modelName}); }
     else { await api('DELETE','/tiers/'+tier); }
     showToast(tier + ' 模型已更新');
-    loaded.advanced = false;
+    loaded.models = false;
     loaded.settings = false;
-    if (document.getElementById('page-advanced').classList.contains('active')) loadAdvanced();
+    if (document.getElementById('page-models').classList.contains('active')) loadAdvanced();
     else loadSettings();
   } catch(e) { showToast('错误: ' + e.message); }
 }
@@ -2649,7 +3040,7 @@ async function saveSearchConfig(silent) {
     document.getElementById('search-apikey').value = '';
     if (!silent) {
       showToast('✅ 百度搜索 Key 已加密保存');
-      loaded.advanced = false;
+      loaded.models = false;
       loadAdvanced();
     }
     return true;
@@ -2684,7 +3075,7 @@ async function deleteSearchConfig() {
   try {
     await api('PUT', '/search/config', {clear: true});
     showToast('已恢复使用 Bing');
-    loaded.advanced = false;
+    loaded.models = false;
     loadAdvanced();
   } catch(e) {
     showToast('删除失败: ' + e.message);
@@ -2721,7 +3112,7 @@ async function deleteEmbeddingConfig() {
   try {
     await api('PUT', '/env', {EMBEDDING_PROVIDER: 'none', EMBEDDING_API_KEY: '', EMBEDDING_MODEL: '', EMBEDDING_BASE_URL: ''});
     showToast('Embedding 已禁用');
-    loaded.advanced = false;
+    loaded.models = false;
     loadAdvanced();
   } catch(e) { showToast('错误: ' + e.message); }
 }
@@ -2745,7 +3136,7 @@ async function saveEmbeddingConfig(skipReload) {
     await api('PUT', '/env', body);
     if (!skipReload) {
       showToast('Embedding 配置已保存（重启生效）');
-      loaded.advanced = false;
+      loaded.models = false;
       loadAdvanced();
     }
   } catch(e) { showToast('错误: ' + e.message); throw e; }

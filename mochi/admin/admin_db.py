@@ -354,6 +354,22 @@ _DEPRECATED_SYSTEM_KEYS = frozenset({
     "PROACTIVE_COOLDOWN_SECONDS",
 })
 
+# Shown on 基本配置 / Heartbeat extra — not the companion preference form.
+BASIC_CONFIG_KEYS = (
+    "AI_CHAT_MAX_COMPLETION_TOKENS",
+    "MAINTENANCE_HOUR",
+    "MAINTENANCE_ENABLED",
+    "WEEKLY_MAINTENANCE_ENABLED",
+    "WEEKLY_MAINTENANCE_MINUTE",
+    "RELATIONSHIP_MORNING_ENABLED",
+    "RELATIONSHIP_MORNING_HOUR",
+    "CORE_REFRESH_ENABLED",
+    "CORE_REFRESH_HOURS",
+    "FALLBACK_WAKE_HOUR",
+    "SILENCE_PAUSE_DAYS",
+    "BEDTIME_ENTRY_ENABLED",
+)
+
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     # ── Heartbeat ──
     "MAX_DAILY_FREE_TIME":            ("int",   FREE_TIME_DAILY_MAX),
@@ -520,6 +536,18 @@ def set_system_override(key: str, value: str) -> None:
         "VALUES (?, ?, ?, ?) "
         "ON CONFLICT(skill_name, key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
         (_SYSTEM_SKILL_NAME, key, value, now),
+    )
+    conn.commit()
+    conn.close()
+    invalidate_system_config_cache()
+
+
+def delete_system_override(key: str) -> None:
+    """Remove a DB override so the compiled default takes over again."""
+    conn = _connect()
+    conn.execute(
+        "DELETE FROM skill_config WHERE skill_name = ? AND key = ?",
+        (_SYSTEM_SKILL_NAME, key),
     )
     conn.commit()
     conn.close()
