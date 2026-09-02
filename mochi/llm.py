@@ -16,6 +16,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -247,7 +248,17 @@ class _OpenAICompatChat:
 
     def _init_caps_from_cache(self, model: str, base_url: str = "") -> None:
         """Seed instance flags from class-level cache if available."""
-        endpoint = base_url.rstrip("/").lower() or "openai-default"
+        if base_url:
+            parsed = urlsplit(base_url.rstrip("/"))
+            endpoint = urlunsplit((
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            ))
+        else:
+            endpoint = "openai-default"
         self._caps_cache_key = f"{endpoint}::{model}"
         cached = self._model_caps.get(self._caps_cache_key)
         if cached:

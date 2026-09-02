@@ -283,6 +283,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
 
     for endpoint, model in (
         ("https://api.openai.com/v1", "deepseek-reasoner"),
+        ("https://api.deepseek.com/V1", "deepseek-reasoner"),
         ("https://api.deepseek.com/v1", "another-model"),
     ):
         isolated = llm.OpenAIProvider.__new__(llm.OpenAIProvider)
