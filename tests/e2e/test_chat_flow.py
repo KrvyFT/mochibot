@@ -57,16 +57,19 @@ class TestSimpleReply:
 
     @pytest.mark.asyncio
     async def test_update_core(self, mock_llm_factory):
+        from mochi.db import get_recent_messages
         from mochi.core_store import read_core, replace_core
         replace_core("Core anchor")
-        mock_llm_factory([
-            make_response(tool_calls=[
+        tool_response = make_response(tool_calls=[
                 make_tool_call("update_core", {
                     "action": "insert_after",
                     "anchor_text": "Core anchor",
                     "content": "User likes jasmine tea",
                 }),
-            ]),
+            ])
+        tool_response.reasoning_content = "I should preserve this exact thought."
+        mock = mock_llm_factory([
+            tool_response,
             # Round 2: LLM gives final reply after tool result
             make_response("Got it, I'll remember that!"),
         ])
@@ -75,6 +78,19 @@ class TestSimpleReply:
 
         assert "remember" in reply.text.lower()
         assert "jasmine tea" in read_core()
+        first_round_assistant = next(
+            message for message in mock.call_log[1]["messages"]
+            if message["role"] == "assistant" and "tool_calls" in message
+        )
+        assert first_round_assistant["reasoning_content"] == (
+            "I should preserve this exact thought."
+        )
+        reply.confirm_delivered()
+        persisted = get_recent_messages(1, limit=10)
+        assert all(
+            "I should preserve this exact thought." not in message["content"]
+            for message in persisted
+        )
 
         unchanged_core = read_core()
         rejected_calls = [
@@ -137,6 +153,14 @@ class TestSimpleReply:
             assert model_error["started"] is False
             assert model_error["retryable"] is True
             assert model_error["changed"] is False
+            assistant_messages = [
+                message for message in mock.call_log[1]["messages"]
+                if message["role"] == "assistant" and "tool_calls" in message
+            ]
+            assert all(
+                "reasoning_content" not in message
+                for message in assistant_messages
+            )
             assert read_core() == unchanged_core
 
 class TestToolCallReminder:

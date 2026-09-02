@@ -52,6 +52,7 @@ class ToolCallDict(TypedDict):
 class LLMResponse:
     """Unified response from any LLM provider."""
     content: str = ""
+    reasoning_content: str = ""
     tool_calls: list[ToolCallDict] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
@@ -210,6 +211,7 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
             cached = int(c) if c is not None else None
     return LLMResponse(
         content=choice.message.content or "",
+        reasoning_content=getattr(choice.message, "reasoning_content", "") or "",
         tool_calls=tool_calls,
         prompt_tokens=usage.prompt_tokens if usage else 0,
         completion_tokens=usage.completion_tokens if usage else 0,

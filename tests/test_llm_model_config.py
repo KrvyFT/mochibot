@@ -81,7 +81,11 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         ),
         SimpleNamespace(
             choices=[SimpleNamespace(
-                message=SimpleNamespace(content="", tool_calls=[tool_call]),
+                message=SimpleNamespace(
+                    content="",
+                    reasoning_content="I should check the weather first.",
+                    tool_calls=[tool_call],
+                ),
                finish_reason="tool_calls",
             )],
             usage=None,
@@ -119,6 +123,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         "argument_error": None,
     }]
     assert result.tool_calls_complete is True
+    assert result.reasoning_content == "I should check the weather first."
 
     malformed = provider.chat(
         [{"role": "user", "content": "weather"}],
@@ -128,11 +133,13 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
     assert malformed.tool_calls[0]["argument_error"] == (
         "arguments were not valid JSON"
     )
+    assert malformed.reasoning_content == ""
 
     anthropic_messages = llm.AnthropicProvider._convert_messages([
         {
             "role": "assistant",
             "content": "",
+            "reasoning_content": "OpenAI-compatible extension",
             "tool_calls": [{
                 "id": "tool-1",
                 "type": "function",
@@ -145,6 +152,7 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         {"role": "tool", "tool_call_id": "tool-1", "content": '{"ok":true}'},
     ])
     assert anthropic_messages[0]["content"][0]["input"] == {"city": "Tokyo"}
+    assert "reasoning_content" not in anthropic_messages[0]
     assert anthropic_messages[1]["content"][0]["tool_use_id"] == "tool-1"
 
     anthropic_provider = llm.AnthropicProvider.__new__(llm.AnthropicProvider)
