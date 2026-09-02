@@ -14,6 +14,7 @@ RuntimeEntryKind = Literal[
     "bedtime",
     "self_reminder",
     "weekly_maintenance",
+    "core_refresh",
     "free_time",
 ]
 
@@ -63,6 +64,16 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             recent_operations=False,
             prompt_sections=False,
             temporal_context=False,
+        )
+    if entry.kind == "core_refresh":
+        return ContextPolicy(
+            diary_journal=True,
+            conversation_summary=True,
+            recent_history=True,
+            auto_recall=False,
+            recent_operations=False,
+            prompt_sections=False,
+            temporal_context=True,
         )
     return ContextPolicy()
 
@@ -189,6 +200,30 @@ class MainRuntimeEntry:
             logical_date=logical_date,
             period_key=period_key,
             idempotency_key=f"weekly-maintenance:{user_id}:{period_key}",
+        )
+
+    @classmethod
+    def core_refresh(
+        cls,
+        *,
+        logical_date: str,
+        period_key: str,
+        user_id: int,
+        channel_id: int,
+        transport: str,
+    ) -> "MainRuntimeEntry":
+        date.fromisoformat(logical_date)
+        if not isinstance(period_key, str) or not period_key.strip():
+            raise ValueError("core refresh period key must not be empty")
+        key = period_key.strip()
+        return cls(
+            kind="core_refresh",
+            user_id=user_id,
+            channel_id=channel_id,
+            transport=transport,
+            logical_date=logical_date,
+            period_key=key,
+            idempotency_key=f"core-refresh:{user_id}:{key}",
         )
 
     @classmethod
