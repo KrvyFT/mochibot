@@ -1538,11 +1538,11 @@ async function loadSettings() {
     const freeTime = prefs.MAX_DAILY_FREE_TIME || {};
     const freeTimeEnabled = Number(freeTime.value) > 0;
     const sleepAfter = prefs.SLEEP_AFTER_HOUR || {value: 1, default: 1};
-    const wakeEarliest = prefs.WAKE_EARLIEST_HOUR || {value: 6, default: 6};
+    const wakeEarliest = prefs.WAKE_EARLIEST_HOUR || {value: 8, default: 8};
     const ftStart = prefs.FREE_TIME_AWAKE_START || {value: '08:00', default: '08:00'};
     const ftEnd = prefs.FREE_TIME_AWAKE_END || {value: '00:00', default: '00:00'};
     const sleepStartClock = hourToClock(sleepAfter.value, 1);
-    const wakeClock = hourToClock(wakeEarliest.value, 6);
+    const wakeClock = hourToClock(wakeEarliest.value, 8);
     const ftStartClock = clockValue(ftStart.value, '08:00');
     const ftEndClock = clockValue(ftEnd.value, '00:00');
     // Bounds and the fallback number come from the API so the form can never
@@ -1682,7 +1682,7 @@ function syncFreeTimeCap() {
   }
   const hint = document.getElementById('pref-schedule-hint');
   if (hint) {
-    const sleepLabel = (sleepStart && sleepEnd) ? `${sleepStart}–${sleepEnd}` : '01:00–06:00';
+    const sleepLabel = (sleepStart && sleepEnd) ? `${sleepStart}–${sleepEnd}` : '01:00–08:00';
     const windowLabel = (start && end) ? `${start}–${end}` : '08:00–00:00';
     hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，安排数是当天要排的次数（默认 32，不是塞满窗口）。约 20% 的机会带上联网搜索。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。过了睡眠结束点会自动醒；醒了你还没开口时主动找你会变少。`;
   }

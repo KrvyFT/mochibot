@@ -202,7 +202,7 @@ capacity is the 15-minute grid (64 for the default). Changing timezone or
 the window replans the remaining day; mid-window starts do not pack leftover
 slots into the evening.
 
-Sleep and wake hours are the same admin preferences (default 01:00–06:00).
+Sleep and wake hours are the same admin preferences (default 01:00–08:00).
 Owner messages during rest do not wake; auto-wake is the sleep window's end,
 not a 10:00 fallback. Until the owner speaks in the current awake period,
 due Free Time slots are still consumed but skipped unless 45 minutes have

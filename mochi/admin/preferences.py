@@ -148,7 +148,7 @@ def normalize_preference_updates(
         "SLEEP_AFTER_HOUR", merged.get("SLEEP_AFTER_HOUR", 1),
     )
     wake_earliest = _as_hour(
-        "WAKE_EARLIEST_HOUR", merged.get("WAKE_EARLIEST_HOUR", 6),
+        "WAKE_EARLIEST_HOUR", merged.get("WAKE_EARLIEST_HOUR", 8),
     )
     if sleep_after == wake_earliest:
         raise ValueError(
