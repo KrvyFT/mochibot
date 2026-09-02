@@ -88,6 +88,7 @@ class SkillResult:
     - error_code/retryable: optional machine-readable failure facts
     - execution_started: whether the skill handler was entered
     - state_change_unknown: an exception may have happened after a side effect
+    - content_source: optional provenance for content returned to the model
     """
     output: str = ""
     actions: list[dict] = field(default_factory=list)
@@ -99,6 +100,7 @@ class SkillResult:
     retryable: bool | None = None
     execution_started: bool = False
     state_change_unknown: bool = False
+    content_source: str = ""
 
 
 @dataclass

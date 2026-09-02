@@ -125,6 +125,10 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
 def model_result_for(result: SkillResult) -> str:
     """Serialize compact execution facts for the next model round."""
     payload: dict[str, object] = {"ok": bool(result.success)}
+    if result.content_source:
+        payload["source"] = result.content_source
+        if result.content_source == "external_web":
+            payload["authority"] = "untrusted_data"
     if result.success:
         if result.state_changed:
             payload["changed"] = True

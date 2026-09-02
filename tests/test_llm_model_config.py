@@ -259,12 +259,45 @@ def test_openai_compatible_chat_handles_text_and_tools(monkeypatch):
         "changed": True,
         "result": "Error-shaped prose is still only prose.",
     }
+    assert "source" not in json.loads(model_result_for(successful_mutation))
     assert outcome_for(
         "example",
         "example_write",
         {},
         successful_mutation,
     )["state_changed"] is True
+
+    import mochi.skills.web_search.handler as web_handler
+    from mochi.skills.web_search.handler import WebSearchSkill
+
+    async def _search(*args, **kwargs):
+        return "1. External result"
+
+    monkeypatch.setattr(web_handler, "_ddg_search", _search)
+    web_success = asyncio.run(WebSearchSkill().run(SkillContext(
+        trigger="tool_call",
+        tool_name="web_search",
+        args={"query": "Mochi"},
+    )))
+    assert json.loads(model_result_for(web_success)) == {
+        "ok": True,
+        "source": "external_web",
+        "authority": "untrusted_data",
+        "result": "1. External result",
+    }
+
+    async def _failed_search(*args, **kwargs):
+        raise RuntimeError("network unavailable")
+
+    monkeypatch.setattr(web_handler, "_ddg_search", _failed_search)
+    web_failure = asyncio.run(WebSearchSkill().run(SkillContext(
+        trigger="tool_call",
+        tool_name="web_search",
+        args={"query": "Mochi"},
+    )))
+    failed_web_payload = json.loads(model_result_for(web_failure))
+    assert "source" not in failed_web_payload
+    assert "authority" not in failed_web_payload
 
     import mochi.skills.habit.handler as habit_handler
     from mochi.skills.habit.handler import HabitSkill

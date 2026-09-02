@@ -113,7 +113,7 @@ class WebSearchSkill(Skill):
 
         try:
             result = await _ddg_search(query, max_results=max_results, timeout_s=_DEFAULT_TIMEOUT_S)
-            return SkillResult(output=result)
+            return SkillResult(output=result, content_source="external_web")
         except Exception as e:
             log.error("Web search failed: %s", e)
             return SkillResult(output=f"Search error: {e}", success=False)

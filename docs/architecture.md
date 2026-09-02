@@ -82,7 +82,9 @@ match that snapshot's schema; rejected calls receive paired, turn-local tool
 errors so the model can recover without recording or executing them. Every
 paired result states whether it succeeded; failures also state whether the
 skill handler started and include retry and durable-state facts when known.
-These facts come from execution contracts, never by interpreting result prose.
+Successful external Web results also carry source and authority facts so Main
+can distinguish untrusted data from user or system instructions. These facts
+come from execution contracts, never by interpreting result prose.
 
 Tool metadata uses `resident`, `routed`, or `on_demand`. Resident tools enter
 the turn directly; the Lite pre-router sees only routed skills; and
