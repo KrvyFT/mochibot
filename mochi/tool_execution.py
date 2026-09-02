@@ -33,15 +33,6 @@ _FOLLOWUP_RE = re.compile(
     r"\b(?:change|undo|cancel|delete|repeat|redo)\b|\badd another\b)",
     re.IGNORECASE,
 )
-_FAILED_OUTPUT_RE = re.compile(
-    r"^(?:error|failed|unknown|need\b|invalid\b)|not found|out of range|unavailable",
-    re.IGNORECASE,
-)
-_NO_CHANGE_OUTPUT_RE = re.compile(
-    r"already (?:completed|exists)|nothing to|no .* found|not found|"
-    r"similar line already exists|没有找到|无需|已经完成",
-    re.IGNORECASE,
-)
 _EXPLICIT_STATE_FACT_TOOLS = {
     "habit_progress",
     "edit_file",
@@ -159,16 +150,13 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
                 result: SkillResult) -> dict:
     """Build the durable outcome fields for one completed dispatch."""
     action = action_for(tool_name, args)
-    looks_failed = bool(_FAILED_OUTPUT_RE.search((result.output or "").strip()))
-    success = bool(result.success) and not looks_failed
+    success = bool(result.success)
     if not success:
         changed = False
     elif tool_name in _EXPLICIT_STATE_FACT_TOOLS:
-        changed = result.state_changed
-    elif _NO_CHANGE_OUTPUT_RE.search(result.output or ""):
-        changed = False
+        changed = bool(result.state_changed)
     else:
-        changed = result.state_changed or _state_changed(tool_name, action)
+        changed = bool(result.state_changed) or _state_changed(tool_name, action)
     return {
         "action": action,
         "status": "success" if success else "failed",
@@ -176,6 +164,29 @@ def outcome_for(skill_name: str, tool_name: str, args: dict,
         "entity_refs": _entity_refs(skill_name, args, result),
         "state_changed": changed,
     }
+
+
+def model_result_for(result: SkillResult) -> str:
+    """Serialize compact execution facts for the next model round."""
+    payload: dict[str, object] = {"ok": bool(result.success)}
+    if result.content_source:
+        payload["source"] = result.content_source
+        if result.content_source == "external_web":
+            payload["authority"] = "untrusted_data"
+    if result.success:
+        if result.state_changed:
+            payload["changed"] = True
+        if result.output:
+            payload["result"] = result.output
+    else:
+        payload["code"] = result.error_code or "tool_failed"
+        payload["started"] = bool(result.execution_started)
+        if result.retryable is not None:
+            payload["retryable"] = bool(result.retryable)
+        if not result.state_change_unknown:
+            payload["changed"] = bool(result.state_changed)
+        payload["message"] = result.output or "Tool failed."
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
 def recent_operations_context(user_id: int, text: str,

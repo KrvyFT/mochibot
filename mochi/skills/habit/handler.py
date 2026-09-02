@@ -340,12 +340,30 @@ class HabitSkill(Skill):
         verb = "reactivated" if reactivated else "created"
         return SkillResult(
             output=f"Habit #{hid} {verb}{imp_label}: {name} ({cycle_label} x{target}){ctx_label}"
-                   f"{f' [{category}]' if category else ''}"
+                   f"{f' [{category}]' if category else ''}",
+            state_changed=True,
         )
 
     def _remove(self, user_id: int, args: dict) -> SkillResult:
         habit, error = _resolve_active_habit(user_id, args, "remove")
         if error:
+            raw_id = args.get("habit_id")
+            if raw_id not in (None, ""):
+                try:
+                    habit_id = int(raw_id)
+                except (TypeError, ValueError):
+                    return error
+                existing = next(
+                    (
+                        item for item in list_habits(user_id, active_only=False)
+                        if item["id"] == habit_id
+                    ),
+                    None,
+                )
+                if existing and not existing["active"]:
+                    return SkillResult(
+                        output=f"Habit #{habit_id} was already inactive.",
+                    )
             return error
         assert habit is not None
         habit_id = habit["id"]
@@ -353,6 +371,7 @@ class HabitSkill(Skill):
         return SkillResult(
             output=f"Habit #{habit_id} deactivated." if ok else f"Habit #{habit_id} not found.",
             success=ok,
+            state_changed=ok,
         )
 
     def _pause(self, user_id: int, args: dict) -> SkillResult:
@@ -372,7 +391,15 @@ class HabitSkill(Skill):
         ok = pause_habit(user_id, habit_id, until)
         if not ok:
             return SkillResult(output=f"Habit #{habit_id} not found.", success=False)
-        return SkillResult(output=f"⏸️ {habit['name']} paused until {until}.")
+        changed = habit.get("paused_until") != until
+        return SkillResult(
+            output=(
+                f"⏸️ {habit['name']} paused until {until}."
+                if changed
+                else f"⏸️ {habit['name']} was already paused until {until}."
+            ),
+            state_changed=changed,
+        )
 
     def _resume(self, user_id: int, args: dict) -> SkillResult:
         habit, error = _resolve_active_habit(user_id, args, "resume")

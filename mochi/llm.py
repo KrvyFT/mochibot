@@ -16,6 +16,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -115,7 +116,8 @@ class ToolCallDict(TypedDict):
     """Typed structure for a single tool call in LLMResponse."""
     id: str
     name: str
-    arguments: dict[str, Any]
+    arguments: object
+    argument_error: str | None
 
 
 @dataclass
@@ -129,6 +131,7 @@ class LLMResponse:
     total_tokens: int = 0
     model: str = ""
     finish_reason: str = ""
+    tool_calls_complete: bool = False
     # None = SDK didn't report (legacy SDK / non-reasoning model / non-OpenAI
     # provider). 0 = model explicitly reported zero. The distinction matters
     # for cost telemetry — see plan P1-2.
@@ -252,11 +255,15 @@ def _parse_openai_tool_calls(choice) -> list[ToolCallDict]:
             except (json.JSONDecodeError, TypeError):
                 log.warning("Malformed tool_call arguments for %s",
                             tc.function.name)
-                parsed_args = {}
+                parsed_args = None
+                argument_error = "arguments were not valid JSON"
+            else:
+                argument_error = None
             tool_calls.append({
                 "id": tc.id,
                 "name": tc.function.name,
                 "arguments": parsed_args,
+                "argument_error": argument_error,
             })
     return tool_calls
 
@@ -286,6 +293,7 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         total_tokens=usage.total_tokens if usage else 0,
         model=model,
         finish_reason=choice.finish_reason or "",
+        tool_calls_complete=choice.finish_reason == "tool_calls",
         reasoning_tokens=reasoning,
         cached_prompt_tokens=cached,
     )
@@ -294,18 +302,17 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
 class _OpenAICompatChat:
     """Mixin: negotiate max_tokens vs max_completion_tokens.
 
-    On first call, tries the modern parameter set. If the API returns 400
-    explicitly naming the token parameters, it retries with the other variant and
-    caches the capability so subsequent calls don't need a retry.
+    On first call, tries the modern token parameter. Precise protocol 400s can
+    negotiate the alternate token parameter or empty reasoning placeholders.
 
     Learned capabilities are also persisted in a class-level cache keyed by
-    model name, so a fresh provider instance for the same model (e.g. after
-    a hot-swap) skips the probe-and-retry round-trip entirely.
+    endpoint and model, so a fresh equivalent provider instance can skip the
+    probe-and-retry round-trip.
     """
 
     # Class-level cache: endpoint + model → negotiated OpenAI-compatible quirks.
     # Survives provider instance recreation (hot-swap, pool reload).
-    # GIL-safe: dict read/write is atomic; values are write-once per model.
+    # Best-effort only: losing a concurrent cache update causes another safe probe.
     _model_caps: dict[str, dict[str, bool]] = {}
 
     # Per-instance capability flags (set after first successful call)
@@ -315,7 +322,17 @@ class _OpenAICompatChat:
 
     def _init_caps_from_cache(self, model: str, base_url: str = "") -> None:
         """Seed instance flags from class-level cache if available."""
-        endpoint = base_url.rstrip("/").lower() or "openai-default"
+        if base_url:
+            parsed = urlsplit(base_url.rstrip("/"))
+            endpoint = urlunsplit((
+                parsed.scheme.lower(),
+                parsed.netloc.lower(),
+                parsed.path,
+                parsed.query,
+                parsed.fragment,
+            ))
+        else:
+            endpoint = "openai-default"
         self._caps_cache_key = f"{endpoint}::{model}"
         cached = self._model_caps.get(self._caps_cache_key)
         if cached:
@@ -398,13 +415,13 @@ class _OpenAICompatChat:
                 changed = False
 
                 if "max_tokens" in err_msg and "max_completion_tokens" in err_msg:
-                    if self._use_max_completion_tokens is None:
+                    if "max_completion_tokens" in kwargs:
                         self._use_max_completion_tokens = False
                         kwargs.pop("max_completion_tokens", None)
                         kwargs["max_tokens"] = max_tokens
                         log.info("Model %s: falling back to max_tokens", model)
                         changed = True
-                    elif not self._use_max_completion_tokens:
+                    elif "max_tokens" in kwargs:
                         self._use_max_completion_tokens = True
                         kwargs.pop("max_tokens", None)
                         kwargs["max_completion_tokens"] = max_tokens
@@ -532,10 +549,16 @@ class AnthropicProvider(LLMProvider):
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
+                arguments = block.input
+                argument_error = None
+                if not isinstance(arguments, dict):
+                    arguments = None
+                    argument_error = "arguments were not an object"
                 tool_calls.append({
                     "id": block.id,
                     "name": block.name,
-                    "arguments": block.input,
+                    "arguments": arguments,
+                    "argument_error": argument_error,
                 })
             elif block.type in ("thinking", "redacted_thinking"):
                 # Internal reasoning — NEVER leak into user-facing content.
@@ -562,6 +585,7 @@ class AnthropicProvider(LLMProvider):
             total_tokens=(usage.input_tokens + usage.output_tokens) if usage else 0,
             model=self._model,
             finish_reason=resp.stop_reason or "",
+            tool_calls_complete=resp.stop_reason == "tool_use",
             # Anthropic doesn't separately report thinking-token usage; it's
             # bundled into output_tokens. Leave None to preserve the P1-2
             # semantic (None = not reported by SDK).
@@ -609,8 +633,15 @@ class AnthropicProvider(LLMProvider):
                     if isinstance(args, str):
                         try:
                             args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {}
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(
+                                "Cannot convert malformed tool arguments "
+                                "to Anthropic format"
+                            ) from exc
+                    if not isinstance(args, dict):
+                        raise ValueError(
+                            "Anthropic tool arguments must be an object"
+                        )
                     content_blocks.append({
                         "type": "tool_use",
                         "id": tc["id"],

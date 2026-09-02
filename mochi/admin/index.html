@@ -2389,9 +2389,13 @@ async function searchMemoryItems(page) {
         '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + item.access_count + '</td>' +
         '<td style="color:var(--text-soft);font-size:11px;white-space:nowrap">' + esc(evidenceDate) + '</td>' +
         '<td style="white-space:nowrap">' +
+          '<button class="btn btn-ghost btn-sm" onclick="toggleMemoryReceipt(' + item.id + ')" title="查看形成小票">🧾</button> ' +
           '<button class="btn btn-ghost btn-sm" onclick=\'openMiEdit(' + JSON.stringify(item).replace(/'/g,"&#39;") + ')\' title="编辑">✏️</button> ' +
           '<button class="btn btn-danger btn-sm" onclick="deleteMi(' + item.id + ')" title="删除">🗑</button>' +
         '</td>' +
+      '</tr>' +
+      '<tr id="mi-receipt-row-' + item.id + '" style="display:none">' +
+        '<td colspan="6"><div id="mi-receipt-' + item.id + '" style="padding:8px 4px"></div></td>' +
       '</tr>';
     }).join('');
 
@@ -2422,6 +2426,62 @@ async function searchMemoryItems(page) {
     if (generation !== _miSearchGeneration) return;
     el.innerHTML = '<div class="loading" style="color:var(--danger)">❌ ' + esc(e.message) + '</div>';
   }
+}
+
+function formatMiReceiptTime(value) {
+ return value ? String(value).slice(0, 16).replace('T', ' ') : '—';
+}
+
+function renderMemoryReceipt(receipt) {
+ const item = receipt.item || {};
+ const sourceLabel = MEMORY_SOURCE_LABELS[item.source] || '其他';
+ const importance = IMPORTANCE_STARS[item.importance] || item.importance || '—';
+ let messages = '';
+ if (receipt.source_status === 'not_recorded') {
+   messages = '<div style="color:var(--text-soft)">未记录原始对话来源（常见于手动、导入或旧版记忆）。</div>';
+ } else {
+   messages = (receipt.source_messages || []).map(function(message) {
+     if (!message.available) {
+       return '<div style="margin-top:8px;color:var(--warning)">消息 #' +
+         esc(message.message_id) + '：原始用户消息不可用。</div>';
+     }
+     return '<div style="margin-top:8px;padding:10px 12px;background:var(--bg);border-radius:8px">' +
+       '<div style="font-size:11px;color:var(--text-soft);margin-bottom:5px">用户消息 #' +
+         esc(message.message_id) + ' · ' + esc(formatMiReceiptTime(message.created_at)) + '</div>' +
+       '<div style="white-space:pre-wrap;word-break:break-word">' + esc(message.content || '') +
+         (message.truncated ? '<span style="color:var(--warning)"> [已按显示边界截断]</span>' : '') +
+       '</div></div>';
+   }).join('');
+ }
+ return '<div style="border:1px solid var(--border);border-radius:10px;padding:12px;font-size:12px">' +
+   '<div style="font-weight:600;color:var(--text-heading);margin-bottom:8px">记忆形成小票</div>' +
+   '<div style="white-space:pre-wrap;word-break:break-word;margin-bottom:8px">' + esc(item.content || '') + '</div>' +
+   '<div style="color:var(--text-soft)">来源：' + esc(sourceLabel) +
+     ' · 重要性：' + esc(importance) +
+     ' · 形成：' + esc(formatMiReceiptTime(item.created_at)) +
+     ' · 更新：' + esc(formatMiReceiptTime(item.updated_at)) + '</div>' +
+   '<div style="margin-top:10px;color:var(--text-soft)">以下是形成时记录的来源消息，不代表人工编辑后的当前文字仍由它们验证。</div>' +
+   messages + '</div>';
+}
+
+async function toggleMemoryReceipt(id) {
+ const row = document.getElementById('mi-receipt-row-' + id);
+ const el = document.getElementById('mi-receipt-' + id);
+ if (!row || !el) return;
+ if (row.style.display !== 'none') {
+   row.style.display = 'none';
+   return;
+ }
+ row.style.display = '';
+ if (el.dataset.loaded === 'true') return;
+ el.innerHTML = '<div class="loading"><div class="spinner"></div> 正在读取形成小票…</div>';
+ try {
+   const receipt = await api('GET', '/memory-items/' + id + '/evidence');
+   el.innerHTML = renderMemoryReceipt(receipt);
+   el.dataset.loaded = 'true';
+ } catch (e) {
+   el.innerHTML = '<div style="color:var(--danger)">形成小票读取失败：' + esc(e.message) + '</div>';
+ }
 }
 
 function openMiEdit(item) {
