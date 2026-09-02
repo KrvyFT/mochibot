@@ -172,6 +172,8 @@ _silent_pause = False
 
 _bedtime_callback = None
 _weekly_callback = None
+_core_refresh_callback = None
+_core_refresh_busy = False
 _runtime_prepare_callback = None
 _runtime_delivery_callback = None
 _runtime_transport = ""
@@ -187,6 +189,11 @@ def set_bedtime_callback(callback) -> None:
 def set_weekly_callback(callback) -> None:
     global _weekly_callback
     _weekly_callback = callback
+
+
+def set_core_refresh_callback(callback) -> None:
+    global _core_refresh_callback
+    _core_refresh_callback = callback
 
 
 def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: str) -> None:
@@ -471,6 +478,123 @@ async def _run_weekly_if_due(
     return True
 
 
+CORE_REFRESH_DEFAULT_HOURS = (12, 23)
+
+
+def parse_core_refresh_hours(raw) -> tuple[int, ...]:
+    """Parse `CORE_REFRESH_HOURS` as unique clock hours in 0–23."""
+    hours: list[int] = []
+    seen: set[int] = set()
+    for part in str(raw or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            hour = int(part)
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour <= 23 and hour not in seen:
+            seen.add(hour)
+            hours.append(hour)
+    return tuple(hours or CORE_REFRESH_DEFAULT_HOURS)
+
+
+def minutes_into_logical_day(hour: int, minute: int, maintenance_hour: int) -> int:
+    """Minutes since MAINTENANCE_HOUR on a 24h clock that wraps past midnight."""
+    hour %= 24
+    minute = min(max(int(minute), 0), 59)
+    maintenance_hour %= 24
+    if hour >= maintenance_hour:
+        return (hour - maintenance_hour) * 60 + minute
+    return (24 - maintenance_hour + hour) * 60 + minute
+
+
+def scheduled_hour_reached(
+    now: datetime,
+    hour: int,
+    *,
+    maintenance_hour: int | None = None,
+) -> bool:
+    """True once ``hour:00`` has occurred on the current logical day."""
+    mh = int(
+        _effective("MAINTENANCE_HOUR") if maintenance_hour is None else maintenance_hour
+    )
+    return minutes_into_logical_day(
+        now.hour, now.minute, mh,
+    ) >= minutes_into_logical_day(hour, 0, mh)
+
+
+def format_core_refresh_ack(result) -> str:
+    if getattr(result, "successful_effects", False):
+        return "Core 已整理。"
+    return "Core 看过了，没有需要改的。"
+
+
+async def _invoke_core_refresh(
+    user_id: int,
+    logical_date: str,
+    period_key: str,
+):
+    global _core_refresh_busy
+    if _core_refresh_busy:
+        raise RuntimeError("Core 正在整理，请稍后再试")
+    if _core_refresh_callback is None:
+        raise RuntimeError("Core refresh callback is not registered")
+    _core_refresh_busy = True
+    try:
+        return await asyncio.wait_for(
+            _core_refresh_callback(user_id, logical_date, period_key),
+            timeout=_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
+        )
+    finally:
+        _core_refresh_busy = False
+
+
+async def run_core_refresh_now(user_id: int):
+    """Owner-triggered Core refresh; does not consume a scheduled slot."""
+    now = datetime.now(TZ)
+    logical_date = logical_today(now)
+    period_key = f"force-{now.strftime('%Y%m%dT%H%M%S')}"
+    result = await _invoke_core_refresh(user_id, logical_date, period_key)
+    log_heartbeat(_state, "core_refresh_force", period_key)
+    return result
+
+
+async def _run_core_refresh_if_due(
+    user_id: int,
+    now: datetime | None = None,
+) -> bool:
+    if not _effective("CORE_REFRESH_ENABLED"):
+        return False
+    now = now or datetime.now(TZ)
+    logical_date = logical_today(now)
+    hours = parse_core_refresh_hours(_effective("CORE_REFRESH_HOURS"))
+    ran = False
+    from mochi.db import claim_scheduled_run, finish_scheduled_run
+
+    for hour in hours:
+        if not scheduled_hour_reached(now, hour):
+            continue
+        if _core_refresh_busy:
+            continue
+        period_key = f"{logical_date}-{hour:02d}"
+        if not claim_scheduled_run("core_refresh", period_key):
+            continue
+        try:
+            await _invoke_core_refresh(user_id, logical_date, period_key)
+        except Exception as exc:
+            finish_scheduled_run(
+                "core_refresh", period_key, success=False, error=str(exc),
+            )
+            log_heartbeat(_state, "core_refresh_error", str(exc)[:200])
+            ran = True
+            continue
+        finish_scheduled_run("core_refresh", period_key, success=True)
+        log_heartbeat(_state, "core_refresh", period_key)
+        ran = True
+    return ran
+
+
 async def _run_relationship_morning_if_due(
     user_id: int,
     now: datetime | None = None,
@@ -739,6 +863,7 @@ async def heartbeat_loop() -> None:
             now = datetime.now(TZ)
             await _run_maintenance_if_due(user_id, now)
             await _run_weekly_if_due(user_id, now)
+            await _run_core_refresh_if_due(user_id, now)
             await _run_relationship_morning_if_due(user_id, now)
             ensure_daily_free_time_plan(
                 user_id=user_id,
