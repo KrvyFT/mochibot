@@ -332,6 +332,48 @@ def test_sleeping_state_counts_as_unavailable():
     assert owner_free_time_unavailable_cue(
         sleeping=False, last_user_text="刚回来",
     ) is None
+    assert owner_free_time_unavailable_cue(
+        sleeping=False,
+        last_user_text="刚回来",
+        owner_spoken_since_wake=False,
+    ) == "quiet_wake"
+
+
+def test_quiet_wake_skips_until_floor_from_sleep_end():
+    from mochi.heartbeat_runtime import should_skip_unavailable_slot
+
+    wake = datetime(2026, 9, 2, 6, 0, tzinfo=UTC)
+    now = datetime(2026, 9, 2, 6, 20, tzinfo=UTC)
+    assert should_skip_unavailable_slot(
+        now=now,
+        cue="quiet_wake",
+        last_delivered_at=None,
+        since=wake,
+    ) == "quiet_wake"
+    later = datetime(2026, 9, 2, 6, 50, tzinfo=UTC)
+    assert should_skip_unavailable_slot(
+        now=later,
+        cue="quiet_wake",
+        last_delivered_at=None,
+        since=wake,
+    ) is None
+    last_night = datetime(2026, 9, 1, 23, 0, tzinfo=UTC)
+    assert should_skip_unavailable_slot(
+        now=now,
+        cue="quiet_wake",
+        last_delivered_at=last_night,
+        since=wake,
+    ) == "quiet_wake"
+
+
+def test_quiet_wake_clears_after_owner_speaks():
+    from mochi.heartbeat_runtime import owner_free_time_unavailable_cue
+
+    assert owner_free_time_unavailable_cue(
+        sleeping=False,
+        last_user_text="早",
+        owner_spoken_since_wake=True,
+    ) is None
 
 
 def _insert_run(*, run_key, status, next_attempt_at=None, text_delivered_at=None,

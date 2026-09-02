@@ -1554,6 +1554,13 @@ async function loadSettings() {
       <div><div class="settings-section-title">相处偏好</div><div class="settings-section-copy">时间、睡眠和 Free Time</div></div>
     </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
+        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
+        <div style="min-width:220px;flex:1;font-size:14px">Free Time 自主思考</div>
+        <label style="font-size:12px;color:var(--text-soft)">每天安排</label>
+        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="${_freeTimeMax}" style="width:80px" value="${esc(freeTimeLimit)}" ${freeTimeEnabled?'':'disabled'}>
+        <span style="font-size:12px;color:var(--text-soft)">次</span>
+      </div>
+      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:260px;flex:1">
           <div style="font-size:14px">时区</div>
           <div style="font-size:11px;color:var(--text-soft);margin-top:2px">用于提醒、日记和日常时间判断${timezone.source==='default'?' · 已按浏览器自动检测':''}</div>
@@ -1564,18 +1571,11 @@ async function loadSettings() {
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
         <div style="min-width:220px;flex:1">
           <div style="font-size:14px">睡眠时段</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">这段时间说话也不会叫醒；过了结束点才会醒。只支持整点。</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">这段时间说话也不会叫醒；过了结束点会自动醒。只支持整点。她醒了你还没开口时，Free Time 会变少，你发一条消息后恢复。</div>
         </div>
         <input class="form-input" id="pref-sleep-start" type="time" step="3600" style="width:120px" value="${esc(sleepStartClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
         <span style="font-size:12px;color:var(--text-soft)">至</span>
         <input class="form-input" id="pref-sleep-end" type="time" step="3600" style="width:120px" value="${esc(wakeClock)}" onchange="snapSleepHour(this);syncFreeTimeCap()">
-      </div>
-      <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--border)">
-        <label class="toggle"><input id="pref-proactive-enabled" type="checkbox" ${freeTimeEnabled?'checked':''} onchange="toggleProactivePreference()"><span class="slider"></span></label>
-        <div style="min-width:220px;flex:1;font-size:14px">Free Time 自主思考</div>
-        <label style="font-size:12px;color:var(--text-soft)">每天安排</label>
-        <input class="form-input" id="pref-proactive-limit" type="number" min="1" max="${_freeTimeMax}" style="width:80px" value="${esc(freeTimeLimit)}" ${freeTimeEnabled?'':'disabled'}>
-        <span style="font-size:12px;color:var(--text-soft)">次</span>
       </div>
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <div style="min-width:220px;flex:1">
@@ -1683,7 +1683,7 @@ function syncFreeTimeCap() {
   if (hint) {
     const sleepLabel = (sleepStart && sleepEnd) ? `${sleepStart}–${sleepEnd}` : '01:00–06:00';
     const windowLabel = (start && end) ? `${start}–${end}` : '08:00–00:30';
-    hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，安排数即当天至少要排的次数。约 20% 的机会带上联网搜索，去找一件有趣或你可能感兴趣的事。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。`;
+    hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，安排数即当天至少要排的次数。约 20% 的机会带上联网搜索，去找一件有趣或你可能感兴趣的事。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。过了睡眠结束点会自动醒；她醒了你还没开口时主动找你会变少。`;
   }
 }
 

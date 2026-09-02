@@ -245,9 +245,12 @@ def owner_free_time_unavailable_cue(
     *,
     sleeping: bool,
     last_user_text: str | None,
+    owner_spoken_since_wake: bool = True,
 ) -> str | None:
     if sleeping:
         return "sleep"
+    if not owner_spoken_since_wake:
+        return "quiet_wake"
     return unavailable_cue_from_text(last_user_text or "")
 
 
@@ -272,20 +275,34 @@ def should_skip_unavailable_slot(
     cue: str | None,
     last_delivered_at: datetime | None,
     floor: timedelta | None = None,
+    since: datetime | None = None,
 ) -> str | None:
-    """Skip a due slot during busy/sleep unless the floor gap has elapsed.
+    """Skip a due slot during busy/sleep/quiet-wake unless the floor elapsed.
 
     A skip still consumes the scheduled run. The floor is measured from the
     last Free Time that actually reached the owner, not from skipped slots.
+    ``quiet_wake`` also anchors to ``since`` (sleep-end) so a morning with
+    no prior delivery still damps instead of firing the first due slot.
     """
-    if cue not in {"sleep", "busy"}:
+    if cue not in {"sleep", "busy", "quiet_wake"}:
         return None
     gap = floor if floor is not None else _unavailable_floor()
-    if last_delivered_at is None:
-        return None
     now_utc = now.astimezone(UTC) if now.tzinfo else now.replace(tzinfo=UTC)
-    last_utc = last_delivered_at.astimezone(UTC)
-    if now_utc - last_utc >= gap:
+    anchors: list[datetime] = []
+    if last_delivered_at is not None:
+        anchors.append(last_delivered_at)
+    if cue == "quiet_wake" and since is not None:
+        anchors.append(since)
+    if not anchors:
+        return None
+    last_utc = max(
+        (
+            value.astimezone(UTC) if value.tzinfo else value.replace(tzinfo=UTC)
+            for value in anchors
+        ),
+        default=None,
+    )
+    if last_utc is None or now_utc - last_utc >= gap:
         return None
     return cue
 
