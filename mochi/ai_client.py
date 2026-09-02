@@ -1638,6 +1638,9 @@ async def chat(
     def _final_result(reply: str) -> ChatResult:
         if is_bedtime or bedtime_requested:
             reply, _ = _parse_runtime_reply(reply)
+        if pending_images:
+            from mochi.skills.photo.handler import finish_line_for_user
+            reply = finish_line_for_user(reply)
         tool_history_json = (
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
@@ -1661,6 +1664,9 @@ async def chat(
             )
         if is_self_reminder or is_autonomous:
             reply, skipped = _parse_runtime_reply(reply)
+            if pending_images:
+                from mochi.skills.photo.handler import finish_line_for_user
+                reply = finish_line_for_user(reply)
             if skipped and not successful_effects and not pending_stickers and not pending_images:
                 return ChatResult(
                     tool_audit=tool_audit,
@@ -2106,6 +2112,7 @@ async def chat(
                         actor="main",
                         source=execution_source,
                         turn_id=turn_id,
+                        on_interim=on_interim,
                     )
                 if result.after_delivery:
                     after_delivery_actions.append(result.after_delivery)

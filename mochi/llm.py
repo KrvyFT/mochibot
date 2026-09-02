@@ -26,7 +26,9 @@ log = logging.getLogger(__name__)
 # which silently masks slow gateways. Read=120s is well above worst-case
 # reasoning-model latency on slow third-party gateways but fails fast on hangs.
 _HTTP_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0)
-_IMAGE_HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=60.0, write=30.0, pool=10.0)
+# Gemini-style image models often spend 30–90s thinking before the first byte.
+# 60s cut off in-flight generations; extra_body retries then stacked more waits.
+_IMAGE_HTTP_TIMEOUT = httpx.Timeout(connect=15.0, read=180.0, write=60.0, pool=10.0)
 
 # Failures worth another attempt are those where the request never reached a
 # verdict, or the gateway explicitly said "later". A request the provider
@@ -651,6 +653,10 @@ def generate_image_via_chat(
         {},
     )
     last_exc: BaseException | None = None
+    log.info(
+        "Chat image create model=%s refs=%s",
+        model, len(reference_images or []),
+    )
     for extra_body in extra_bodies:
         kwargs: dict[str, Any] = {
             "model": model,
@@ -663,6 +669,8 @@ def generate_image_via_chat(
         except Exception as exc:
             last_exc = exc
             log.info("Chat image create failed (%s): %s", extra_body, describe_error(exc))
+            if not _chat_image_extra_rejected(exc):
+                raise
             continue
         try:
             message = resp.choices[0].message
@@ -677,6 +685,19 @@ def generate_image_via_chat(
     if last_exc:
         raise last_exc
     raise RuntimeError("Chat image generation produced no image")
+
+
+def _chat_image_extra_rejected(exc: BaseException) -> bool:
+    """Whether the gateway rejected this extra_body, so another shape is worth trying.
+
+    Timeouts and 5xx mean the request was accepted and still running or the
+    upstream failed; cycling modalities would only stack more waits.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in (400, 422):
+        return True
+    names = {klass.__name__ for klass in type(exc).__mro__}
+    return bool(names & {"BadRequestError", "UnprocessableEntityError"})
 
 
 def _download_image_url(url: str) -> bytes:

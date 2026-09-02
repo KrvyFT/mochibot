@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import mimetypes
 import random
@@ -29,12 +30,51 @@ _JAPAN_HINTS = (
     "神社", "东京", "京都", "大阪", "鸟居", "便利店", "新宿", "涩谷",
     "日本", "秋叶原", "车站",
 )
+_START_LINES = (
+    "等一下，我翻翻相册。",
+    "我去找找看。",
+    "稍等，我去拍一张。",
+    "我找找有没有合适的。",
+)
+_WAIT_LINES = (
+    "还在找。",
+    "在拍了，等我一下。",
+    "这张不太行，再来一张。",
+    "光线有点怪，再拍一张。",
+    "马上。",
+    "找到差不多了。",
+)
+_WAIT_DELAYS = (25.0, 55.0)
+_DONE_LINES = (
+    "照片找到了。",
+    "照片拍好了。",
+    "找到了，给你看。",
+)
+_DONE_BANNED = ("出来啦", "出来了", "已生成", "生成好了")
 
 
 def _photo_failure_message(exc: BaseException) -> str:
     from mochi.llm import describe_error
 
     return f"生成照片失败：{describe_error(exc)}"
+
+
+def finish_line_for_user(reply: str) -> str:
+    """Keep a short found/shot closer; drop '出来啦' / '已生成'."""
+    text = (reply or "").strip()
+    if text and not any(token in text for token in _DONE_BANNED):
+        return text
+    return random.choice(_DONE_LINES)
+
+
+async def _emit_interim(context: SkillContext, text: str) -> None:
+    callback = context.on_interim
+    if not callback or not text:
+        return
+    try:
+        await callback(text)
+    except Exception:
+        log.debug("photo interim dropped")
 
 
 def infer_scene_region(subject: str) -> str:
@@ -83,12 +123,21 @@ def _ref_path(filename: str) -> Path | None:
 
 
 def _reference_images(refs: list[dict]) -> list[tuple[str, bytes]]:
+    """At most one character ref and one scene ref — extra images slow Draw."""
     out: list[tuple[str, bytes]] = []
+    used_kinds: set[str] = set()
     for ref in refs:
+        kind = str(ref.get("kind") or "")
+        if kind in used_kinds:
+            continue
         path = _ref_path(ref.get("filename") or "")
         if path is None:
             continue
+        if kind:
+            used_kinds.add(kind)
         out.append((_mime_for(path), path.read_bytes()))
+        if len(out) >= 2:
+            break
     return out
 
 
@@ -179,14 +228,34 @@ class PhotoSkill(Skill):
                     output="绘图模型尚未配置。在管理后台把模型赋给 Draw 档后再试。",
                     success=False,
                 )
-            path = await asyncio.to_thread(self._generate, subject)
+            await _emit_interim(context, random.choice(_START_LINES))
+            done = asyncio.Event()
+
+            async def _wait_chatter() -> None:
+                lines = list(_WAIT_LINES)
+                random.shuffle(lines)
+                for delay, line in zip(_WAIT_DELAYS, lines):
+                    try:
+                        await asyncio.wait_for(done.wait(), timeout=delay)
+                        return
+                    except asyncio.TimeoutError:
+                        await _emit_interim(context, line)
+
+            chatter = asyncio.create_task(_wait_chatter())
+            try:
+                path = await asyncio.to_thread(self._generate, subject)
+            finally:
+                done.set()
+                chatter.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await chatter
         except Exception as exc:
             log.warning("send_photo failed: %s", exc)
             return SkillResult(
                 output=_photo_failure_message(exc),
                 success=False,
             )
-        return SkillResult(output=f"[IMAGE_FILE:{path}] 照片已生成。")
+        return SkillResult(output=f"[IMAGE_FILE:{path}] 照片拍好了。")
 
     def _generate(self, subject: str) -> Path:
         from mochi.core_store import read_core

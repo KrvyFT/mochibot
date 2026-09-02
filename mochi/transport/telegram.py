@@ -55,7 +55,7 @@ _TOOL_STATUS_LABELS: dict[str, str] = {
     "get_weather": "正在查天气…",
     "run_checkup": "正在检查…",
     "send_sticker": "正在选贴纸…",
-    "send_photo": "正在生成照片…",
+    "send_photo": "在找照片…",
     "request_tools": "正在加载工具…",
 }
 _TOOL_STATUS_DEFAULT = "正在处理…"
@@ -518,11 +518,31 @@ class TelegramTransport(Transport):
             except Exception:
                 pass
 
+            if text:
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text=text)
+                except Exception as e:
+                    log.debug("Interim chat line failed (ignored): %s", e)
+                return
+
             # Reaction: set 👨‍💻 on first tool call (last user message in a batch)
             if TG_STATUS_REACTIONS_ENABLED and tool_name is not None:
                 if status.reaction_state != "working":
                     status.reaction_state = "working"
                     await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F468\u200D\U0001F4BB")
+
+            # send_photo talks in character; drop the robotic status bubble.
+            if tool_name == "send_photo":
+                if status.status_msg_id:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=chat_id, message_id=status.status_msg_id,
+                        )
+                    except Exception:
+                        pass
+                    status.status_msg_id = None
+                    status.last_label = ""
+                return
 
             # Status message
             if not TG_STATUS_MESSAGE_ENABLED or tool_name is None:

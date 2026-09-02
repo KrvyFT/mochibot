@@ -205,10 +205,81 @@ def test_photo_skill_generates_without_refs(tmp_path, monkeypatch):
     )))
     assert result.success
     assert result.output.startswith("[IMAGE_FILE:")
+    assert "拍好了" in result.output
+    assert "已生成" not in result.output
     path = result.output.split("[IMAGE_FILE:", 1)[1].split("]", 1)[0]
     assert path.endswith(".png")
     with open(path, "rb") as handle:
         assert handle.read() == png
+
+
+def test_finish_line_replaces_came_out_wording():
+    from mochi.skills.photo.handler import finish_line_for_user
+
+    assert finish_line_for_user("照片拍好了。") == "照片拍好了。"
+    assert finish_line_for_user("找到了，给你看。") == "找到了，给你看。"
+    for _ in range(8):
+        line = finish_line_for_user("照片出来啦！")
+        assert "出来" not in line
+        assert "已生成" not in line
+        assert line in ("照片找到了。", "照片拍好了。", "找到了，给你看。")
+    assert finish_line_for_user("") in (
+        "照片找到了。", "照片拍好了。", "找到了，给你看。",
+    )
+
+
+def test_send_photo_chatter_emits_looking_line(tmp_path, monkeypatch):
+    from mochi.admin import admin_db
+    from mochi.skills.base import SkillContext
+    from mochi.skills.photo import handler as photo_handler
+    import mochi.core_store as core_store
+    import mochi.llm as llm_mod
+
+    monkeypatch.setattr(admin_db, "encrypt_api_key", lambda value: value)
+    monkeypatch.setattr(admin_db, "decrypt_api_key", lambda value: value)
+    monkeypatch.setattr(photo_handler, "_WAIT_DELAYS", (0.01, 0.01))
+    admin_db.upsert_model(
+        "main-m", "openai", "main-model", "key", "https://api.example.com/v1",
+    )
+    admin_db.upsert_model(
+        "draw-m", "openai", "draw-model", "key", "https://api.example.com/v1",
+    )
+    admin_db.set_tier_assignment("main", "main-m")
+    admin_db.set_tier_assignment("draw", "draw-m")
+
+    spoken: list[str] = []
+
+    async def _interim(text=None, *, tool_name=None):
+        if text:
+            spoken.append(text)
+
+    class _Main:
+        def chat(self, messages, max_tokens=700):
+            return SimpleNamespace(content="动漫角色站在真实街边。")
+
+    class _Draw:
+        def generate_image(self, prompt, **kwargs):
+            return b"\x89PNG\r\n\x1a\n" + b"x"
+
+    monkeypatch.setattr(photo_handler, "GENERATED_DIR", tmp_path / "generated_photos")
+    monkeypatch.setattr(photo_handler, "PHOTO_REFS_DIR", tmp_path / "photo_refs")
+    monkeypatch.setattr(photo_handler, "pick_photo_refs", lambda subject: [])
+    monkeypatch.setattr(core_store, "read_core", lambda: "")
+    monkeypatch.setattr(
+        llm_mod, "get_client_for_tier",
+        lambda tier="main": _Draw() if tier == "draw" else _Main(),
+    )
+
+    skill = photo_handler.PhotoSkill()
+    result = asyncio.run(skill.execute(SkillContext(
+        trigger="tool_call",
+        tool_name="send_photo",
+        args={"subject": "街上"},
+        on_interim=_interim,
+    )))
+    assert result.success
+    assert spoken
+    assert spoken[0] in photo_handler._START_LINES
 
 
 def test_image_bytes_from_chat_message_shapes():
@@ -273,6 +344,49 @@ def test_generate_image_uses_chat_completions():
     assert calls[0]["extra_body"]["modalities"] == ["text", "image"]
 
 
+def test_chat_image_timeout_does_not_retry_extra_bodies():
+    calls: list[dict] = []
+
+    class APITimeoutError(Exception):
+        pass
+
+    class _Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            raise APITimeoutError("Request timed out.")
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    with pytest.raises(APITimeoutError, match="timed out"):
+        llm.generate_image_via_chat(client, "gemini-3.1-flash-image", "a cat")
+    assert len(calls) == 1
+
+
+def test_chat_image_retries_extra_body_on_bad_request():
+    png = b"\x89PNG\r\n\x1a\n" + b"after-400"
+    uri = "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+    calls: list[dict] = []
+
+    class BadRequestError(Exception):
+        status_code = 400
+
+    class _Completions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise BadRequestError("unknown parameter: modalities")
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message={"images": [{"image_url": {"url": uri}}]},
+            )])
+
+    client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
+    assert llm.generate_image_via_chat(
+        client, "gemini-3.1-flash-image", "a cat",
+    ) == png
+    assert len(calls) == 2
+    assert calls[0]["extra_body"]["modalities"] == ["text", "image"]
+    assert calls[1]["extra_body"]["modalities"] == ["image", "text"]
+
+
 def test_durable_chat_result_roundtrips_images():
     from mochi.main_runtime import DurableChatResult
 
@@ -293,3 +407,7 @@ def test_admin_ui_exposes_draw_tier():
     ).read_text(encoding="utf-8")
     assert "Draw · 绘图" in html
     assert "未配置" in html
+
+
+def test_draw_image_timeout_is_three_minutes():
+    assert llm._IMAGE_HTTP_TIMEOUT.read == 180.0
