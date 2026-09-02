@@ -30,6 +30,7 @@ from mochi.transport import Transport, IncomingMessage
 from mochi.heartbeat import (
     heartbeat_loop,
     set_bedtime_callback,
+    set_core_refresh_callback,
     set_main_runtime_callbacks,
     set_weekly_callback,
 )
@@ -282,6 +283,20 @@ async def main():
             )
             await chat(runtime_entry=entry)
 
+        async def enter_core_refresh(
+            user_id: int,
+            logical_date: str,
+            period_key: str,
+        ) -> ChatResult:
+            entry = MainRuntimeEntry.core_refresh(
+                logical_date=logical_date,
+                period_key=period_key,
+                user_id=user_id,
+                channel_id=user_id,
+                transport=_t.name,
+            )
+            return await chat(runtime_entry=entry)
+
         async def prepare_self_reminder(entry: MainRuntimeEntry) -> ChatResult:
             return await chat(runtime_entry=entry)
 
@@ -314,6 +329,7 @@ async def main():
         set_alert_sender(send_owner_alert)
         set_bedtime_callback(enter_bedtime)
         set_weekly_callback(enter_weekly)
+        set_core_refresh_callback(enter_core_refresh)
         set_reminder_callback(send_proactive)
         set_self_reminder_callbacks(
             prepare_self_reminder,
