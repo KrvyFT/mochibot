@@ -61,7 +61,10 @@ from mochi.tool_availability import (
 from mochi.bedtime_tool import ENTER_BEDTIME_DEF, ENTER_BEDTIME_TOOL_NAME
 import mochi.skills as skill_registry
 from mochi.transport import IncomingMessage, ImageAttachment
-from mochi.transport.utils import normalize_legacy_bubble_delimiters
+from mochi.transport.utils import (
+    normalize_legacy_bubble_delimiters,
+    strip_outgoing_history_timestamps,
+)
 
 if TYPE_CHECKING:
     from mochi.diary import DailyFile
@@ -69,9 +72,6 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
-_HISTORY_TIMESTAMP_PREFIX_RE = re.compile(
-    r"^\s*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\]\s*"
-)
 _WEEKDAY_NAMES = (
     "星期一", "星期二", "星期三", "星期四",
     "星期五", "星期六", "星期日",
@@ -505,7 +505,9 @@ def _format_history_timestamp(created_at) -> str:
 def _clean_model_reply(content: str | None) -> str:
     reply = STICKER_RE.sub("", content or "").strip()
     reply = normalize_legacy_bubble_delimiters(reply)
-    return _HISTORY_TIMESTAMP_PREFIX_RE.sub("", reply, count=1).strip()
+    # Drop copied history prefixes at line/bubble start before save and send.
+    # Do not strip the same pattern mid-sentence.
+    return strip_outgoing_history_timestamps(reply)
 
 
 def _parse_runtime_reply(reply: str) -> tuple[str, bool]:
@@ -854,6 +856,9 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     is_self_reminder = bool(
         runtime_entry and runtime_entry.kind == "self_reminder"
     )
+    is_core_refresh = bool(
+        runtime_entry and runtime_entry.kind == "core_refresh"
+    )
 
     stable_identity = []
     if core_memory:
@@ -876,7 +881,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly and not is_autonomous:
+    if not is_weekly and not is_autonomous and not is_core_refresh:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -1071,11 +1076,15 @@ async def chat(
     is_autonomous = bool(
         runtime_entry and runtime_entry.kind == "free_time"
     )
+    is_core_refresh = bool(
+        runtime_entry and runtime_entry.kind == "core_refresh"
+    )
+    is_silent_maintenance = is_weekly or is_core_refresh
     unanswered_thread: dict | None = None
     prompt_policy = context_policy(runtime_entry)
     turn_id = (
         runtime_entry.idempotency_key
-        if (is_self_reminder or is_weekly or is_autonomous)
+        if (is_self_reminder or is_silent_maintenance or is_autonomous)
         and runtime_entry.idempotency_key
         else uuid.uuid4().hex
     )
@@ -1132,7 +1141,7 @@ async def chat(
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
     habits = (
         []
-        if is_bedtime or is_self_reminder or is_weekly or is_autonomous
+        if is_bedtime or is_self_reminder or is_silent_maintenance or is_autonomous
         else await asyncio.to_thread(list_habits, user_id)
     )
 
@@ -1210,7 +1219,7 @@ async def chat(
         is_bedtime
         or is_self_reminder
         or is_autonomous
-        or (not is_weekly and turn_plan.request_tools_enabled)
+        or (not is_silent_maintenance and turn_plan.request_tools_enabled)
     )
     _health_warning = ""
 
@@ -1228,6 +1237,18 @@ async def chat(
             core_content=core_memory,
         )
         tools = weekly_session.definitions()
+        recalled_memories = []
+        habits = []
+
+    elif is_core_refresh:
+        tools = skill_registry.get_tools_by_tool_names(
+            ("update_core",),
+            transport=transport,
+        )
+        core_memory, conversation_context = await asyncio.gather(
+            asyncio.to_thread(read_core),
+            _safe_conversation_context(),
+        )
         recalled_memories = []
         habits = []
 
@@ -1511,6 +1532,24 @@ async def chat(
                 "</weekly_runtime_event>"
             ),
         })
+    elif is_core_refresh:
+        refresh_prompt = get_prompt("core_refresh_entry")
+        if not refresh_prompt:
+            raise RuntimeError("Core refresh entry prompt is missing")
+        silence_protocol = get_prompt("runtime_silence_protocol")
+        if not silence_protocol:
+            raise RuntimeError("Runtime silence protocol prompt is missing")
+        messages.append({
+            "role": "user",
+            "content": (
+                "<core_refresh_runtime_event>\n"
+                "source: system\n"
+                "new_user_message: false\n\n"
+                f"{refresh_prompt}\n\n"
+                f"{silence_protocol}\n"
+                "</core_refresh_runtime_event>"
+            ),
+        })
     if image:
         _replace_current_user_with_image(messages, stored_text, text, image)
         # Image understanding belongs to the configured Main model.
@@ -1557,6 +1596,8 @@ async def chat(
                     if is_autonomous
                     else "weekly_maintenance"
                     if is_weekly
+                    else "core_refresh"
+                    if is_core_refresh
                     else f"chat:{tier}"
                 ),
                 call_type=call_type,
@@ -1628,7 +1669,7 @@ async def chat(
                 disposition="deliver",
                 _pending_history=pending_history,
             )
-        if is_weekly:
+        if is_weekly or is_core_refresh:
             return ChatResult(
                 tool_audit=tool_audit,
                 successful_effects=successful_effects,
@@ -1703,6 +1744,7 @@ async def chat(
                     else "定时提醒" if is_self_reminder
                     else "Free Time 自主思考" if is_autonomous
                     else "每周维护" if is_weekly
+                    else "Core 整理" if is_core_refresh
                     else ""
                 )
                 if silent_entry:
@@ -1715,7 +1757,7 @@ async def chat(
                     return ChatResult()
                 if is_self_reminder or is_autonomous:
                     return ChatResult(disposition="invalid")
-                if is_weekly:
+                if is_silent_maintenance:
                     raise
                 if image:
                     return ChatResult(
@@ -1945,6 +1987,18 @@ async def chat(
                     )),
                 })
                 continue
+            if is_core_refresh and tc["name"] != "update_core":
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": model_result_for(SkillResult(
+                        output="Tool is outside the Core refresh scope.",
+                        success=False,
+                        error_code="tool_outside_runtime_scope",
+                        retryable=False,
+                    )),
+                })
+                continue
             if not is_weekly_tool:
                 decision = policy_check(tc["name"], user_id)
                 if not decision.allowed:
@@ -2109,7 +2163,7 @@ async def chat(
     # If we exhausted tool rounds, return whatever we have
     reply = _clean_model_reply(response.content)
     if not reply and not (
-        is_bedtime or is_self_reminder or is_weekly or is_autonomous
+        is_bedtime or is_self_reminder or is_silent_maintenance or is_autonomous
     ):
         reply = _tool_loop_exhaustion_message(
             successful_effects=successful_effects,
