@@ -340,7 +340,7 @@ if HAS_FASTAPI:
             )
             tier_config = get_tier_effective_config()
             main_tier = tier_config.get("main", {})
-            for t_name in ("main", "lite"):
+            for t_name in ("main", "lite", "draw"):
                 t_cfg = tier_config.get(t_name, {})
                 if t_cfg.get("model"):
                     tier_models[t_name] = t_cfg["model"]
@@ -393,11 +393,27 @@ if HAS_FASTAPI:
             and bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())
         )
 
+        skills_count = 0
+        skills_disabled = 0
+        try:
+            from mochi.skills import discover, get_skill_info_all
+            infos = get_skill_info_all()
+            if not infos:
+                discover()
+                infos = get_skill_info_all()
+            skills_count = len(infos)
+            skills_disabled = sum(1 for item in infos if not item.get("enabled"))
+        except Exception:
+            pass
+
         return {
             "first_run": not has_required_models,
             "setup_mode": not has_required_models and has_transport,
             "config_status": config_status,
             "heartbeat_state": hb.get("state", "UNKNOWN"),
+            "heartbeat": hb,
+            "skills_count": skills_count,
+            "skills_disabled": skills_disabled,
             "db_path": str(DB_PATH),
             "db_size_bytes": db_size,
             "db_writable": db_writable,
@@ -946,6 +962,68 @@ if HAS_FASTAPI:
             set_system_override(key, value)
         return {"ok": True, "updated": list(normalized)}
 
+    def _basic_payload() -> dict:
+        from mochi.admin.admin_db import (
+            BASIC_CONFIG_KEYS,
+            SYSTEM_DEFAULTS,
+            get_system_config,
+            get_system_overrides,
+        )
+
+        overrides = get_system_overrides()
+        payload = {}
+        for key in BASIC_CONFIG_KEYS:
+            type_name, default = SYSTEM_DEFAULTS[key]
+            payload[key] = {
+                "value": get_system_config(key),
+                "default": default,
+                "source": "user" if key in overrides else "default",
+                "type": type_name,
+            }
+        return payload
+
+    @app.get("/api/basic/config", dependencies=[Depends(_verify_token)])
+    async def api_get_basic_config():
+        return _basic_payload()
+
+    @app.put("/api/basic/config", dependencies=[Depends(_verify_token)])
+    async def api_set_basic_config(request: Request):
+        from mochi.admin.admin_db import (
+            BASIC_CONFIG_KEYS,
+            delete_system_override,
+            get_system_config,
+            set_system_override,
+        )
+        from mochi.admin.preferences import normalize_basic_updates
+
+        body = await request.json()
+        current = {key: get_system_config(key) for key in BASIC_CONFIG_KEYS}
+        try:
+            normalized = normalize_basic_updates(body, current)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        updated = []
+        for key, value in normalized.items():
+            if value is None:
+                delete_system_override(key)
+            else:
+                set_system_override(key, value)
+            updated.append(key)
+        return {"ok": True, "updated": updated}
+
+    @app.get("/api/heartbeat/state", dependencies=[Depends(_verify_token)])
+    async def api_heartbeat_state():
+        try:
+            from mochi.heartbeat import get_stats
+            return get_stats()
+        except Exception:
+            return {
+                "state": "UNKNOWN",
+                "free_time_thoughts_today": 0,
+                "free_time_thought_limit": None,
+            }
+
     # ── Generic .env writer ───────────────────────────────────────────────
 
     @app.put("/api/env", dependencies=[Depends(_verify_token)])
@@ -1339,6 +1417,84 @@ if HAS_FASTAPI:
             return {"ok": True, **data}
         except Exception as e:
             return {"ok": False, "error": str(e)}
+
+    # ── Skills ────────────────────────────────────────────────────────
+    def _ensure_skills_discovered() -> None:
+        from mochi.skills import discover, get_skill_info_all
+        if not get_skill_info_all():
+            discover()
+
+    @app.get("/api/skills", dependencies=[Depends(_verify_token)])
+    async def api_list_skills():
+        from mochi.skills import get_skill_info_all
+        _ensure_skills_discovered()
+        return {"skills": get_skill_info_all()}
+
+    @app.get("/api/skills/habit/habits", dependencies=[Depends(_verify_token)])
+    async def api_list_habits():
+        from mochi.config import OWNER_USER_ID
+        from mochi.skills.habit.queries import list_habits
+
+        user_id = OWNER_USER_ID
+        if not user_id:
+            return {"habits": []}
+        try:
+            return {"habits": list_habits(int(user_id), active_only=False)}
+        except Exception as exc:
+            return {"habits": [], "error": str(exc)}
+
+    @app.put("/api/skills/{name}", dependencies=[Depends(_verify_token)])
+    async def api_toggle_skill(name: str, request: Request):
+        return await _toggle_skill(name, request)
+
+    @app.put("/api/skills/{name}/enabled", dependencies=[Depends(_verify_token)])
+    async def api_toggle_skill_enabled(name: str, request: Request):
+        return await _toggle_skill(name, request)
+
+    async def _toggle_skill(name: str, request: Request):
+        from mochi.db import set_skill_enabled
+        from mochi.skills import get_skill, get_skill_info_all, refresh_capability_summary
+
+        _ensure_skills_discovered()
+        skill = get_skill(name)
+        if not skill:
+            raise HTTPException(404, f"Unknown skill: {name}")
+        body = await request.json()
+        enabled = bool(body.get("enabled"))
+        if not enabled and getattr(skill, "locked", False):
+            raise HTTPException(400, f"核心技能 {name} 无法关闭")
+        set_skill_enabled(name, enabled)
+        skill.refresh_config()
+        refresh_capability_summary()
+        return {"ok": True, "enabled": enabled, "skills": get_skill_info_all()}
+
+    @app.put("/api/skills/{name}/config", dependencies=[Depends(_verify_token)])
+    async def api_put_skill_config(name: str, request: Request):
+        from mochi.db import delete_skill_config, set_skill_config
+        from mochi.skills import get_skill, refresh_capability_summary
+
+        _ensure_skills_discovered()
+        skill = get_skill(name)
+        if not skill:
+            raise HTTPException(404, f"Unknown skill: {name}")
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "config must be an object")
+        allowed = {
+            field.key for field in skill._config_schema_typed
+            if not field.internal
+        }
+        allowed |= set(getattr(skill, "requires_config", []) or [])
+        for key, value in body.items():
+            if key not in allowed:
+                raise HTTPException(400, f"Unknown config key: {key}")
+            if value is None or str(value).strip() == "":
+                delete_skill_config(name, key)
+            else:
+                set_skill_config(name, key, str(value))
+        skill.refresh_config()
+        refresh_capability_summary()
+        return {"ok": True}
 
     # ── Chat migration routes (搬家) ────────────────────────────────
     try:
