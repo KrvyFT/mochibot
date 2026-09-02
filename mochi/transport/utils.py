@@ -10,6 +10,12 @@ import re
 
 _IMAGE_FILE_RE = re.compile(r"\[IMAGE_FILE:[^\]]+\]")
 _STICKER_RE = re.compile(r"\[STICKER:[^\]]+\]")
+# History prefixes look like `[2026-09-02 22:01] `. Strip only at line start
+# of outgoing bubbles; leave the same pattern untouched mid-sentence.
+_HISTORY_TIMESTAMP_LINE_PREFIX_RE = re.compile(
+    r"^[ \t]*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\][ \t]*",
+    re.MULTILINE,
+)
 
 
 def normalize_legacy_bubble_delimiters(text: str) -> str:
@@ -18,6 +24,18 @@ def normalize_legacy_bubble_delimiters(text: str) -> str:
     for index in range(0, len(segments), 2):
         segments[index] = re.sub(r"\s*\|\|\|\s*", "\n\n", segments[index])
     return re.sub(r"\n{3,}", "\n\n", "".join(segments)).strip()
+
+
+def strip_outgoing_history_timestamps(text: str) -> str:
+    """Remove history-style timestamps only at the start of outgoing lines.
+
+    The model still *reads* `[YYYY-MM-DD HH:MM]` prefixes in conversation
+    history. Copied prefixes must not appear as the first tokens of a bubble
+    sent to the owner. A timestamp in the middle of a sentence is left as-is.
+    """
+    if not text:
+        return text
+    return _HISTORY_TIMESTAMP_LINE_PREFIX_RE.sub("", text).strip()
 
 
 def clean_reply_markers(text: str) -> str:
@@ -109,7 +127,8 @@ def split_bubbles(text: str, max_bubbles: int = 8,
         parts = [text.strip()]
 
     if len(parts) <= 1:
-        return [text.strip()]
+        single = strip_outgoing_history_timestamps(text)
+        return [single] if single else [""]
 
     # Merge short fragments into previous bubble
     bubbles: list[str] = [parts[0]]
@@ -125,4 +144,9 @@ def split_bubbles(text: str, max_bubbles: int = 8,
             bubbles[:limit - 1]
             + ["\n\n".join(bubbles[limit - 1:])]
         )
-    return bubbles
+    cleaned: list[str] = []
+    for bubble in bubbles:
+        visible = strip_outgoing_history_timestamps(bubble)
+        if visible:
+            cleaned.append(visible)
+    return cleaned or [""]
