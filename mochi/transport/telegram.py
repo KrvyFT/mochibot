@@ -178,6 +178,7 @@ class TelegramTransport(Transport):
         self._app.add_handler(CommandHandler("heartbeat", self._cmd_heartbeat))
         self._app.add_handler(CommandHandler("cost", self._cmd_cost))
         self._app.add_handler(CommandHandler("core", self._cmd_core))
+        self._app.add_handler(CommandHandler("update_core", self._cmd_update_core))
         self._app.add_handler(CommandHandler("diary", self._cmd_diary))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
         self._app.add_handler(CommandHandler("skilloff", self._cmd_skilloff))
@@ -247,6 +248,7 @@ class TelegramTransport(Transport):
             "/heartbeat — 心跳状态\n"
             "/cost — Token 用量统计\n"
             "/core — 查看 Core\n"
+            "/update_core — 立刻整理 Core\n"
             "/diary — 查看今日日記\n"
             "/skilloff — 闲聊模式（省 token）\n"
             "/skillon — 恢复完整模式\n"
@@ -339,6 +341,25 @@ class TelegramTransport(Transport):
         text = f"Core\n\n{content}" if content else "Core 为空。"
         for start in range(0, len(text), 4096):
             await update.message.reply_text(text[start:start + 4096])
+
+    async def _cmd_update_core(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not _is_owner(update.effective_user.id):
+            return
+        if update.effective_chat.type != "private":
+            await update.message.reply_text("整理 Core 只支持在私聊中进行。")
+            return
+        await update.message.reply_text("正在整理 Core…")
+        from mochi.heartbeat import format_core_refresh_ack, run_core_refresh_now
+
+        try:
+            result = await run_core_refresh_now(update.effective_user.id)
+        except asyncio.TimeoutError:
+            await update.message.reply_text("整理超时了，等一会儿再试。")
+            return
+        except Exception as exc:
+            await update.message.reply_text(f"整理失败：{exc}")
+            return
+        await update.message.reply_text(format_core_refresh_ack(result))
 
     async def _cmd_diary(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not _is_owner(update.effective_user.id):
