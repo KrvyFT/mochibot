@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 
 from mochi.config import (
@@ -91,13 +91,42 @@ def _is_rest_hour(hour: int) -> bool:
 
 
 def _fallback_wake_due(hour: int) -> bool:
-    if not _is_awake_hour(hour):
+    """Auto-wake once the configured sleep window has ended."""
+    return _is_awake_hour(hour)
+
+
+def awake_period_start(now: datetime) -> datetime:
+    """Start of the current awake interval; wraps when sleep crosses midnight."""
+    wake = time(_wake_earliest_hour() % 24, 0)
+    sleep_after = time(_sleep_after_hour() % 24, 0)
+    local_now = now.astimezone(TZ) if now.tzinfo else now.replace(tzinfo=TZ)
+    wraps = wake >= sleep_after
+    if wraps and local_now.time() < sleep_after:
+        start_date = local_now.date() - timedelta(days=1)
+    else:
+        start_date = local_now.date()
+    return datetime.combine(start_date, wake, tzinfo=TZ)
+
+
+def owner_spoken_since_awake(
+    now: datetime, last_user_at: datetime | str | None,
+) -> bool:
+    """True if the owner messaged at or after this awake period started.
+
+    Messages sent during rest hours fall before the period start, so they
+    do not count as the owner being up.
+    """
+    parsed = last_user_at
+    if isinstance(parsed, str):
+        try:
+            parsed = datetime.fromisoformat(parsed)
+        except ValueError:
+            return False
+    if parsed is None:
         return False
-    return _hour_in_half_open(
-        hour,
-        int(_effective("FALLBACK_WAKE_HOUR")),
-        _sleep_after_hour(),
-    )
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=TZ)
+    return parsed.astimezone(TZ) >= awake_period_start(now)
 
 
 def _persist_state(state: str, changed_at: datetime | None = None) -> None:
@@ -649,11 +678,16 @@ async def run_main_runtime_tick(
     if active_chat:
         return created
     last_user = get_last_user_message(user_id)
+    last_user_at = None if last_user is None else last_user.get("created_at")
     unavailable_cue = owner_free_time_unavailable_cue(
         sleeping=_state == SLEEPING,
         last_user_text=None if last_user is None else last_user.get("content"),
+        owner_spoken_since_wake=owner_spoken_since_awake(now, last_user_at),
     )
     last_delivered_at = last_delivered_free_time_at(user_id)
+    quiet_since = (
+        awake_period_start(now) if unavailable_cue == "quiet_wake" else None
+    )
     for row in get_schedulable_runs(now=now):
         current_now = datetime.now(TZ)
         in_window = in_free_time_window(current_now)
@@ -672,6 +706,7 @@ async def run_main_runtime_tick(
                 now=current_now,
                 cue=unavailable_cue,
                 last_delivered_at=last_delivered_at,
+                since=quiet_since,
             )
             if skip_reason:
                 complete_without_delivery(
@@ -724,9 +759,8 @@ async def heartbeat_loop() -> None:
                         active_chat=has_active_chat(),
                         awake=False,
                     )
-                fallback_hour = int(_effective("FALLBACK_WAKE_HOUR"))
                 if _fallback_wake_due(now.hour):
-                    wake_up(f"fallback_{fallback_hour}:00")
+                    wake_up(f"sleep_end_{_wake_earliest_hour():02d}:00")
                 elif not in_window:
                     log_heartbeat(_state, "sleeping")
                     await asyncio.sleep(interval)

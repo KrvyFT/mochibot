@@ -136,10 +136,11 @@ FREE_TIME_UNAVAILABLE_FLOOR_MINUTES = max(
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
 
 # Sleep/Wake State Machine
-WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # don't wake on user msg before this
+WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # sleep ends; auto-wake and message-wake
 SLEEP_AFTER_HOUR = _env_int("SLEEP_AFTER_HOUR", 1)       # rest window starts here; may wrap past midnight
 SILENCE_THRESHOLD_HOURS = _env_float("SILENCE_THRESHOLD_HOURS", 1.0)  # silence → sleep
 SILENCE_PAUSE_DAYS = _env_float("SILENCE_PAUSE_DAYS", 3.0)
+# Unused by heartbeat; kept so leftover .env/DB values still seed as a no-op.
 FALLBACK_WAKE_HOUR = _env_int("FALLBACK_WAKE_HOUR", 10)
 
 # ═══════════════════════════════════════════════════════════════════════════

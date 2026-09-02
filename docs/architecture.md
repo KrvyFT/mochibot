@@ -258,10 +258,13 @@ points fit in that window. The resulting opportunities and their
 direct-search allocation are durable, so restart does not redraw them. A due
 opportunity expires during active owner chat or after it is missed, and
 sleep inside the Free Time window does not cancel remaining slots. Rest
-hours default to 01:00–06:00 and are also configurable. It is never
+hours default to 01:00–06:00 and are also configurable; auto-wake is the
+end of that window, not a separate 10:00 fallback. It is never
 delayed, accumulated, or retried. If the owner just said they are
 busy or going to sleep, a due slot is still consumed but skipped unless 45
 minutes have passed since the last Free Time that actually reached them.
+After auto-wake, the same skip floor applies until the owner sends a
+message in the current awake period.
 
 Free Time enters the standard Main personality and Agent First tool loop. It
 receives Core, current local time, last-contact age, today's status panel and
