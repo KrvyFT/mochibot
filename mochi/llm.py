@@ -44,7 +44,8 @@ class ToolCallDict(TypedDict):
     """Typed structure for a single tool call in LLMResponse."""
     id: str
     name: str
-    arguments: dict[str, Any]
+    arguments: object
+    argument_error: str | None
 
 
 @dataclass
@@ -57,6 +58,7 @@ class LLMResponse:
     total_tokens: int = 0
     model: str = ""
     finish_reason: str = ""
+    tool_calls_complete: bool = False
     # None = SDK didn't report (legacy SDK / non-reasoning model / non-OpenAI
     # provider). 0 = model explicitly reported zero. The distinction matters
     # for cost telemetry — see plan P1-2.
@@ -180,11 +182,15 @@ def _parse_openai_tool_calls(choice) -> list[ToolCallDict]:
             except (json.JSONDecodeError, TypeError):
                 log.warning("Malformed tool_call arguments for %s",
                             tc.function.name)
-                parsed_args = {}
+                parsed_args = None
+                argument_error = "arguments were not valid JSON"
+            else:
+                argument_error = None
             tool_calls.append({
                 "id": tc.id,
                 "name": tc.function.name,
                 "arguments": parsed_args,
+                "argument_error": argument_error,
             })
     return tool_calls
 
@@ -210,6 +216,7 @@ def _openai_response(choice, usage, model: str, tool_calls: list[ToolCallDict]) 
         total_tokens=usage.total_tokens if usage else 0,
         model=model,
         finish_reason=choice.finish_reason or "",
+        tool_calls_complete=choice.finish_reason == "tool_calls",
         reasoning_tokens=reasoning,
         cached_prompt_tokens=cached,
     )
@@ -409,10 +416,16 @@ class AnthropicProvider(LLMProvider):
             if block.type == "text":
                 content += block.text
             elif block.type == "tool_use":
+                arguments = block.input
+                argument_error = None
+                if not isinstance(arguments, dict):
+                    arguments = None
+                    argument_error = "arguments were not an object"
                 tool_calls.append({
                     "id": block.id,
                     "name": block.name,
-                    "arguments": block.input,
+                    "arguments": arguments,
+                    "argument_error": argument_error,
                 })
             elif block.type in ("thinking", "redacted_thinking"):
                 # Internal reasoning — NEVER leak into user-facing content.
@@ -439,6 +452,7 @@ class AnthropicProvider(LLMProvider):
             total_tokens=(usage.input_tokens + usage.output_tokens) if usage else 0,
             model=self._model,
             finish_reason=resp.stop_reason or "",
+            tool_calls_complete=resp.stop_reason == "tool_use",
             # Anthropic doesn't separately report thinking-token usage; it's
             # bundled into output_tokens. Leave None to preserve the P1-2
             # semantic (None = not reported by SDK).
@@ -486,8 +500,15 @@ class AnthropicProvider(LLMProvider):
                     if isinstance(args, str):
                         try:
                             args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {}
+                        except json.JSONDecodeError as exc:
+                            raise ValueError(
+                                "Cannot convert malformed tool arguments "
+                                "to Anthropic format"
+                            ) from exc
+                    if not isinstance(args, dict):
+                        raise ValueError(
+                            "Anthropic tool arguments must be an object"
+                        )
                     content_blocks.append({
                         "type": "tool_use",
                         "id": tc["id"],

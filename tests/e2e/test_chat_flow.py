@@ -74,6 +74,63 @@ class TestSimpleReply:
         assert "remember" in reply.text.lower()
         assert "jasmine tea" in read_core()
 
+        unchanged_core = read_core()
+        rejected_calls = [
+            (
+                {
+                    "id": "malformed",
+                    "name": "update_core",
+                    "arguments": None,
+                    "argument_error": "arguments were not valid JSON",
+                },
+                True,
+                "malformed_tool_arguments",
+            ),
+            (
+                make_tool_call("update_core", {
+                    "action": "insert_after",
+                    "anchor_text": "Core anchor",
+                    "content": "must not run",
+                }, call_id="incomplete"),
+                False,
+                "incomplete_tool_call",
+            ),
+            (
+                make_tool_call("update_core", {}, call_id="required"),
+                True,
+                "invalid_tool_arguments",
+            ),
+            (
+                make_tool_call(
+                    "update_core", {"action": 1}, call_id="type",
+                ),
+                True,
+                "invalid_tool_arguments",
+            ),
+            (
+                make_tool_call(
+                    "update_core", {"action": "invent"}, call_id="enum",
+                ),
+                True,
+                "invalid_tool_arguments",
+            ),
+        ]
+        for index, (tool_call, complete, expected_error) in enumerate(
+            rejected_calls, start=2,
+        ):
+            attempted = make_response(tool_calls=[tool_call])
+            attempted.tool_calls_complete = complete
+            mock = mock_llm_factory([
+                attempted,
+                make_response(f"Recovered {expected_error}"),
+            ])
+
+            recovered = await chat(_msg(f"invalid call {index}", user_id=index))
+
+            assert expected_error in recovered.text
+            assert expected_error in mock.call_log[1]["messages"][-1]["content"]
+            assert read_core() == unchanged_core
+
 class TestToolCallReminder:
     """LLM calls manage_reminder tool."""
 

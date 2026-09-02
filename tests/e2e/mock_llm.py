@@ -45,6 +45,7 @@ def make_tool_call(name: str, arguments: dict, call_id: str | None = None) -> To
         "id": call_id or f"call_{uuid.uuid4().hex[:8]}",
         "name": name,
         "arguments": arguments,
+        "argument_error": None,
     }
 
 
@@ -61,4 +62,5 @@ def make_response(
         total_tokens=15,
         model="mock-model",
         finish_reason="tool_calls" if tool_calls else "stop",
+        tool_calls_complete=bool(tool_calls),
     )

@@ -65,6 +65,10 @@ def test_openai_compatible_chat_handles_text_and_tools():
         id="call-1",
         function=SimpleNamespace(name="weather", arguments='{"city":"Tokyo"}'),
     )
+    malformed_call = SimpleNamespace(
+        id="call-2",
+        function=SimpleNamespace(name="weather", arguments='{"city":'),
+    )
     responses = [
         SimpleNamespace(
             choices=[SimpleNamespace(
@@ -76,7 +80,14 @@ def test_openai_compatible_chat_handles_text_and_tools():
         SimpleNamespace(
             choices=[SimpleNamespace(
                 message=SimpleNamespace(content="", tool_calls=[tool_call]),
-                finish_reason="stop",
+               finish_reason="tool_calls",
+            )],
+            usage=None,
+        ),
+        SimpleNamespace(
+            choices=[SimpleNamespace(
+               message=SimpleNamespace(content="", tool_calls=[malformed_call]),
+               finish_reason="tool_calls",
             )],
             usage=None,
         ),
@@ -103,4 +114,77 @@ def test_openai_compatible_chat_handles_text_and_tools():
         "id": "call-1",
         "name": "weather",
         "arguments": {"city": "Tokyo"},
+        "argument_error": None,
     }]
+    assert result.tool_calls_complete is True
+
+    malformed = provider.chat(
+        [{"role": "user", "content": "weather"}],
+        tools=[{"type": "function", "function": {"name": "weather"}}],
+    )
+    assert malformed.tool_calls[0]["arguments"] is None
+    assert malformed.tool_calls[0]["argument_error"] == (
+        "arguments were not valid JSON"
+    )
+
+    anthropic_messages = llm.AnthropicProvider._convert_messages([
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{
+                "id": "tool-1",
+                "type": "function",
+                "function": {
+                    "name": "weather",
+                    "arguments": '{"city":"Tokyo"}',
+                },
+            }],
+        },
+        {"role": "tool", "tool_call_id": "tool-1", "content": '{"ok":true}'},
+    ])
+    assert anthropic_messages[0]["content"][0]["input"] == {"city": "Tokyo"}
+    assert anthropic_messages[1]["content"][0]["tool_use_id"] == "tool-1"
+
+    anthropic_provider = llm.AnthropicProvider.__new__(llm.AnthropicProvider)
+    anthropic_provider._model = "claude"
+    anthropic_provider._client = SimpleNamespace(
+        messages=SimpleNamespace(create=lambda **kwargs: SimpleNamespace(
+            content=[SimpleNamespace(
+                type="tool_use",
+                id="tool-2",
+                name="weather",
+                input={"city": "Tokyo"},
+            )],
+            usage=SimpleNamespace(input_tokens=4, output_tokens=3),
+            stop_reason="tool_use",
+        )),
+    )
+    anthropic_result = anthropic_provider.chat(
+        [{"role": "user", "content": "weather"}],
+        tools=[{"type": "function", "function": {"name": "weather"}}],
+    )
+    assert anthropic_result.tool_calls == [{
+        "id": "tool-2",
+        "name": "weather",
+        "arguments": {"city": "Tokyo"},
+        "argument_error": None,
+    }]
+    assert anthropic_result.tool_calls_complete is True
+
+    from mochi.tool_availability import ToolAvailability
+    availability = ToolAvailability.from_definitions([{
+        "type": "function",
+        "function": {
+            "name": "nullable",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": ["integer", "null"]}},
+                "required": ["value"],
+                "additionalProperties": False,
+            },
+        },
+    }], source="test")
+    assert availability.validate_arguments("nullable", {"value": None}) is None
+    assert availability.validate_arguments(
+        "nullable", {"value": "wrong"},
+    ) == "arguments.value must be one of ['integer', 'null']"
