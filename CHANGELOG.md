@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v1.0.13
+- 工具调用更可靠，参数错误和真实改动状态更清楚
+- 修复 DeepSeek 思考模式在工具续轮中的 400 中断
+- Admin 可查看记忆来源；Web 搜索结果会明确标记为外部数据
+
 ## v1.0.1
 - 修复模型表单误关闭、模型测试假成功、旧主动消息重启后补发和 Observer 缓存丢失
 - Admin 支持复用已有模型凭据，并允许配置 HTTPS OpenAI-compatible Chat Completions 端点
