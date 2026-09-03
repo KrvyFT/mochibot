@@ -2,7 +2,6 @@
 name: sticker
 description: 用贴纸为当前表达增加情绪
 type: tool
-exclude_transports: [wechat]
 ---
 
 ## Tools

@@ -92,7 +92,7 @@ def get_diagnostic_report() -> str:
     # Lazy imports to avoid circular dependencies
     from mochi.config import (  # noqa: E402
         MAIN_PROVIDER, MAIN_MODEL, MAIN_BASE_URL, MAIN_API_KEY,
-        TELEGRAM_BOT_TOKEN, WEIXIN_ENABLED,
+        TELEGRAM_BOT_TOKEN,
         EMBEDDING_API_KEY,
         MAX_DAILY_FREE_TIME,
         ADMIN_PORT, ADMIN_BIND,
@@ -128,7 +128,6 @@ def get_diagnostic_report() -> str:
     lines.append(f"MAIN_BASE_URL: {MAIN_BASE_URL or '(default)'}")
     lines.append(f"MAIN_API_KEY: {_mask(MAIN_API_KEY)}")
     lines.append(f"TELEGRAM_BOT_TOKEN: {_mask(TELEGRAM_BOT_TOKEN)}")
-    lines.append(f"WEIXIN_ENABLED: {WEIXIN_ENABLED}")
     lines.append(f"EMBEDDING_API_KEY: {_mask(EMBEDDING_API_KEY)}")
     lines.append(f"MAX_DAILY_FREE_TIME: {MAX_DAILY_FREE_TIME}")
     lines.append(f"TIMEZONE_OFFSET_HOURS: {TIMEZONE_OFFSET_HOURS}")

@@ -57,23 +57,6 @@ EMBEDDING_CACHE_TTL_S = _env_int("EMBEDDING_CACHE_TTL_S", 300)
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
 
 # ═══════════════════════════════════════════════════════════════════════════
-# Transport — WeChat (optional secondary transport)
-# ═══════════════════════════════════════════════════════════════════════════
-# Run `python scripts/weixin_auth.py` to scan QR code and get your token.
-
-WEIXIN_ENABLED = _env_bool("WEIXIN_ENABLED", False)
-WEIXIN_BOT_TOKEN = _env("WEIXIN_BOT_TOKEN")
-WEIXIN_BASE_URL = _env("WEIXIN_BASE_URL", "https://ilinkai.weixin.qq.com")
-WEIXIN_ALLOWED_USERS = [u.strip() for u in _env("WEIXIN_ALLOWED_USERS").split(",") if u.strip()]
-WEIXIN_POLL_TIMEOUT_S = _env_int("WEIXIN_POLL_TIMEOUT_S", 35)
-WEIXIN_BUBBLE_DELAY_S = _env_float("WEIXIN_BUBBLE_DELAY_S", 1.0)
-WEIXIN_MSG_LIMIT = _env_int("WEIXIN_MSG_LIMIT", 4000)
-WEIXIN_BACKOFF_MIN_S = _env_int("WEIXIN_BACKOFF_MIN_S", 2)
-WEIXIN_BACKOFF_MAX_S = _env_int("WEIXIN_BACKOFF_MAX_S", 30)
-WEIXIN_MAX_CONSECUTIVE_FAILURES = _env_int("WEIXIN_MAX_CONSECUTIVE_FAILURES", 3)
-WEIXIN_SESSION_EXPIRED_RETRY_S = _env_int("WEIXIN_SESSION_EXPIRED_RETRY_S", 300)
-
-# ═══════════════════════════════════════════════════════════════════════════
 # Owner
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -457,7 +440,7 @@ def validate_config() -> str:
     except Exception:
         pass  # DB not initialized yet or admin_db unavailable
 
-    has_transport = bool(TELEGRAM_BOT_TOKEN) or WEIXIN_ENABLED
+    has_transport = bool(TELEGRAM_BOT_TOKEN)
     mode = "ok"
 
     if has_transport and not has_required_models:
@@ -469,7 +452,7 @@ def validate_config() -> str:
     elif not has_transport:
         mode = "admin_only"
         _log.warning(
-            "[WARN] TELEGRAM_BOT_TOKEN / WEIXIN_ENABLED — "
+            "[WARN] TELEGRAM_BOT_TOKEN — "
             "No transport configured — bot will not receive messages"
         )
 

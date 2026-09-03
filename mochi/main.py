@@ -3,7 +3,7 @@
 Starts all subsystems:
 1. Database initialization
 2. Skill discovery
-3. Transport — Telegram or WeChat (one at a time)
+3. Transport — Telegram
 4. Heartbeat loop (includes maintenance scheduling)
 """
 
@@ -18,8 +18,6 @@ from mochi.admin_access import build_admin_base_url, configure_safe_logging
 from mochi.config import (
     TELEGRAM_BOT_TOKEN,
     OWNER_USER_ID,
-    WEIXIN_ENABLED,
-    WEIXIN_BOT_TOKEN,
     LOG_LEVEL,
     validate_config,
 )
@@ -57,30 +55,6 @@ configure_safe_logging(
 from mochi.error_buffer import BufferHandler  # noqa: E402
 logging.getLogger("mochi").addHandler(BufferHandler())
 log = logging.getLogger("mochi")
-
-
-def _restore_weixin_owner_state(transport: Transport) -> None:
-    """Restore restart-safe WeChat owner state when supported by the transport."""
-    if not hasattr(transport, "restore_owner_id"):
-        return
-    from mochi.admin.admin_crypto import decrypt_api_key, is_encrypted
-    from mochi.db import get_skill_config
-
-    saved_wechat = get_skill_config("_transport:wechat")
-    saved_id = saved_wechat.get("owner_weixin_id")
-    if not saved_id:
-        return
-    stored_context = saved_wechat.get("owner_context_token", "")
-    context_token = (
-        decrypt_api_key(stored_context)
-        if is_encrypted(stored_context)
-        else ""
-    )
-    transport.restore_owner_id(
-        saved_id,
-        context_token=context_token,
-        source="DB",
-    )
 
 
 # Module-level flag — set in main(), read by handle_message()
@@ -187,33 +161,17 @@ async def main():
     transport: Transport | None = None
 
     if (_setup_mode or agent_enabled) and TELEGRAM_BOT_TOKEN:
-        if WEIXIN_ENABLED:
-            log.warning("Both Telegram and WeChat configured — using Telegram. "
-                        "Disable one in .env or admin portal to silence this warning.")
         from mochi.transport.telegram import TelegramTransport, set_message_handler
         transport = TelegramTransport()
         set_message_handler(handle_message)
-    elif (_setup_mode or agent_enabled) and WEIXIN_ENABLED and WEIXIN_BOT_TOKEN:
-        from mochi.transport.weixin import WeixinTransport
-        from mochi.transport.weixin import set_message_handler as set_weixin_handler
-        transport = WeixinTransport()
-        set_weixin_handler(handle_message)
 
     if transport:
         await transport.start()
         log.info("Transport started: %s", transport.name)
 
-    # 3a. Restore owner send state from DB (persists across all restart types)
-    if transport:
-        _restore_weixin_owner_state(transport)
-
     # 3b. Send restart-complete notification if restarting
     restart_info = consume_restart_flag()
     if restart_info and transport:
-        # Restore transport-specific state so send_message works immediately
-        weixin_id = restart_info.get("weixin_id")
-        if weixin_id and hasattr(transport, "restore_owner_id"):
-            transport.restore_owner_id(weixin_id)
         try:
             await transport.send_message(
                 restart_info["channel_id"], "重启完成 ✅")
@@ -227,11 +185,8 @@ async def main():
         from mochi.update_service import consume_update_result
         update_info = consume_update_result()
     if update_info and transport:
-        weixin_id = update_info.get("weixin_id")
-        if weixin_id and hasattr(transport, "restore_owner_id"):
-            transport.restore_owner_id(weixin_id, source="update result")
         channel_id = int(update_info.get("channel_id") or 0)
-        if channel_id or weixin_id:
+        if channel_id:
             try:
                 await transport.send_message(
                     channel_id,
@@ -374,9 +329,6 @@ async def main():
             "pid": os.getpid(),
             "transport": transport.name if transport and runtime_running else "",
             "setup_mode": _setup_mode,
-            "weixin_session_expired": bool(
-                transport and getattr(transport, "_session_expired", False)
-            ),
         }
 
     # 6. Admin portal shares this process with the bot runtime.

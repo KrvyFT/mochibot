@@ -6,7 +6,7 @@ setup, not broad provider or multi-user infrastructure.
 
 ## Boundaries
 
-- **Transports** (`mochi/transport/`) adapt Telegram or WeChat messages into
+- **Transports** (`mochi/transport/`) adapt Telegram messages into
   `IncomingMessage` values and deliver `ChatResult` values. They do not own
   conversation decisions.
 - **Main runtime** (`mochi/ai_client.py`) owns user-visible reasoning,

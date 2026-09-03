@@ -31,11 +31,9 @@ MochiBot 本身不包含 AI 模型，需要你提供一个 API key（调用 AI �
 
 > 这些服务按用量收费，日常使用一个月大概几块到几十块人民币。
 
-### 消息平台（二选一）
+### 消息平台
 
-MochiBot 需要一个消息平台来跟你聊天。**Telegram 或微信，选一个就行。**
-
-**选 Telegram？** 你需要提前创建一个 bot token：
+MochiBot 需要 Telegram 来跟你聊天。你需要提前创建一个 bot token：
 
 1. 在 Telegram 搜索 **@BotFather**，点进去发消息
 2. 发送 `/newbot`
@@ -44,9 +42,7 @@ MochiBot 需要一个消息平台来跟你聊天。**Telegram 或微信，选一
 5. BotFather 会回复一串 token，长得像 `123456789:ABCdefGHIjklMNOpqrsTUVwxyz`
 6. **复制保存好这个 token**，等下要用
 
-**选微信？** 不需要提前准备任何东西。后续在管理后台配置时会引导你用个人微信号扫码登录。
-
-> Telegram 支持图片、表情包和语音气泡。语音需要在管理后台模型页配置百炼 CosyVoice。微信目前只处理文字消息。
+> Telegram 支持图片、表情包和语音气泡。语音需要在管理后台模型页配置百炼 CosyVoice。
 
 ---
 

@@ -265,21 +265,6 @@ if HAS_FASTAPI:
             )
         _test_timestamps.append(now)
 
-    # Separate rate limiter for QR poll (called every 3s, needs larger budget)
-    _qr_poll_timestamps: list[float] = []
-    _QR_POLL_RATE_LIMIT = 200   # max calls (~10 min of 3s polling)
-    _QR_POLL_RATE_WINDOW = 600.0
-
-    def _check_qr_poll_rate():
-        now = time.monotonic()
-        _qr_poll_timestamps[:] = [t for t in _qr_poll_timestamps if now - t < _QR_POLL_RATE_WINDOW]
-        if len(_qr_poll_timestamps) >= _QR_POLL_RATE_LIMIT:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Rate limit: max {_QR_POLL_RATE_LIMIT} polls per {int(_QR_POLL_RATE_WINDOW)}s"
-            )
-        _qr_poll_timestamps.append(now)
-
     # ── Frontend ──────────────────────────────────────────────────────────
 
     @app.get("/", response_class=HTMLResponse)
@@ -361,8 +346,6 @@ if HAS_FASTAPI:
                 "value": main_tier.get("provider", ""),
             },
             "telegram_bot_token": {"set": bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip())},
-            "weixin_enabled": {"set": (read_env_value("WEIXIN_ENABLED") or "").strip().lower() in ("1", "true", "yes")},
-            "weixin_bot_token": {"set": bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())},
             "owner_user_id": {
                 "set": bool(OWNER_USER_ID) or bool((read_env_value("OWNER_USER_ID") or "").strip()),
                 "value": str(OWNER_USER_ID) if OWNER_USER_ID else (read_env_value("OWNER_USER_ID") or ""),
@@ -387,11 +370,7 @@ if HAS_FASTAPI:
         except Exception:
             recent_error_count = 0
 
-        has_transport = bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip()) or (
-            (read_env_value("WEIXIN_ENABLED") or "").strip().lower()
-            in ("1", "true", "yes")
-            and bool((read_env_value("WEIXIN_BOT_TOKEN") or "").strip())
-        )
+        has_transport = bool((read_env_value("TELEGRAM_BOT_TOKEN") or "").strip())
 
         skills_count = 0
         skills_disabled = 0
@@ -450,7 +429,6 @@ if HAS_FASTAPI:
         status.setdefault("running", False)
         status.setdefault("enabled", status["running"])
         status.setdefault("pid", os.getpid())
-        status.setdefault("weixin_session_expired", False)
         return status
 
     @app.post("/api/admin/restart", dependencies=[Depends(_verify_token)])
@@ -1212,128 +1190,6 @@ if HAS_FASTAPI:
             return {"ok": False, "error": "Connection timed out (10s)"}
         except Exception as e:
             return {"ok": False, "error": str(e)[:500]}
-
-    # ── WeChat token test ───────────────────────────────────────────────
-
-    @app.post("/api/weixin/test", dependencies=[Depends(_verify_token)])
-    async def api_test_weixin(request: Request):
-        """Test a WeChat Bot Token by calling the getconfig API."""
-        _check_test_rate()
-        body = await request.json()
-        token = (body.get("token") or "").strip()
-        if not token:
-            raise HTTPException(400, "token is required")
-        import struct, os, base64
-        uint32 = struct.unpack(">I", os.urandom(4))[0]
-        uin = base64.b64encode(str(uint32).encode()).decode()
-        headers = {
-            "Content-Type": "application/json",
-            "AuthorizationType": "ilink_bot_token",
-            "Authorization": f"Bearer {token}",
-            "X-WECHAT-UIN": uin,
-        }
-        base_url = (body.get("base_url") or "https://ilinkai.weixin.qq.com").rstrip("/")
-        try:
-            async with httpx.AsyncClient() as client:
-                async with asyncio.timeout(10):
-                    resp = await client.post(
-                        f"{base_url}/ilink/bot/getconfig",
-                        json={"ilink_user_id": "", "context_token": ""},
-                        headers=headers,
-                        timeout=10,
-                    )
-                resp.raise_for_status()
-                data = resp.json()
-                ret = data.get("ret", -1)
-                errcode = data.get("errcode", 0)
-                if ret == 0 and errcode == 0:
-                    return {"ok": True}
-                if errcode == -14 or ret == -14:
-                    return {"ok": False, "error": "Token expired — re-run scripts/weixin_auth.py"}
-                return {"ok": False, "error": f"API error: ret={ret} errcode={errcode}"}
-        except (asyncio.TimeoutError, httpx.TimeoutException):
-            return {"ok": False, "error": "Connection timed out (10s)"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:500]}
-
-    # ── WeChat QR auth flow ────────────────────────────────────────────
-
-    _WEIXIN_DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
-
-    @app.post("/api/weixin/qr", dependencies=[Depends(_verify_token)])
-    async def api_weixin_qr():
-        """Fetch a QR code for WeChat bot login."""
-        _check_test_rate()
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{_WEIXIN_DEFAULT_BASE_URL}/ilink/bot/get_bot_qrcode?bot_type=3"
-                async with asyncio.timeout(15):
-                    resp = await client.get(url, timeout=15)
-                resp.raise_for_status()
-                data = resp.json()
-                qrcode = data.get("qrcode", "")
-                qr_content = data.get("qrcode_img_content", "")
-                if not qrcode or not qr_content:
-                    return {"ok": False, "error": f"API returned no QR data: {str(data)[:200]}"}
-                return {"ok": True, "qrcode": qrcode, "qrcode_img_content": qr_content}
-        except (asyncio.TimeoutError, httpx.TimeoutException):
-            return {"ok": False, "error": "Connection timed out (15s)"}
-        except Exception as e:
-            return {"ok": False, "error": str(e)[:500]}
-
-    @app.post("/api/weixin/qr/poll", dependencies=[Depends(_verify_token)])
-    async def api_weixin_qr_poll(request: Request):
-        """Poll QR code scan status. On confirmed, auto-save credentials to .env."""
-        _check_qr_poll_rate()
-        body = await request.json()
-        qrcode = (body.get("qrcode") or "").strip()
-        if not qrcode:
-            raise HTTPException(400, "qrcode is required")
-        try:
-            async with httpx.AsyncClient() as client:
-                url = f"{_WEIXIN_DEFAULT_BASE_URL}/ilink/bot/get_qrcode_status"
-                async with asyncio.timeout(35):
-                    resp = await client.get(
-                        url,
-                        params={"qrcode": qrcode},
-                        headers={"iLink-App-ClientVersion": "1"},
-                        timeout=35,
-                    )
-                resp.raise_for_status()
-                data = resp.json()
-        except (asyncio.TimeoutError, httpx.TimeoutException):
-            return {"status": "wait"}
-        except Exception as e:
-            return {"status": "error", "error": str(e)[:500]}
-
-        status = data.get("status", "")
-
-        if status == "confirmed":
-            from mochi.admin.admin_env import write_env_value, read_env_value
-            bot_token = data.get("bot_token", "")
-            user_id = data.get("ilink_user_id", "")
-            base_url = data.get("baseurl", "")
-
-            if bot_token:
-                write_env_value("WEIXIN_ENABLED", "true")
-                write_env_value("WEIXIN_BOT_TOKEN", bot_token)
-
-            if base_url and base_url.rstrip("/") != _WEIXIN_DEFAULT_BASE_URL:
-                write_env_value("WEIXIN_BASE_URL", base_url)
-
-            if user_id:
-                existing = read_env_value("WEIXIN_ALLOWED_USERS")
-                if not existing:
-                    write_env_value("WEIXIN_ALLOWED_USERS", user_id)
-
-            log.info("WeChat QR auth: credentials saved to .env")
-
-        return {
-            "status": status,
-            "bot_token": data.get("bot_token", ""),
-            "ilink_user_id": data.get("ilink_user_id", ""),
-            "baseurl": data.get("baseurl", ""),
-        }
 
     # ═══════════════════════════════════════════════════════════════════════
     # Memory

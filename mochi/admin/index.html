@@ -361,14 +361,7 @@ if (_urlToken) {
 }
 const authToken = _urlToken || sessionStorage.getItem('_admin_token') || '';
 let _telegramBotInfo = null; // {username, first_name} — set after successful token test
-let _weixinConnected = false; // set after successful WeChat token test
-let _openTransportCfg = null; // 'telegram' | 'weixin' | null — which config panel is open
-let _wxQrPollTimer = null;   // QR scan poll interval
-let _wxQrRefreshCount = 0;   // QR refresh counter (max 6)
-let _wxQrStartTime = 0;      // overall timeout tracking
-let _wxQrActiveContent = '';  // current QR URL for re-render after DOM rebuild
-let _wxQrStatusHtml = '';     // current status HTML for re-render after DOM rebuild
-let _wxQrGeneration = 0;       // invalidates cancelled/replaced QR polling sessions
+let _openTransportCfg = null; // 'telegram' | null — which config panel is open
 
 async function api(method, path, body) {
   const opts = {method, headers:{'Content-Type':'application/json'}};
@@ -440,26 +433,17 @@ function showTransportConfig(type) {
   // Toggle: if already open, close it; otherwise open the selected one
   _openTransportCfg = (_openTransportCfg === type) ? null : type;
   const tgCfg = document.getElementById('transport-cfg');
-  const wxCfg = document.getElementById('weixin-cfg');
   const tgBtn = document.getElementById('tp-btn-telegram');
-  const wxBtn = document.getElementById('tp-btn-weixin');
   if (tgCfg) tgCfg.style.display = _openTransportCfg === 'telegram' ? 'block' : 'none';
-  if (wxCfg) wxCfg.style.display = _openTransportCfg === 'weixin' ? 'block' : 'none';
   if (tgBtn) tgBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'telegram' ? ' active' : '');
-  if (wxBtn) wxBtn.className = 'tp-cfg-btn' + (_openTransportCfg === 'weixin' ? ' active' : '');
 }
 
 async function unbindTransport(platform) {
   if (!platform) return;
   if (!confirm('确定要解绑 ' + platform + ' 吗？Bot 将停止运行。')) return;
   try {
-    if (platform === 'Telegram') {
-      await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''});
-      _telegramBotInfo = null;
-    } else {
-      await api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''});
-      _weixinConnected = false;
-    }
+    await api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''});
+    _telegramBotInfo = null;
     showToast('已解绑 ' + platform);
     await api('POST', '/bot/stop').catch(() => {});
     showToast('🔄 Agent 正在重启并应用解绑配置...');
@@ -470,8 +454,6 @@ async function unbindTransport(platform) {
 async function saveTransportConfig() {
   const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
   if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
-  // Confirm if switching from WeChat
-  if (_weixinConnected && !confirm('这将断开 WeChat 连接，确定切换到 Telegram？')) return;
   const token = tokenInput.value.trim();
   const statusEl = document.getElementById('tg-connect-status');
   const saveBtn = document.getElementById('tg-save-btn');
@@ -493,9 +475,6 @@ async function saveTransportConfig() {
 
     if (test.ok) {
       _telegramBotInfo = {username: test.username, first_name: test.first_name};
-      // Clear WeChat credentials (mutually exclusive transports)
-      _weixinConnected = false;
-      api('PUT', '/env', {'WEIXIN_ENABLED': 'false', 'WEIXIN_BOT_TOKEN': ''}).catch(() => {});
       if (statusEl) {
         statusEl.innerHTML = '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
           + '<span class="badge badge-ok" style="font-size:13px">✅ 已连接</span>'
@@ -732,571 +711,6 @@ async function restartAfterUpdate() {
   }
 }
 
-function toggleWeixinConfig() {
-  showTransportConfig('weixin');
-}
-
-// ── WeChat QR Scan Flow ──────────
-
-async function startWeixinQR() {
-  const statusEl = document.getElementById('wx-qr-status');
-  const canvasEl = document.getElementById('wx-qr-canvas');
-  const btnEl = document.getElementById('wx-qr-btn');
-  const cancelEl = document.getElementById('wx-qr-cancel');
-  const generation = cancelWeixinQR();
-
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = '获取二维码中...'; }
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 正在获取二维码...</span>';
-  if (canvasEl) { canvasEl.style.display = 'none'; canvasEl.getContext('2d').clearRect(0,0,canvasEl.width,canvasEl.height); }
-
-  try {
-    const r = await api('POST', '/weixin/qr');
-    if (generation !== _wxQrGeneration) return;
-    if (!r.ok) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
-      if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
-      return;
-    }
-    // Render QR code to canvas
-    if (canvasEl) {
-      renderQRToCanvas(canvasEl, r.qrcode_img_content, 220);
-      canvasEl.style.display = 'block';
-    }
-    _wxQrActiveContent = r.qrcode_img_content;
-    _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
-    if (statusEl) statusEl.innerHTML = _wxQrStatusHtml;
-    if (btnEl) btnEl.style.display = 'none';
-    if (cancelEl) cancelEl.style.display = 'inline-block';
-
-    // Start polling
-    _wxQrRefreshCount = 0;
-    _wxQrStartTime = Date.now();
-    pollWeixinQR(r.qrcode, generation);
-  } catch(e) {
-    if (generation !== _wxQrGeneration) return;
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(e.message) + '</span>';
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = '扫码登录'; }
-  }
-}
-
-function pollWeixinQR(qrcode, generation) {
-  if (generation !== _wxQrGeneration) return;
-  if (_wxQrPollTimer) clearInterval(_wxQrPollTimer);
-  const QR_TIMEOUT_MS = 480000; // 8 min
-  const QR_MAX_REFRESH = 6;
-  const POLL_INTERVAL_MS = 3000;
-
-  _wxQrPollTimer = setInterval(async () => {
-    if (generation !== _wxQrGeneration) return;
-    // Overall timeout
-    if (Date.now() - _wxQrStartTime > QR_TIMEOUT_MS) {
-      cancelWeixinQR();
-      const s = document.getElementById('wx-qr-status');
-      if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 扫码超时，请重试</span>';
-      resetWxQrBtn();
-      return;
-    }
-    try {
-      const r = await api('POST', '/weixin/qr/poll', {qrcode});
-      if (generation !== _wxQrGeneration) return;
-
-      if (r.status === 'scaned') {
-        const s = document.getElementById('wx-qr-status');
-        _wxQrStatusHtml = '<span style="color:var(--primary)">✅ 已扫码，请在手机上确认...</span>';
-        if (s) s.innerHTML = _wxQrStatusHtml;
-      } else if (r.status === 'expired') {
-        _wxQrRefreshCount++;
-        if (_wxQrRefreshCount > QR_MAX_REFRESH) {
-          cancelWeixinQR();
-          const s = document.getElementById('wx-qr-status');
-          if (s) s.innerHTML = '<span style="color:var(--danger)">⏰ 二维码已过期多次，请重试</span>';
-          resetWxQrBtn();
-          return;
-        }
-        // Fetch new QR
-        const nextGeneration = cancelWeixinQR();
-        const s = document.getElementById('wx-qr-status');
-        if (s) s.innerHTML = '<span style="color:var(--text-soft)">🔄 二维码已过期，自动刷新中...</span>';
-        let fresh;
-        try {
-          fresh = await api('POST', '/weixin/qr');
-        } catch(e) { /* restart polling with the old ID */ }
-        if (nextGeneration !== _wxQrGeneration) return;
-        if (fresh && fresh.ok) {
-          const c = document.getElementById('wx-qr-canvas');
-          if (c) renderQRToCanvas(c, fresh.qrcode_img_content, 220);
-          _wxQrActiveContent = fresh.qrcode_img_content;
-          _wxQrStatusHtml = '<span style="color:var(--text-soft)">📱 用微信扫描上方二维码</span>';
-          if (s) s.innerHTML = _wxQrStatusHtml;
-          // Restart poll with the new QR's generation.
-          pollWeixinQR(fresh.qrcode, nextGeneration);
-          return;
-        }
-        pollWeixinQR(qrcode, nextGeneration);
-        return;
-      } else if (r.status === 'confirmed') {
-        cancelWeixinQR();
-        _wxQrActiveContent = '';
-        _wxQrStatusHtml = '';
-        _weixinConnected = true;
-        _telegramBotInfo = null; // mutually exclusive
-        const s = document.getElementById('wx-qr-status');
-        if (s) s.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ 登录成功！Token 已自动保存</span>';
-        const c = document.getElementById('wx-qr-canvas');
-        if (c) c.style.display = 'none';
-        const cancel = document.getElementById('wx-qr-cancel');
-        if (cancel) cancel.style.display = 'none';
-        showToast('✅ WeChat 已连接，请继续完成设置');
-        loaded.settings = false;
-        loadSettings();
-        return;
-      } else if (r.status === 'error') {
-        cancelWeixinQR();
-        const s = document.getElementById('wx-qr-status');
-        if (s) s.innerHTML = '<span style="color:var(--danger)">❌ ' + esc(r.error) + '</span>';
-        resetWxQrBtn();
-        return;
-      }
-      // status === 'wait' → continue polling
-    } catch(e) {
-      // Transient error — keep polling
-    }
-  }, POLL_INTERVAL_MS);
-}
-
-function cancelWeixinQR() {
-  if (_wxQrPollTimer) { clearInterval(_wxQrPollTimer); _wxQrPollTimer = null; }
-  _wxQrGeneration++;
-  return _wxQrGeneration;
-}
-
-function resetWxQrBtn() {
-  const btn = document.getElementById('wx-qr-btn');
-  const cancel = document.getElementById('wx-qr-cancel');
-  if (btn) { btn.disabled = false; btn.textContent = '扫码登录'; btn.style.display = 'inline-block'; }
-  if (cancel) cancel.style.display = 'none';
-}
-
-function stopWeixinQR() {
-  cancelWeixinQR();
-  _wxQrActiveContent = '';
-  _wxQrStatusHtml = '';
-  const c = document.getElementById('wx-qr-canvas');
-  if (c) c.style.display = 'none';
-  const s = document.getElementById('wx-qr-status');
-  if (s) s.innerHTML = '';
-  resetWxQrBtn();
-}
-
-function toggleWxManualInput() {
-  const el = document.getElementById('wx-manual-input');
-  if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none';
-}
-
-// ── QR Code Generator (Nayuki qrcodegen, MIT License) ──
-// Project Nayuki — https://www.nayuki.io/page/qr-code-generator-library
-// Compiled from TypeScript source. Supports QR versions 1-40, all 4 EC levels.
-var qrcodegen;
-(function (qrcodegen) {
-    class QrCode {
-        static encodeText(text, ecl) {
-            const segs = qrcodegen.QrSegment.makeSegments(text);
-            return QrCode.encodeSegments(segs, ecl);
-        }
-        static encodeBinary(data, ecl) {
-            const seg = qrcodegen.QrSegment.makeBytes(data);
-            return QrCode.encodeSegments([seg], ecl);
-        }
-        static encodeSegments(segs, ecl, minVersion = 1, maxVersion = 40, mask = -1, boostEcl = true) {
-            if (!(QrCode.MIN_VERSION <= minVersion && minVersion <= maxVersion && maxVersion <= QrCode.MAX_VERSION)
-                || mask < -1 || mask > 7)
-                throw new RangeError("Invalid value");
-            let version;
-            let dataUsedBits;
-            for (version = minVersion;; version++) {
-                const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
-                const usedBits = QrSegment.getTotalBits(segs, version);
-                if (usedBits <= dataCapacityBits) {
-                    dataUsedBits = usedBits;
-                    break;
-                }
-                if (version >= maxVersion)
-                    throw new RangeError("Data too long");
-            }
-            for (const newEcl of [QrCode.Ecc.MEDIUM, QrCode.Ecc.QUARTILE, QrCode.Ecc.HIGH]) {
-                if (boostEcl && dataUsedBits <= QrCode.getNumDataCodewords(version, newEcl) * 8)
-                    ecl = newEcl;
-            }
-            let bb = [];
-            for (const seg of segs) {
-                appendBits(seg.mode.modeBits, 4, bb);
-                appendBits(seg.numChars, seg.mode.numCharCountBits(version), bb);
-                for (const b of seg.getData())
-                    bb.push(b);
-            }
-            assert(bb.length == dataUsedBits);
-            const dataCapacityBits = QrCode.getNumDataCodewords(version, ecl) * 8;
-            assert(bb.length <= dataCapacityBits);
-            appendBits(0, Math.min(4, dataCapacityBits - bb.length), bb);
-            appendBits(0, (8 - bb.length % 8) % 8, bb);
-            assert(bb.length % 8 == 0);
-            for (let padByte = 0xEC; bb.length < dataCapacityBits; padByte ^= 0xEC ^ 0x11)
-                appendBits(padByte, 8, bb);
-            let dataCodewords = [];
-            while (dataCodewords.length * 8 < bb.length)
-                dataCodewords.push(0);
-            bb.forEach((b, i) => dataCodewords[i >>> 3] |= b << (7 - (i & 7)));
-            return new QrCode(version, ecl, dataCodewords, mask);
-        }
-        constructor(version, errorCorrectionLevel, dataCodewords, msk) {
-            this.version = version;
-            this.errorCorrectionLevel = errorCorrectionLevel;
-            this.modules = [];
-            this.isFunction = [];
-            if (version < QrCode.MIN_VERSION || version > QrCode.MAX_VERSION)
-                throw new RangeError("Version value out of range");
-            if (msk < -1 || msk > 7)
-                throw new RangeError("Mask value out of range");
-            this.size = version * 4 + 17;
-            let row = [];
-            for (let i = 0; i < this.size; i++)
-                row.push(false);
-            for (let i = 0; i < this.size; i++) {
-                this.modules.push(row.slice());
-                this.isFunction.push(row.slice());
-            }
-            this.drawFunctionPatterns();
-            const allCodewords = this.addEccAndInterleave(dataCodewords);
-            this.drawCodewords(allCodewords);
-            if (msk == -1) {
-                let minPenalty = 1000000000;
-                for (let i = 0; i < 8; i++) {
-                    this.applyMask(i);
-                    this.drawFormatBits(i);
-                    const penalty = this.getPenaltyScore();
-                    if (penalty < minPenalty) {
-                        msk = i;
-                        minPenalty = penalty;
-                    }
-                    this.applyMask(i);
-                }
-            }
-            assert(0 <= msk && msk <= 7);
-            this.mask = msk;
-            this.applyMask(msk);
-            this.drawFormatBits(msk);
-            this.isFunction = [];
-        }
-        getModule(x, y) {
-            return 0 <= x && x < this.size && 0 <= y && y < this.size && this.modules[y][x];
-        }
-        drawFunctionPatterns() {
-            for (let i = 0; i < this.size; i++) {
-                this.setFunctionModule(6, i, i % 2 == 0);
-                this.setFunctionModule(i, 6, i % 2 == 0);
-            }
-            this.drawFinderPattern(3, 3);
-            this.drawFinderPattern(this.size - 4, 3);
-            this.drawFinderPattern(3, this.size - 4);
-            const alignPatPos = this.getAlignmentPatternPositions();
-            const numAlign = alignPatPos.length;
-            for (let i = 0; i < numAlign; i++) {
-                for (let j = 0; j < numAlign; j++) {
-                    if (!(i == 0 && j == 0 || i == 0 && j == numAlign - 1 || i == numAlign - 1 && j == 0))
-                        this.drawAlignmentPattern(alignPatPos[i], alignPatPos[j]);
-                }
-            }
-            this.drawFormatBits(0);
-            this.drawVersion();
-        }
-        drawFormatBits(mask) {
-            const data = this.errorCorrectionLevel.formatBits << 3 | mask;
-            let rem = data;
-            for (let i = 0; i < 10; i++)
-                rem = (rem << 1) ^ ((rem >>> 9) * 0x537);
-            const bits = (data << 10 | rem) ^ 0x5412;
-            assert(bits >>> 15 == 0);
-            for (let i = 0; i <= 5; i++)
-                this.setFunctionModule(8, i, getBit(bits, i));
-            this.setFunctionModule(8, 7, getBit(bits, 6));
-            this.setFunctionModule(8, 8, getBit(bits, 7));
-            this.setFunctionModule(7, 8, getBit(bits, 8));
-            for (let i = 9; i < 15; i++)
-                this.setFunctionModule(14 - i, 8, getBit(bits, i));
-            for (let i = 0; i < 8; i++)
-                this.setFunctionModule(this.size - 1 - i, 8, getBit(bits, i));
-            for (let i = 8; i < 15; i++)
-                this.setFunctionModule(8, this.size - 15 + i, getBit(bits, i));
-            this.setFunctionModule(8, this.size - 8, true);
-        }
-        drawVersion() {
-            if (this.version < 7)
-                return;
-            let rem = this.version;
-            for (let i = 0; i < 12; i++)
-                rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
-            const bits = this.version << 12 | rem;
-            assert(bits >>> 18 == 0);
-            for (let i = 0; i < 18; i++) {
-                const color = getBit(bits, i);
-                const a = this.size - 11 + i % 3;
-                const b = Math.floor(i / 3);
-                this.setFunctionModule(a, b, color);
-                this.setFunctionModule(b, a, color);
-            }
-        }
-        drawFinderPattern(x, y) {
-            for (let dy = -4; dy <= 4; dy++) {
-                for (let dx = -4; dx <= 4; dx++) {
-                    const dist = Math.max(Math.abs(dx), Math.abs(dy));
-                    const xx = x + dx;
-                    const yy = y + dy;
-                    if (0 <= xx && xx < this.size && 0 <= yy && yy < this.size)
-                        this.setFunctionModule(xx, yy, dist != 2 && dist != 4);
-                }
-            }
-        }
-        drawAlignmentPattern(x, y) {
-            for (let dy = -2; dy <= 2; dy++) {
-                for (let dx = -2; dx <= 2; dx++)
-                    this.setFunctionModule(x + dx, y + dy, Math.max(Math.abs(dx), Math.abs(dy)) != 1);
-            }
-        }
-        setFunctionModule(x, y, isDark) {
-            this.modules[y][x] = isDark;
-            this.isFunction[y][x] = true;
-        }
-        addEccAndInterleave(data) {
-            const ver = this.version;
-            const ecl = this.errorCorrectionLevel;
-            if (data.length != QrCode.getNumDataCodewords(ver, ecl))
-                throw new RangeError("Invalid argument");
-            const numBlocks = QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver];
-            const blockEccLen = QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver];
-            const rawCodewords = Math.floor(QrCode.getNumRawDataModules(ver) / 8);
-            const numShortBlocks = numBlocks - rawCodewords % numBlocks;
-            const shortBlockLen = Math.floor(rawCodewords / numBlocks);
-            let blocks = [];
-            const rsDiv = QrCode.reedSolomonComputeDivisor(blockEccLen);
-            for (let i = 0, k = 0; i < numBlocks; i++) {
-                let dat = data.slice(k, k + shortBlockLen - blockEccLen + (i < numShortBlocks ? 0 : 1));
-                k += dat.length;
-                const ecc = QrCode.reedSolomonComputeRemainder(dat, rsDiv);
-                if (i < numShortBlocks)
-                    dat.push(0);
-                blocks.push(dat.concat(ecc));
-            }
-            let result = [];
-            for (let i = 0; i < blocks[0].length; i++) {
-                blocks.forEach((block, j) => {
-                    if (i != shortBlockLen - blockEccLen || j >= numShortBlocks)
-                        result.push(block[i]);
-                });
-            }
-            assert(result.length == rawCodewords);
-            return result;
-        }
-        drawCodewords(data) {
-            if (data.length != Math.floor(QrCode.getNumRawDataModules(this.version) / 8))
-                throw new RangeError("Invalid argument");
-            let i = 0;
-            for (let right = this.size - 1; right >= 1; right -= 2) {
-                if (right == 6)
-                    right = 5;
-                for (let vert = 0; vert < this.size; vert++) {
-                    for (let j = 0; j < 2; j++) {
-                        const x = right - j;
-                        const upward = ((right + 1) & 2) == 0;
-                        const y = upward ? this.size - 1 - vert : vert;
-                        if (!this.isFunction[y][x] && i < data.length * 8) {
-                            this.modules[y][x] = getBit(data[i >>> 3], 7 - (i & 7));
-                            i++;
-                        }
-                    }
-                }
-            }
-            assert(i == data.length * 8);
-        }
-        applyMask(mask) {
-            if (mask < 0 || mask > 7)
-                throw new RangeError("Mask value out of range");
-            for (let y = 0; y < this.size; y++) {
-                for (let x = 0; x < this.size; x++) {
-                    let invert;
-                    switch (mask) {
-                        case 0: invert = (x + y) % 2 == 0; break;
-                        case 1: invert = y % 2 == 0; break;
-                        case 2: invert = x % 3 == 0; break;
-                        case 3: invert = (x + y) % 3 == 0; break;
-                        case 4: invert = (Math.floor(x / 3) + Math.floor(y / 2)) % 2 == 0; break;
-                        case 5: invert = x * y % 2 + x * y % 3 == 0; break;
-                        case 6: invert = (x * y % 2 + x * y % 3) % 2 == 0; break;
-                        case 7: invert = ((x + y) % 2 + x * y % 3) % 2 == 0; break;
-                        default: throw new Error("Unreachable");
-                    }
-                    if (!this.isFunction[y][x] && invert)
-                        this.modules[y][x] = !this.modules[y][x];
-                }
-            }
-        }
-        getPenaltyScore() {
-            let result = 0;
-            for (let y = 0; y < this.size; y++) {
-                let runColor = false; let runX = 0; let runHistory = [0,0,0,0,0,0,0];
-                for (let x = 0; x < this.size; x++) {
-                    if (this.modules[y][x] == runColor) { runX++; if (runX == 5) result += QrCode.PENALTY_N1; else if (runX > 5) result++; }
-                    else { this.finderPenaltyAddHistory(runX, runHistory); if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3; runColor = this.modules[y][x]; runX = 1; }
-                }
-                result += this.finderPenaltyTerminateAndCount(runColor, runX, runHistory) * QrCode.PENALTY_N3;
-            }
-            for (let x = 0; x < this.size; x++) {
-                let runColor = false; let runY = 0; let runHistory = [0,0,0,0,0,0,0];
-                for (let y = 0; y < this.size; y++) {
-                    if (this.modules[y][x] == runColor) { runY++; if (runY == 5) result += QrCode.PENALTY_N1; else if (runY > 5) result++; }
-                    else { this.finderPenaltyAddHistory(runY, runHistory); if (!runColor) result += this.finderPenaltyCountPatterns(runHistory) * QrCode.PENALTY_N3; runColor = this.modules[y][x]; runY = 1; }
-                }
-                result += this.finderPenaltyTerminateAndCount(runColor, runY, runHistory) * QrCode.PENALTY_N3;
-            }
-            for (let y = 0; y < this.size - 1; y++) { for (let x = 0; x < this.size - 1; x++) { const color = this.modules[y][x]; if (color == this.modules[y][x + 1] && color == this.modules[y + 1][x] && color == this.modules[y + 1][x + 1]) result += QrCode.PENALTY_N2; } }
-            let dark = 0; for (const row of this.modules) dark = row.reduce((sum, color) => sum + (color ? 1 : 0), dark);
-            const total = this.size * this.size;
-            const k = Math.ceil(Math.abs(dark * 20 - total * 10) / total) - 1;
-            assert(0 <= k && k <= 9); result += k * QrCode.PENALTY_N4;
-            assert(0 <= result && result <= 2568888); return result;
-        }
-        getAlignmentPatternPositions() {
-            if (this.version == 1) return [];
-            else { const numAlign = Math.floor(this.version / 7) + 2; const step = Math.floor((this.version * 8 + numAlign * 3 + 5) / (numAlign * 4 - 4)) * 2; let result = [6]; for (let pos = this.size - 7; result.length < numAlign; pos -= step) result.splice(1, 0, pos); return result; }
-        }
-        static getNumRawDataModules(ver) { if (ver < QrCode.MIN_VERSION || ver > QrCode.MAX_VERSION) throw new RangeError("Version number out of range"); let result = (16 * ver + 128) * ver + 64; if (ver >= 2) { const numAlign = Math.floor(ver / 7) + 2; result -= (25 * numAlign - 10) * numAlign - 55; if (ver >= 7) result -= 36; } assert(208 <= result && result <= 29648); return result; }
-        static getNumDataCodewords(ver, ecl) { return Math.floor(QrCode.getNumRawDataModules(ver) / 8) - QrCode.ECC_CODEWORDS_PER_BLOCK[ecl.ordinal][ver] * QrCode.NUM_ERROR_CORRECTION_BLOCKS[ecl.ordinal][ver]; }
-        static reedSolomonComputeDivisor(degree) { if (degree < 1 || degree > 255) throw new RangeError("Degree out of range"); let result = []; for (let i = 0; i < degree - 1; i++) result.push(0); result.push(1); let root = 1; for (let i = 0; i < degree; i++) { for (let j = 0; j < result.length; j++) { result[j] = QrCode.reedSolomonMultiply(result[j], root); if (j + 1 < result.length) result[j] ^= result[j + 1]; } root = QrCode.reedSolomonMultiply(root, 0x02); } return result; }
-        static reedSolomonComputeRemainder(data, divisor) { let result = divisor.map(_ => 0); for (const b of data) { const factor = b ^ result.shift(); result.push(0); divisor.forEach((coef, i) => result[i] ^= QrCode.reedSolomonMultiply(coef, factor)); } return result; }
-        static reedSolomonMultiply(x, y) { if (x >>> 8 != 0 || y >>> 8 != 0) throw new RangeError("Byte out of range"); let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11D); z ^= ((y >>> i) & 1) * x; } assert(z >>> 8 == 0); return z; }
-        finderPenaltyCountPatterns(runHistory) { const n = runHistory[1]; assert(n <= this.size * 3); const core = n > 0 && runHistory[2] == n && runHistory[3] == n * 3 && runHistory[4] == n && runHistory[5] == n; return (core && runHistory[0] >= n * 4 && runHistory[6] >= n ? 1 : 0) + (core && runHistory[6] >= n * 4 && runHistory[0] >= n ? 1 : 0); }
-        finderPenaltyTerminateAndCount(currentRunColor, currentRunLength, runHistory) { if (currentRunColor) { this.finderPenaltyAddHistory(currentRunLength, runHistory); currentRunLength = 0; } currentRunLength += this.size; this.finderPenaltyAddHistory(currentRunLength, runHistory); return this.finderPenaltyCountPatterns(runHistory); }
-        finderPenaltyAddHistory(currentRunLength, runHistory) { if (runHistory[0] == 0) currentRunLength += this.size; runHistory.pop(); runHistory.unshift(currentRunLength); }
-    }
-    QrCode.MIN_VERSION = 1; QrCode.MAX_VERSION = 40;
-    QrCode.PENALTY_N1 = 3; QrCode.PENALTY_N2 = 3; QrCode.PENALTY_N3 = 40; QrCode.PENALTY_N4 = 10;
-    QrCode.ECC_CODEWORDS_PER_BLOCK = [[-1,7,10,15,20,26,18,20,24,30,18,20,24,26,30,22,24,28,30,28,28,28,28,30,30,26,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],[-1,10,16,26,18,24,16,18,22,22,26,30,22,22,24,24,28,28,26,26,26,26,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28,28],[-1,13,22,18,26,18,24,18,22,20,24,28,26,24,20,30,24,28,28,26,30,28,30,30,30,30,28,30,30,30,30,30,30,30,30,30,30,30,30,30,30],[-1,17,28,22,16,22,28,26,26,24,28,24,28,22,24,24,30,28,28,26,28,30,24,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30,30]];
-    QrCode.NUM_ERROR_CORRECTION_BLOCKS = [[-1,1,1,1,1,1,2,2,2,2,4,4,4,4,4,6,6,6,6,7,8,8,9,9,10,12,12,12,13,14,15,16,17,18,19,19,20,21,22,24,25],[-1,1,1,1,2,2,4,4,4,5,5,5,8,9,9,10,10,11,13,14,16,17,17,18,20,21,23,25,26,28,29,31,33,35,37,38,40,43,45,47,49],[-1,1,1,2,2,4,4,6,6,8,8,8,10,12,16,12,17,16,18,21,20,23,23,25,27,29,34,34,35,38,40,43,45,48,51,53,56,59,62,65,68],[-1,1,1,2,4,4,4,5,6,8,8,11,11,16,16,18,16,19,21,25,25,25,34,30,32,35,37,40,42,45,48,51,54,57,60,63,66,70,74,77,81]];
-    qrcodegen.QrCode = QrCode;
-    function appendBits(val, len, bb) { if (len < 0 || len > 31 || val >>> len != 0) throw new RangeError("Value out of range"); for (let i = len - 1; i >= 0; i--) bb.push((val >>> i) & 1); }
-    function getBit(x, i) { return ((x >>> i) & 1) != 0; }
-    function assert(cond) { if (!cond) throw new Error("Assertion error"); }
-    class QrSegment {
-        static makeBytes(data) { let bb = []; for (const b of data) appendBits(b, 8, bb); return new QrSegment(QrSegment.Mode.BYTE, data.length, bb); }
-        static makeNumeric(digits) { if (!QrSegment.isNumeric(digits)) throw new RangeError("String contains non-numeric characters"); let bb = []; for (let i = 0; i < digits.length;) { const n = Math.min(digits.length - i, 3); appendBits(parseInt(digits.substring(i, i + n), 10), n * 3 + 1, bb); i += n; } return new QrSegment(QrSegment.Mode.NUMERIC, digits.length, bb); }
-        static makeAlphanumeric(text) { if (!QrSegment.isAlphanumeric(text)) throw new RangeError("String contains unencodable characters in alphanumeric mode"); let bb = []; let i; for (i = 0; i + 2 <= text.length; i += 2) { let temp = QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)) * 45; temp += QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i + 1)); appendBits(temp, 11, bb); } if (i < text.length) appendBits(QrSegment.ALPHANUMERIC_CHARSET.indexOf(text.charAt(i)), 6, bb); return new QrSegment(QrSegment.Mode.ALPHANUMERIC, text.length, bb); }
-        static makeSegments(text) { if (text == "") return []; else if (QrSegment.isNumeric(text)) return [QrSegment.makeNumeric(text)]; else if (QrSegment.isAlphanumeric(text)) return [QrSegment.makeAlphanumeric(text)]; else return [QrSegment.makeBytes(QrSegment.toUtf8ByteArray(text))]; }
-        static isNumeric(text) { return QrSegment.NUMERIC_REGEX.test(text); }
-        static isAlphanumeric(text) { return QrSegment.ALPHANUMERIC_REGEX.test(text); }
-        constructor(mode, numChars, bitData) { this.mode = mode; this.numChars = numChars; this.bitData = bitData; if (numChars < 0) throw new RangeError("Invalid argument"); this.bitData = bitData.slice(); }
-        getData() { return this.bitData.slice(); }
-        static getTotalBits(segs, version) { let result = 0; for (const seg of segs) { const ccbits = seg.mode.numCharCountBits(version); if (seg.numChars >= (1 << ccbits)) return Infinity; result += 4 + ccbits + seg.bitData.length; } return result; }
-        static toUtf8ByteArray(str) { str = encodeURI(str); let result = []; for (let i = 0; i < str.length; i++) { if (str.charAt(i) != "%") result.push(str.charCodeAt(i)); else { result.push(parseInt(str.substring(i + 1, i + 3), 16)); i += 2; } } return result; }
-    }
-    QrSegment.NUMERIC_REGEX = /^[0-9]*$/;
-    QrSegment.ALPHANUMERIC_REGEX = /^[A-Z0-9 $%*+.\/:-]*$/;
-    QrSegment.ALPHANUMERIC_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
-    qrcodegen.QrSegment = QrSegment;
-})(qrcodegen || (qrcodegen = {}));
-(function (qrcodegen) { var QrCode; (function (QrCode) { class Ecc { constructor(ordinal, formatBits) { this.ordinal = ordinal; this.formatBits = formatBits; } } Ecc.LOW = new Ecc(0, 1); Ecc.MEDIUM = new Ecc(1, 0); Ecc.QUARTILE = new Ecc(2, 3); Ecc.HIGH = new Ecc(3, 2); QrCode.Ecc = Ecc; })(QrCode = qrcodegen.QrCode || (qrcodegen.QrCode = {})); })(qrcodegen || (qrcodegen = {}));
-(function (qrcodegen) { var QrSegment; (function (QrSegment) { class Mode { constructor(modeBits, numBitsCharCount) { this.modeBits = modeBits; this.numBitsCharCount = numBitsCharCount; } numCharCountBits(ver) { return this.numBitsCharCount[Math.floor((ver + 7) / 17)]; } } Mode.NUMERIC = new Mode(0x1, [10, 12, 14]); Mode.ALPHANUMERIC = new Mode(0x2, [9, 11, 13]); Mode.BYTE = new Mode(0x4, [8, 16, 16]); Mode.KANJI = new Mode(0x8, [8, 10, 12]); Mode.ECI = new Mode(0x7, [0, 0, 0]); QrSegment.Mode = Mode; })(QrSegment = qrcodegen.QrSegment || (qrcodegen.QrSegment = {})); })(qrcodegen || (qrcodegen = {}));
-
-function renderQRToCanvas(canvas, text, size) {
-  const ctx = canvas.getContext('2d');
-  try {
-    const qr = qrcodegen.QrCode.encodeText(text, qrcodegen.QrCode.Ecc.LOW);
-    const moduleCount = qr.size;
-    const minCellPx = 4;
-    const effectiveSize = Math.max(size, (moduleCount + 8) * minCellPx);
-    canvas.width = effectiveSize;
-    canvas.height = effectiveSize;
-    canvas.style.maxWidth = size + 'px';
-    canvas.style.height = 'auto';
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, effectiveSize, effectiveSize);
-    const cellSize = effectiveSize / (moduleCount + 8);
-    const offset = (effectiveSize - cellSize * moduleCount) / 2;
-    ctx.fillStyle = '#000000';
-    for (let r = 0; r < moduleCount; r++) {
-      for (let c = 0; c < moduleCount; c++) {
-        if (qr.getModule(c, r)) {
-          ctx.fillRect(
-            Math.round(offset + c * cellSize),
-            Math.round(offset + r * cellSize),
-            Math.ceil(cellSize),
-            Math.ceil(cellSize)
-          );
-        }
-      }
-    }
-  } catch(e) {
-    canvas.width = size;
-    canvas.height = size;
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-    ctx.fillStyle = '#ff0000';
-    ctx.font = '12px sans-serif';
-    ctx.fillText('QR Error', 10, size/2);
-  }
-}
-// ── End QR Code Generator ──
-
-async function saveWeixinConfig() {
-  const tokenInput = document.getElementById('cfg-WEIXIN_BOT_TOKEN');
-  if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
-  // Confirm if switching from Telegram
-  if (_telegramBotInfo && !confirm('这将断开 Telegram 连接，确定切换到 WeChat？')) return;
-  const token = tokenInput.value.trim();
-  const allowedInput = document.getElementById('cfg-WEIXIN_ALLOWED_USERS');
-  const allowed = allowedInput ? allowedInput.value.trim() : '';
-  const statusEl = document.getElementById('wx-connect-status');
-  const saveBtn = document.getElementById('wx-save-btn');
-
-  if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '保存中...'; }
-  if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并验证中...</span>';
-
-  try {
-    // Step 1: Save to .env
-    const envData = {
-      'WEIXIN_ENABLED': 'true',
-      'WEIXIN_BOT_TOKEN': token,
-    };
-    if (allowed) envData['WEIXIN_ALLOWED_USERS'] = allowed;
-    const r = await api('PUT', '/env', envData);
-    if (r.errors && r.errors.length) {
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 保存失败: ' + r.errors.map(e=>esc(e.key)).join(', ') + '</span>';
-      return;
-    }
-
-    // Step 2: Test connection
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--text-soft)">⏳ 验证 Token...</span>';
-    const test = await api('POST', '/weixin/test', {token});
-
-    if (test.ok) {
-      _weixinConnected = true;
-      // Clear Telegram credentials (mutually exclusive transports)
-      _telegramBotInfo = null;
-      api('PUT', '/env', {'TELEGRAM_BOT_TOKEN': ''}).catch(() => {});
-      if (statusEl) statusEl.innerHTML = '<span class="badge badge-ok" style="font-size:13px">✅ Token 有效</span>'
-        + '<div style="margin-top:8px;color:var(--text-soft);font-size:13px">继续完成设置后手动启动 Agent。</div>';
-      showToast('✅ WeChat 已连接，请继续完成设置');
-      loaded.settings = false;
-      loadSettings();
-    } else {
-      _weixinConnected = false;
-      if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ Token 无效: ' + esc(test.error) + '</span>';
-    }
-  } catch(e) {
-    if (statusEl) statusEl.innerHTML = '<span style="color:var(--danger)">❌ 错误: ' + esc(e.message) + '</span>';
-  } finally {
-    if (saveBtn) { saveBtn.disabled = false; saveBtn.textContent = '保存并连接'; }
-  }
-}
-
 // ── Settings page bot-status polling ─────
 let _settingsPollTimer = null;
 let _settingsLastRunning = null;
@@ -1461,11 +875,7 @@ async function loadSettings() {
     const hasLiteModel = Boolean(tiers.lite?.assigned_name && tiers.lite?.supported && tiers.lite?.api_key_set);
     const hasModel = hasMainModel && hasLiteModel;
     const tgConfigured = s.config_status.telegram_bot_token.set || _telegramBotInfo;
-    const wxConfigured = (
-      s.config_status.weixin_enabled?.set
-      && s.config_status.weixin_bot_token?.set
-    ) || _weixinConnected;
-    const hasTransport = tgConfigured || wxConfigured;
+    const hasTransport = Boolean(tgConfigured);
     const ownerBound = s.config_status.owner_user_id?.set || false;
     const hasPersonality = Boolean(String(mem.content || '').trim());
     const skills = Array.isArray(skillsResp) ? skillsResp : (skillsResp.skills || []);
@@ -1474,8 +884,8 @@ async function loadSettings() {
     const skillsDisabled = actualSkills.filter(sk => !sk.enabled);
     const transportOk = hasTransport && botStatus.running;
     const allDone = hasModel && transportOk && hasPersonality;
-    const activeTransport = tgConfigured ? 'Telegram' : (wxConfigured ? 'WeChat' : null);
-    const activeIcon = tgConfigured ? '🤖' : (wxConfigured ? '💬' : '');
+    const activeTransport = tgConfigured ? 'Telegram' : null;
+    const activeIcon = tgConfigured ? '🤖' : '';
 
     const stepCircle = (n, active) => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:2px solid ${active?'var(--primary)':'var(--border)'};font-size:12px;color:${active?'var(--primary)':'var(--text-soft)'};font-weight:700">${n}</span>`;
     const stepDone = () => `<span style="display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;background:var(--success);color:#fff;font-size:14px;flex-shrink:0">✓</span>`;
@@ -1523,8 +933,6 @@ async function loadSettings() {
       if (botStatus.running) {
         statusBadge = '<span class="badge badge-ok">运行中</span>'
           + ' <button class="btn btn-ghost btn-sm" data-restart-btn style="padding:2px 8px;font-size:11px" onclick="startBotAndRefresh()">重启</button>';
-      } else if (botStatus.weixin_session_expired) {
-        statusBadge = '<span class="badge badge-err">会话过期</span>';
       } else {
         statusBadge = '<span class="badge badge-warn">已配置</span>';
       }
@@ -1542,10 +950,9 @@ async function loadSettings() {
     let transportConfigArea = '';
     if (!hasTransport) {
       transportConfigArea = `
-        <div style="margin-top:6px;font-size:12px;color:var(--text-soft)">推荐 Telegram — 支持表情包、语音、照片</div>
+        <div style="margin-top:6px;font-size:12px;color:var(--text-soft)">Telegram — 支持表情包、语音、照片</div>
         <div class="tp-cfg-btns" style="margin-top:8px">
           <button class="tp-cfg-btn${_openTransportCfg==='telegram'?' active':''}" id="tp-btn-telegram" onclick="showTransportConfig('telegram')">配置 Telegram</button>
-          <button class="tp-cfg-btn${_openTransportCfg==='weixin'?' active':''}" id="tp-btn-weixin" onclick="showTransportConfig('weixin')">配置 WeChat</button>
         </div>`;
     }
 
@@ -1564,29 +971,6 @@ async function loadSettings() {
             <input class="form-input" id="cfg-TELEGRAM_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="123456:ABC-DEF..."></div>
             <button class="btn btn-primary btn-sm" id="tg-save-btn" onclick="saveTransportConfig()">保存并连接</button>
             <div id="tg-connect-status" style="margin-top:10px"></div>
-          </div>
-        </div>
-        <div id="weixin-cfg" style="display:${_openTransportCfg==='weixin'?'block':'none'};margin-top:10px">
-          <div style="border:1px solid var(--border);border-radius:8px;padding:14px;background:var(--bg)">
-            <div style="font-weight:600;margin-bottom:8px">WeChat 配置</div>
-            <div id="wx-qr-section">
-            <p style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用微信扫码即可完成配置，无需手动输入</p>
-            <div style="text-align:center">
-            <button class="btn btn-primary btn-sm" id="wx-qr-btn" onclick="startWeixinQR()">扫码登录</button>
-            <button class="btn btn-ghost btn-sm" id="wx-qr-cancel" style="display:none;margin-left:8px" onclick="stopWeixinQR()">取消</button>
-            </div>
-            <div style="text-align:center;margin-top:12px"><canvas id="wx-qr-canvas" style="display:none;border:1px solid var(--border);border-radius:8px"></canvas></div>
-            <div id="wx-qr-status" style="text-align:center;margin-top:8px;font-size:13px"></div>
-            </div>
-            <div style="margin-top:12px;text-align:center"><a href="javascript:void(0)" onclick="toggleWxManualInput()" style="font-size:12px;color:var(--text-soft)">已有 Token？手动输入 ▾</a></div>
-            <div id="wx-manual-input" style="display:none;margin-top:10px">
-            <div class="form-group"><label class="form-label">Bot Token</label>
-            <input class="form-input" id="cfg-WEIXIN_BOT_TOKEN" type="password" autocomplete="new-password" placeholder="580ba3c1dc75@im.bot:..."></div>
-            <div class="form-group"><label class="form-label">允许的用户 <span style="font-weight:400;color:var(--text-soft)">(可选，留空允许所有人)</span></label>
-            <input class="form-input" id="cfg-WEIXIN_ALLOWED_USERS" type="text" placeholder="user_id_1, user_id_2"></div>
-            <button class="btn btn-primary btn-sm" id="wx-save-btn" onclick="saveWeixinConfig()">保存并连接</button>
-            <div id="wx-connect-status" style="margin-top:10px"></div>
-            </div>
           </div>
         </div>` : ''}
       </div>
@@ -1635,16 +1019,6 @@ async function loadSettings() {
     if (checkupData && checkupData.ok) html += renderCheckupCard(checkupData);
 
     el.innerHTML = html;
-    if (_wxQrPollTimer && _wxQrActiveContent) {
-      const canvas = document.getElementById('wx-qr-canvas');
-      if (canvas) { renderQRToCanvas(canvas, _wxQrActiveContent, 220); canvas.style.display = 'block'; }
-      const qrStatus = document.getElementById('wx-qr-status');
-      if (qrStatus && _wxQrStatusHtml) qrStatus.innerHTML = _wxQrStatusHtml;
-      const qrButton = document.getElementById('wx-qr-btn');
-      if (qrButton) qrButton.style.display = 'none';
-      const cancel = document.getElementById('wx-qr-cancel');
-      if (cancel) cancel.style.display = 'inline-block';
-    }
     _settingsLastRunning = botStatus.running;
     _settingsLastOwner = ownerBound;
     if (document.getElementById('page-settings').classList.contains('active')) {
@@ -1875,7 +1249,6 @@ async function loadSkills() {
     const activeTransports = [];
     const cs = statusData && statusData.config_status || {};
     if (cs.telegram_bot_token && cs.telegram_bot_token.set) activeTransports.push('telegram');
-    if (cs.weixin_enabled && cs.weixin_enabled.set) activeTransports.push('wechat');
     if (skills.length === 0) {
       el.innerHTML = '<div class="card"><p style="color:var(--text-soft)">没有注册的技能。</p></div>';
       return;
@@ -1899,7 +1272,7 @@ async function loadSkills() {
         toggleHtml = '<label class="toggle" title="需要先配置必填项"><input type="checkbox" disabled><span class="slider"></span></label>'
           + ' <span style="font-size:11px;color:var(--danger)">需要配置</span>';
       } else if (transportExcluded) {
-        const label = excludedOn.map(t => t === 'wechat' ? '微信' : 'Telegram').join('、');
+        const label = excludedOn.map(t => t === 'telegram' ? 'Telegram' : t).join('、');
         toggleHtml = '<label class="toggle" title="此渠道不支持"><input type="checkbox" disabled><span class="slider"></span></label>'
           + ` <span style="font-size:11px;color:var(--text-soft)">${label}不可用</span>`;
       } else {

@@ -2,7 +2,6 @@
 name: photo
 description: 生成一张动漫角色出现在真实世界里的照片，用 Telegram 发出
 type: tool
-exclude_transports: [wechat]
 ---
 
 ## Tools

@@ -39,7 +39,7 @@ TimeoutStopSec=30
 KillMode=control-group
 KillSignal=SIGTERM
 
-# 短暂网络抖动时 Telegram/微信连不上，多等一会儿再判启动失败。
+# 短暂网络抖动时 Telegram 连不上，多等一会儿再判启动失败。
 TimeoutStartSec=30
 
 NoNewPrivileges=true
