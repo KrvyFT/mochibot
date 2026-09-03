@@ -1129,20 +1129,6 @@ if HAS_FASTAPI:
             }
         return payload
 
-    def _sync_telegram_allow_visitors(raw_value: str | None) -> None:
-        """Keep runtime config and .env aligned with the admin toggle."""
-        import mochi.config as cfg
-        from mochi.admin.admin_env import write_env_value
-
-        enabled = True if raw_value is None else str(raw_value).lower() in (
-            "true", "1", "yes",
-        )
-        cfg.TELEGRAM_ALLOW_VISITORS = enabled
-        try:
-            write_env_value("TELEGRAM_ALLOW_VISITORS", "true" if enabled else "false")
-        except Exception:
-            log.warning("Could not persist TELEGRAM_ALLOW_VISITORS to .env")
-
     @app.get("/api/basic/config", dependencies=[Depends(_verify_token)])
     async def api_get_basic_config():
         return _basic_payload()
@@ -1171,10 +1157,6 @@ if HAS_FASTAPI:
             else:
                 set_system_override(key, value)
             updated.append(key)
-        if "TELEGRAM_ALLOW_VISITORS" in normalized:
-            _sync_telegram_allow_visitors(
-                normalized["TELEGRAM_ALLOW_VISITORS"],
-            )
         return {"ok": True, "updated": updated}
 
     @app.get("/api/heartbeat/state", dependencies=[Depends(_verify_token)])
