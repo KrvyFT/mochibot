@@ -716,6 +716,7 @@ async def _deliver_autonomous(
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
     components.extend(("image", item) for item in remaining.images)
+    components.extend(("voice", item) for item in remaining.voices)
     for kind, value in components:
         if not free_time_turn_available(
             int(claimed.get("_chat_activity_generation") or 0)
@@ -727,6 +728,8 @@ async def _deliver_autonomous(
             component = ChatResult(text=value)
         elif kind == "sticker":
             component = ChatResult(stickers=[value])
+        elif kind == "voice":
+            component = ChatResult(voices=[value])
         else:
             component = ChatResult(images=[value])
         try:

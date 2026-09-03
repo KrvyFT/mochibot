@@ -110,6 +110,9 @@ def test_basic_config_accepts_core_refresh_hours():
     assert out["MAINTENANCE_ENABLED"] == "true"
     assert out["SILENCE_PAUSE_DAYS"] == "3.0"
 
+    visitors = normalize_basic_updates({"TELEGRAM_ALLOW_VISITORS": False}, {})
+    assert visitors["TELEGRAM_ALLOW_VISITORS"] == "false"
+
 
 def test_basic_config_null_clears_override():
     from mochi.admin.preferences import normalize_basic_updates

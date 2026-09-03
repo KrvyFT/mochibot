@@ -48,6 +48,7 @@ from mochi.main_runtime import (
     DurableChatResult,
     MainRuntimeEntry,
     context_policy,
+    visitor_context_policy,
 )
 from mochi.request_tools import ToolLoopBudget, resolve_request
 from mochi.skills.base import SkillResult
@@ -64,6 +65,7 @@ from mochi.transport import IncomingMessage, ImageAttachment
 from mochi.transport.utils import (
     normalize_legacy_bubble_delimiters,
     strip_outgoing_history_timestamps,
+    strip_stage_directions,
 )
 
 if TYPE_CHECKING:
@@ -73,6 +75,7 @@ log = logging.getLogger(__name__)
 
 STICKER_RE = re.compile(r"\[STICKER:([^\]]+)\]")
 IMAGE_FILE_RE = re.compile(r"\[IMAGE_FILE:([^\]]+)\]")
+VOICE_FILE_RE = re.compile(r"\[VOICE_FILE:([^\]]+)\]")
 _WEEKDAY_NAMES = (
     "星期一", "星期二", "星期三", "星期四",
     "星期五", "星期六", "星期日",
@@ -80,7 +83,8 @@ _WEEKDAY_NAMES = (
 
 # Tools excluded from tool_history annotation — not meaningful skill executions
 _TOOL_HISTORY_EXCLUDE = frozenset({
-    "request_tools", "send_sticker", "send_photo", ENTER_BEDTIME_TOOL_NAME,
+    "request_tools", "send_sticker", "send_photo", "send_voice",
+    ENTER_BEDTIME_TOOL_NAME,
 })
 
 
@@ -115,18 +119,31 @@ def _deployment_environment() -> str:
     }.get(system, "其他系统环境")
 
 
-def _history_placeholder(reply: str, stickers: list[str], images: list[str]) -> str:
+def _history_placeholder(
+    reply: str,
+    stickers: list[str],
+    images: list[str],
+    voices: list[str] | None = None,
+) -> str:
     if reply:
         return reply
+    parts: list[str] = []
     if images:
-        return "[图片]"
+        parts.append("[图片]")
+    if voices:
+        parts.append("[语音]")
     if stickers:
-        return "[贴纸]"
-    return ""
+        parts.append("[贴纸]")
+    return " ".join(parts)
 
 
-def _has_visible_payload(reply: str, stickers: list[str], images: list[str]) -> bool:
-    return bool(reply or stickers or images)
+def _has_visible_payload(
+    reply: str,
+    stickers: list[str],
+    images: list[str],
+    voices: list[str] | None = None,
+) -> bool:
+    return bool(reply or stickers or images or voices)
 
 
 def _image_content(text: str, image: ImageAttachment) -> list[dict]:
@@ -520,6 +537,7 @@ def _format_history_timestamp(created_at) -> str:
 def _clean_model_reply(content: str | None) -> str:
     reply = STICKER_RE.sub("", content or "").strip()
     reply = normalize_legacy_bubble_delimiters(reply)
+    reply = strip_stage_directions(reply)
     # Drop copied history prefixes at line/bubble start before save and send.
     # Do not strip the same pattern mid-sentence.
     return strip_outgoing_history_timestamps(reply)
@@ -638,10 +656,11 @@ def _schedule_continuous_memory(user_id: int) -> None:
 
 @dataclass
 class ChatResult:
-    """Result returned by chat() — text reply + optional sticker/image payloads."""
+    """Result returned by chat() — text reply + optional sticker/image/voice payloads."""
     text: str = ""
     stickers: list[str] = field(default_factory=list)
     images: list[str] = field(default_factory=list)
+    voices: list[str] = field(default_factory=list)
     tool_audit: list[dict] = field(default_factory=list)
     successful_effects: bool = False
     bedtime_requested: bool = False
@@ -661,15 +680,23 @@ class ChatResult:
         inserted = False
         processed = True
         if pending:
-            processed = bool(pending.get("processed", True))
-            inserted = save_message_once(
-                pending["user_id"],
-                "assistant",
-                pending["content"],
-                tool_history=pending["tool_history"],
-                turn_id=pending["turn_id"],
-                processed=processed,
-            )
+            if pending.get("visitor"):
+                from mochi.visitor_session import append_visitor_turn
+                append_visitor_turn(
+                    pending["user_id"],
+                    pending.get("user_content") or "",
+                    pending.get("content") or "",
+                )
+            else:
+                processed = bool(pending.get("processed", True))
+                inserted = save_message_once(
+                    pending["user_id"],
+                    "assistant",
+                    pending["content"],
+                    tool_history=pending["tool_history"],
+                    turn_id=pending["turn_id"],
+                    processed=processed,
+                )
         self._delivery_confirmed = True
         if inserted and not processed:
             _schedule_continuous_memory(pending["user_id"])
@@ -685,6 +712,7 @@ class ChatResult:
             text=self.text,
             stickers=tuple(self.stickers),
             images=tuple(self.images),
+            voices=tuple(self.voices),
             pending_history=self._pending_history,
             tool_audit=tuple(self.tool_audit),
             successful_effects=self.successful_effects,
@@ -697,6 +725,7 @@ class ChatResult:
             text=result.text,
             stickers=list(result.stickers),
             images=list(result.images),
+            voices=list(result.voices),
             tool_audit=list(result.tool_audit),
             successful_effects=result.successful_effects,
             disposition=result.disposition,
@@ -814,6 +843,10 @@ def _render_autonomous_situation(
     ]
     if thread_block:
         parts.extend(["", thread_block])
+    from mochi.skills.photo.quota import free_time_photo_guidance
+    photo_guide = free_time_photo_guidance(runtime_entry.user_id)
+    if photo_guide:
+        parts.extend(["", photo_guide])
     parts.append("</autonomous_runtime_event>")
     return "\n".join(parts)
 
@@ -855,7 +888,8 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
                          policy: ContextPolicy | None = None,
-                         defer_runtime_situation: bool = False) -> str:
+                         defer_runtime_situation: bool = False,
+                         is_visitor: bool = False) -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -888,6 +922,17 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                 _deployment_environment(),
             )
         )
+        if is_visitor:
+            visitor_contract = get_prompt("system_chat/visitor")
+            if visitor_contract:
+                stable_identity.append(visitor_contract)
+            try:
+                from mochi.relationship_voice import read_voice
+                voice = read_voice().strip()
+            except Exception:
+                voice = ""
+            if voice:
+                stable_identity.append(voice)
         early_runtime_situation = []
         if (
             policy.early_runtime_situation
@@ -899,7 +944,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly and not is_autonomous and not is_core_refresh:
+    if not is_weekly and not is_autonomous and not is_core_refresh and not is_visitor:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -994,7 +1039,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     from mochi.db import get_last_user_message_time
     last_msg_time = (
         get_last_user_message_time(user_id)
-        if policy.temporal_context and not is_weekly
+        if policy.temporal_context and not is_weekly and not is_visitor
         else None
     )
     if last_msg_time:
@@ -1098,8 +1143,13 @@ async def chat(
         runtime_entry and runtime_entry.kind == "core_refresh"
     )
     is_silent_maintenance = is_weekly or is_core_refresh
+    is_visitor = bool(message is not None and message.visitor)
+    from mochi.config import OWNER_USER_ID
+    memory_user_id = OWNER_USER_ID if is_visitor else user_id
     unanswered_thread: dict | None = None
-    prompt_policy = context_policy(runtime_entry)
+    prompt_policy = (
+        visitor_context_policy() if is_visitor else context_policy(runtime_entry)
+    )
     turn_id = (
         runtime_entry.idempotency_key
         if (is_self_reminder or is_silent_maintenance or is_autonomous)
@@ -1108,6 +1158,7 @@ async def chat(
     )
     pending_stickers: list[str] = []
     pending_images: list[str] = []
+    pending_voices: list[str] = []
 
     # ── Sticker learning: intercept sticker metadata from transport ──
     raw = message.raw or {} if message is not None else {}
@@ -1120,30 +1171,31 @@ async def chat(
             and transport in sticker_skill.exclude_transports
         )
         if sticker_skill and not sticker_excluded:
-            result = await sticker_skill.learn_sticker(
-                user_id=user_id,
-                file_id=sticker_data["file_id"],
-                set_name=sticker_data.get("set_name", ""),
-                emoji=sticker_data.get("emoji", ""),
-                caption=text,
-            )
-
-            if result["learned"]:
-                emoji = sticker_data.get("emoji", "")
-                confirm = (
-                    f"学会了！{emoji} 标签：{result['tags']}\n"
-                    f"（已收集 {result['count']} 个贴纸）"
-                )
-                return ChatResult(text=confirm)
-
-            # Already known — rewrite as text description for chat
             emoji = sticker_data.get("emoji", "")
-            text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
+            if is_visitor:
+                text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
+            else:
+                result = await sticker_skill.learn_sticker(
+                    user_id=user_id,
+                    file_id=sticker_data["file_id"],
+                    set_name=sticker_data.get("set_name", ""),
+                    emoji=emoji,
+                    caption=text,
+                )
+
+                if result["learned"]:
+                    confirm = (
+                        f"学会了！{emoji} 标签：{result['tags']}\n"
+                        f"（已收集 {result['count']} 个贴纸）"
+                    )
+                    return ChatResult(text=confirm)
+
+                text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
 
     # Keep image bytes ephemeral. History only records a readable placeholder.
     stored_text = f"[图片] {text}" if image else text
     current_user_message_id = None
-    if message is not None:
+    if message is not None and not is_visitor:
         current_user_message_id = save_message(
             user_id,
             "user",
@@ -1160,11 +1212,23 @@ async def chat(
     # Pre-fetch habits (fast sync DB) — shared by router hint + system prompt
     habits = (
         []
-        if is_bedtime or is_self_reminder or is_silent_maintenance or is_autonomous
+        if (
+            is_bedtime or is_self_reminder or is_silent_maintenance
+            or is_autonomous or is_visitor
+        )
         else await asyncio.to_thread(list_habits, user_id)
     )
 
     async def _safe_conversation_context() -> dict:
+        if is_visitor:
+            from mochi.visitor_session import visitor_history
+            recent = visitor_history(user_id)
+            return {
+                "summary": "",
+                "overflow": [],
+                "recent": recent,
+                "trailing": [],
+            }
         if not (
             prompt_policy.conversation_summary
             or prompt_policy.recent_history
@@ -1204,7 +1268,7 @@ async def chat(
         return await asyncio.to_thread(
             _retrieve_memories_for_turn,
             text,
-            user_id,
+            memory_user_id,
             current_user_message_id,
         )
 
@@ -1231,14 +1295,20 @@ async def chat(
             skill_registry.get_recent_multi_turn_skill_names,
             user_id,
         )
-        if message is not None and runtime_entry is None and not skill_mode_off
+        if (
+            message is not None and runtime_entry is None
+            and not skill_mode_off and not is_visitor
+        )
         else []
     )
     escalation_available = (
-        is_bedtime
-        or is_self_reminder
-        or is_autonomous
-        or (not is_silent_maintenance and turn_plan.request_tools_enabled)
+        not is_visitor
+        and (
+            is_bedtime
+            or is_self_reminder
+            or is_autonomous
+            or (not is_silent_maintenance and turn_plan.request_tools_enabled)
+        )
     )
     _health_warning = ""
 
@@ -1280,6 +1350,12 @@ async def chat(
                 ("web_search", "read_web_page"),
                 transport=transport,
             ))
+        from mochi.skills.photo.quota import free_time_photo_must_send
+        if free_time_photo_must_send(user_id):
+            tools.extend(skill_registry.get_tools_by_tool_names(
+                ("send_photo",),
+                transport=transport,
+            ))
         if escalation_available:
             from mochi.request_tools import REQUEST_TOOLS_DEF
             tools.append(REQUEST_TOOLS_DEF)
@@ -1300,6 +1376,19 @@ async def chat(
             "trailing": [],
         }
         recalled_memories = []
+        habits = []
+
+    elif is_visitor:
+        from mochi.visitor_session import VISITOR_MEDIA_TOOLS
+        tools = skill_registry.get_tools_by_tool_names(
+            VISITOR_MEDIA_TOOLS,
+            transport=transport,
+        )
+        core_memory, conversation_context, recalled_memories = await asyncio.gather(
+            asyncio.to_thread(read_core),
+            _safe_conversation_context(),
+            _safe_recalled_memories(),
+        )
         habits = []
 
     elif skill_mode_off:
@@ -1429,7 +1518,7 @@ async def chat(
     ):
         from mochi.request_tools import REQUEST_TOOLS_DEF
         tools.append(REQUEST_TOOLS_DEF)
-    if message is not None and runtime_entry is None:
+    if message is not None and runtime_entry is None and not is_visitor:
         from mochi.heartbeat import bedtime_tool_available
 
         if bedtime_tool_available():
@@ -1440,7 +1529,7 @@ async def chat(
     tools = filter_tools(tools)
     tools = skill_registry.filter_tools_for_context(
         tools,
-        user_id=user_id,
+        user_id=memory_user_id if is_visitor else user_id,
         transport=transport,
     )
     availability = ToolAvailability.from_definitions(
@@ -1473,7 +1562,7 @@ async def chat(
     # Fetch diary data for Zone C runtime context. Ordinary chat excludes the
     # status panel to avoid parroting progress; autonomous contexts can opt in.
     from mochi.diary import diary as _diary, refresh_diary_status
-    if prompt_policy.diary_status:
+    if prompt_policy.diary_status and not is_visitor:
         await asyncio.to_thread(refresh_diary_status, user_id)
     _ds = (
         _diary.read(section="今日状態")
@@ -1513,6 +1602,7 @@ async def chat(
         ),
         policy=prompt_policy,
         defer_runtime_situation=is_autonomous or is_self_reminder,
+        is_visitor=is_visitor,
     )
 
     # Build messages array
@@ -1641,22 +1731,28 @@ async def chat(
         if pending_images:
             from mochi.skills.photo.handler import finish_line_for_user
             reply = finish_line_for_user(reply)
+        if pending_voices:
+            reply = ""
         tool_history_json = (
             json.dumps([{"name": n} for n in tool_names_used], ensure_ascii=False)
             if tool_names_used else None
         )
+        history = _history_placeholder(
+            reply, pending_stickers, pending_images, pending_voices,
+        )
         if is_bedtime:
-            if not _has_visible_payload(reply, pending_stickers, pending_images):
+            if not _has_visible_payload(
+                reply, pending_stickers, pending_images, pending_voices,
+            ):
                 return ChatResult()
             return ChatResult(
                 text=reply,
                 stickers=pending_stickers,
                 images=pending_images,
+                voices=pending_voices,
                 _pending_history={
                     "user_id": user_id,
-                    "content": _history_placeholder(
-                        reply, pending_stickers, pending_images,
-                    ),
+                    "content": history,
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": message is None,
@@ -1667,12 +1763,23 @@ async def chat(
             if pending_images:
                 from mochi.skills.photo.handler import finish_line_for_user
                 reply = finish_line_for_user(reply)
-            if skipped and not successful_effects and not pending_stickers and not pending_images:
+            if pending_voices:
+                reply = ""
+            history = _history_placeholder(
+                reply, pending_stickers, pending_images, pending_voices,
+            )
+            if (
+                skipped and not successful_effects
+                and not pending_stickers and not pending_images
+                and not pending_voices
+            ):
                 return ChatResult(
                     tool_audit=tool_audit,
                     disposition="skip",
                 )
-            if not _has_visible_payload(reply, pending_stickers, pending_images):
+            if not _has_visible_payload(
+                reply, pending_stickers, pending_images, pending_voices,
+            ):
                 return ChatResult(
                     tool_audit=tool_audit,
                     successful_effects=successful_effects,
@@ -1680,12 +1787,10 @@ async def chat(
                 )
             pending_history = (
                 None
-                if is_autonomous and not reply
+                if is_autonomous and not history
                 else {
                     "user_id": user_id,
-                    "content": _history_placeholder(
-                        reply, pending_stickers, pending_images,
-                    ),
+                    "content": history,
                     "tool_history": tool_history_json,
                     "turn_id": turn_id,
                     "processed": True,
@@ -1695,6 +1800,7 @@ async def chat(
                 text=reply,
                 stickers=pending_stickers,
                 images=pending_images,
+                voices=pending_voices,
                 tool_audit=tool_audit,
                 successful_effects=successful_effects,
                 disposition="deliver",
@@ -1707,7 +1813,7 @@ async def chat(
                 disposition="handled" if successful_effects else "skip",
             )
         if bedtime_requested and not _has_visible_payload(
-            reply, pending_stickers, pending_images,
+            reply, pending_stickers, pending_images, pending_voices,
         ):
             return ChatResult(
                 bedtime_requested=True,
@@ -1715,21 +1821,24 @@ async def chat(
                 successful_effects=successful_effects,
                 disposition="handled",
             )
+        pending_history = {
+            "user_id": user_id,
+            "content": reply or history,
+            "tool_history": tool_history_json,
+            "turn_id": turn_id,
+            "processed": False,
+        }
+        if is_visitor:
+            pending_history["visitor"] = True
+            pending_history["user_content"] = stored_text
         return ChatResult(
             text=reply,
             stickers=pending_stickers,
             images=pending_images,
+            voices=pending_voices,
             bedtime_requested=bedtime_requested,
             _after_delivery=list(after_delivery_actions),
-            _pending_history={
-                "user_id": user_id,
-                "content": reply or _history_placeholder(
-                    reply, pending_stickers, pending_images,
-                ),
-                "tool_history": tool_history_json,
-                "turn_id": turn_id,
-                "processed": False,
-            },
+            _pending_history=pending_history,
         )
 
     for round_num in range(max_tool_rounds):
@@ -1807,7 +1916,7 @@ async def chat(
                 )
 
         _log_main_usage(response)
-        if recalled_memories and not recall_exposure_recorded:
+        if recalled_memories and not recall_exposure_recorded and not is_visitor:
             _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True
 
@@ -2075,6 +2184,11 @@ async def chat(
                 action=action_for(tc["name"], arguments),
                 arguments_json=serialized_arguments(tc["name"], arguments),
             )
+            dispatch_user_id = (
+                memory_user_id
+                if is_visitor and tc["name"] == "send_sticker"
+                else user_id
+            )
             dispatch_args = tc["arguments"]
             if tc["name"] == "update_core" and not is_weekly_tool:
                 core_update_attempted = True
@@ -2096,6 +2210,11 @@ async def chat(
                     **tc["arguments"],
                     "_source": _meal_source_for_current_message(image),
                 }
+            elif tc["name"] == "send_photo" and not is_weekly_tool:
+                dispatch_args = {
+                    **tc["arguments"],
+                    "_user_text": text if message is not None else "",
+                }
             elif tc["name"] == "update_weekly_core":
                 weekly_core_update_attempted = True
             try:
@@ -2107,7 +2226,7 @@ async def chat(
                 else:
                     result = await skill_registry.dispatch(
                         tc["name"], dispatch_args,
-                        user_id=user_id, channel_id=channel_id,
+                        user_id=dispatch_user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
                         source=execution_source,
@@ -2152,7 +2271,7 @@ async def chat(
             if tc["name"] not in _TOOL_HISTORY_EXCLUDE:
                 tool_names_used.append(tc["name"])
 
-            # Extract [STICKER:file_id] / [IMAGE_FILE:path] markers from tool result
+            # Extract [STICKER:file_id] / [IMAGE_FILE:path] / [VOICE_FILE:path]
             if outcome["status"] == "success":
                 for m in STICKER_RE.finditer(result.output):
                     pending_stickers.append(m.group(1).strip())
@@ -2160,6 +2279,10 @@ async def chat(
                     path = m.group(1).strip()
                     if path:
                         pending_images.append(path)
+                for m in VOICE_FILE_RE.finditer(result.output):
+                    path = m.group(1).strip()
+                    if path:
+                        pending_voices.append(path)
 
             messages.append({
                 "role": "tool",

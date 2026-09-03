@@ -234,8 +234,8 @@ created.
 Main may act, prepare a user-visible result, or finish with `[SKIP]`. Tool-only
 success and skip require no transport delivery; for a recurring reminder they
 advance the same row to its next occurrence. A
-deliverable result is serialized before any external send. Text and stickers
-are checkpointed independently. A failed or interrupted Self Reminder occurrence
+deliverable result is serialized before any external send. Text, stickers,
+images, and voice notes are checkpointed independently. A failed or interrupted Self Reminder occurrence
 expires without regenerating or replaying its prepared text; recurring reminders
 advance to their next occurrence. A stable turn ledger prevents restart from
 re-entering Main after any tool attempt. Each occurrence has a stable turn keyed

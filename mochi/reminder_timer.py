@@ -340,11 +340,14 @@ async def _deliver_self_reminder(
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
     components.extend(("image", item) for item in remaining.images)
+    components.extend(("voice", item) for item in remaining.voices)
     for component_kind, value in components:
         if component_kind == "text":
             component = ChatResult(text=value)
         elif component_kind == "sticker":
             component = ChatResult(stickers=[value])
+        elif component_kind == "voice":
+            component = ChatResult(voices=[value])
         else:
             component = ChatResult(images=[value])
         try:
@@ -370,6 +373,10 @@ async def _deliver_self_reminder(
             images = list(remaining.images)
             images.remove(value)
             remaining = replace(remaining, images=tuple(images))
+        elif component_kind == "voice":
+            voices = list(remaining.voices)
+            voices.remove(value)
+            remaining = replace(remaining, voices=tuple(voices))
         else:
             stickers = list(remaining.stickers)
             stickers.remove(value)

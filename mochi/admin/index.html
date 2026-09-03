@@ -467,6 +467,17 @@ async function unbindTransport(platform) {
   } catch(e) { showToast('操作失败: ' + e.message); }
 }
 
+async function saveTelegramVisitors(enabled) {
+  const box = document.getElementById('cfg-TELEGRAM_ALLOW_VISITORS');
+  try {
+    await api('PUT', '/basic/config', {TELEGRAM_ALLOW_VISITORS: enabled});
+    showToast(enabled ? '已允许 Telegram 访客' : '已关闭 Telegram 访客');
+  } catch(e) {
+    if (box) box.checked = !enabled;
+    showToast('保存失败: ' + e.message);
+  }
+}
+
 async function saveTransportConfig() {
   const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
   if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
@@ -1447,13 +1458,14 @@ async function loadSettings() {
   const generation = ++_settingsRequestGeneration;
   const el = document.getElementById('settings-content');
   try {
-    const [s, botStatus, tiers, skillsResp, mem, checkupData] = await Promise.all([
+    const [s, botStatus, tiers, skillsResp, mem, checkupData, basic] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
       api('GET', '/tiers'),
       api('GET', '/skills').catch(() => ({skills: []})),
       api('GET', '/memory').catch(() => ({content: ''})),
       api('GET', '/checkup').catch(() => null),
+      api('GET', '/basic/config').catch(() => ({})),
     ]);
     if (generation !== _settingsRequestGeneration) return;
 
@@ -1511,7 +1523,7 @@ async function loadSettings() {
       <span class="check-icon" style="font-size:20px">${hasModel?stepDone():stepCircle(1, true)}</span>
       <div style="flex:1">
         <strong>配置模型</strong>
-        <div style="font-size:12px;color:var(--text-soft)">Main + Lite 必填，Draw 可选绘图档</div>
+        <div style="font-size:12px;color:var(--text-soft)">Main + Lite 必填，Draw 可选绘图档；语音合成在模型页单独配置</div>
         ${hasModel ? '<div style="display:flex;gap:4px;margin-top:4px;flex-wrap:wrap">'+modelBadges+'</div>':''}
       </div>
       ${!hasModel?'<button class="btn btn-primary btn-sm" onclick="goToPage(\'models\')">去配置 →</button>':'<button class="btn btn-ghost btn-sm" onclick="goToPage(\'models\')">管理 →</button>'}
@@ -1535,9 +1547,18 @@ async function loadSettings() {
     }
     let ownerLine = '';
     if (tgConfigured) {
+      const allowVisitors = basic.TELEGRAM_ALLOW_VISITORS?.value !== false
+        && String(basic.TELEGRAM_ALLOW_VISITORS?.value ?? 'true') !== 'false';
       ownerLine = ownerBound
         ? '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定</div>'
         : '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ 在 Telegram 中向 Bot 发送一条消息即可绑定 Owner</div>';
+      ownerLine += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;margin-top:6px;border-top:1px solid var(--border)">
+        <label class="toggle"><input id="cfg-TELEGRAM_ALLOW_VISITORS" type="checkbox" ${allowVisitors?'checked':''} onchange="saveTelegramVisitors(this.checked)"><span class="slider"></span></label>
+        <div style="min-width:0;flex:1">
+          <div style="font-size:14px">允许 Telegram 访客</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">其他人私聊可用你的人格和记忆，对话不写入主人记忆。群聊仍只应主人。</div>
+        </div>
+      </div>`;
     }
     let transportConfigArea = '';
     if (!hasTransport) {
@@ -1833,6 +1854,7 @@ async function resetBasicParam(key) {
 
 function renderBasicConfigCards(cfg) {
   const groups = [
+    { title:'Telegram', keys:[['TELEGRAM_ALLOW_VISITORS','允许私聊访客','其他人私聊可用主人人格和记忆，对话不写入主人记忆。群聊仍只应主人。']] },
     { title:'对话', keys:[['AI_CHAT_MAX_COMPLETION_TOKENS','对话最大 tokens','单次对话回复的 token 上限']] },
     { title:'维护', keys:[
       ['MAINTENANCE_ENABLED','启用每日维护','是否启用每日自动维护'],
@@ -2245,6 +2267,11 @@ const EMB_VENDOR_PRESETS = [
   { vendor: 'none',     label: '禁用',              provider: 'none',         baseUrl: '',                            placeholder: '' },
 ];
 
+const VOICE_VENDOR_PRESETS = [
+  { vendor: 'dashscope', label: '阿里云百炼 CosyVoice', provider: 'dashscope', baseUrl: '', placeholder: 'cosyvoice-v3.5-plus' },
+  { vendor: 'none', label: '未配置', provider: 'none', baseUrl: '', placeholder: '' },
+];
+
 function _normalizeUrl(u) {
   try {
     const parsed = new URL(u);
@@ -2318,13 +2345,17 @@ let _lastAutoModel = '';
 async function loadAdvanced() {
   const el = document.getElementById('advanced-content');
   try {
-    const [models, tiers, embCfg, searchCfg] = await Promise.all([
+    const [models, tiers, embCfg, searchCfg, voiceCfg] = await Promise.all([
       api('GET','/models'),
       api('GET','/tiers'),
       api('GET','/embedding/config'),
       api('GET','/search/config'),
+      api('GET','/voice/config').catch(() => ({
+        provider: 'none', configured: false, api_key_set: false,
+        model: '', base_url: '', voice_id: '',
+      })),
     ]);
-    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">注册模型、分配 Main / Lite / Draw，以及联网搜索与语义检索。</p>';
+    let html = '<p style="font-size:13px;color:var(--text-soft);margin-bottom:16px">注册模型、分配 Main / Lite / Draw，以及联网搜索、语义检索与语音合成。</p>';
 
     html += '<div class="card"><div class="card-title">Agent 模型</div>';
     const agentTiers = [
@@ -2431,6 +2462,58 @@ async function loadAdvanced() {
     html += '</div>'; // end emb-form
     html += '</div>'; // end card
 
+    const voiceConfigured = Boolean(voiceCfg.configured);
+    const voiceProvider = voiceCfg.provider || 'none';
+    const voiceBadge = voiceConfigured
+      ? '<span class="badge badge-ok" style="margin-left:8px">已配置</span>'
+      : '<span class="badge badge-warn" style="margin-left:8px">未配置</span>';
+    const voiceVendor = voiceProvider === 'dashscope' ? 'dashscope' : 'none';
+    const voiceVendorLabel = voiceVendor === 'dashscope' ? '阿里云百炼 CosyVoice' : '未配置';
+    const voiceEndpointHost = voiceConfigured ? endpointHost(voiceCfg.base_url) : '';
+    const voiceApiKeyBadge = voiceCfg.api_key_set ? ' <span class="badge badge-ok" style="margin-left:6px">已设置</span>' : '';
+
+    html += `<div class="card"><div class="card-title">语音合成 ${voiceBadge}</div>`;
+    html += '<div style="font-size:12px;color:var(--text-soft);margin-bottom:12px">用已复刻的 CosyVoice 音色发 Telegram 语音气泡。未配置时不会暴露发语音工具。</div>';
+    html += `<div id="voice-summary" style="display:${voiceConfigured ? 'block' : 'none'}">`;
+    html += '<table class="tbl"><tr><th>服务商</th><th>模型</th><th>Key</th><th></th></tr>';
+    html += `<tr>
+      <td><span class="badge badge-info">${esc(voiceVendorLabel)}</span>${voiceEndpointHost ? `<div style="font-size:11px;color:var(--text-soft);margin-top:3px">${esc(voiceEndpointHost)}</div>` : ''}</td>
+      <td>${esc(voiceCfg.model || '（默认）')}</td>
+      <td>${voiceCfg.api_key_set ? '<span class="badge badge-ok">已设置</span>' : '<span class="badge badge-warn">未设置</span>'}</td>
+      <td style="text-align:right">
+        <button class="btn btn-ghost btn-sm" onclick="openVoiceEdit()">编辑</button>
+        <button class="btn btn-ghost btn-sm" onclick="testVoiceSummary(this)">测试</button>
+        <button class="btn btn-ghost btn-sm" style="color:var(--danger)" onclick="deleteVoiceConfig()">删除</button>
+      </td></tr>`;
+    html += '</table></div>';
+
+    html += `<div id="voice-form" style="display:${voiceConfigured ? 'none' : 'block'}">`;
+    html += `<div class="form-group"><label class="form-label">服务商</label>
+      <select class="form-input" id="voice-vendor" onchange="onVoiceVendorChange()">
+        ${VOICE_VENDOR_PRESETS.map(p => `<option value="${p.vendor}" ${voiceVendor === p.vendor ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}
+      </select></div>`;
+    html += `<div id="voice-fields-main" style="display:none">
+      <div class="form-group"><label class="form-label">API Key${voiceApiKeyBadge}</label>
+        <input class="form-input" id="voice-apikey" type="password" autocomplete="new-password" placeholder="${voiceCfg.api_key_set ? '（不修改）' : 'sk-...'}"></div>
+      <div class="form-group"><label class="form-label">模型</label>
+        <input class="form-input" id="voice-model" placeholder="cosyvoice-v3.5-plus" value="${esc(voiceCfg.model || 'cosyvoice-v3.5-plus')}"></div>
+      <div class="form-group"><label class="form-label">Base URL</label>
+        <input class="form-input" id="voice-baseurl" placeholder="https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1" value="${esc(voiceCfg.base_url || '')}">
+        <div style="font-size:11px;color:var(--text-soft);margin-top:4px">填业务空间地址即可，支持 <code>compatible-mode/v1</code> 或 <code>wss://…/api-ws/v1/inference</code>。</div></div>
+      <div class="form-group"><label class="form-label">Voice ID</label>
+        <input class="form-input" id="voice-id" placeholder="cosyvoice-v3.5-plus-vd-announcer-…" value="${esc(voiceCfg.voice_id || '')}"></div>
+    </div>`;
+    html += '<div id="voice-fields-none" style="display:none"><p style="color:var(--text-soft);font-size:13px">语音发送未启用。</p></div>';
+    html += `<div style="margin-top:12px">
+      <button class="btn btn-primary" onclick="saveVoiceConfig()">保存</button>
+      <button class="btn btn-ghost" onclick="testVoice(this)">🔌 测试连接</button>
+      ${voiceConfigured ? '<button class="btn btn-ghost" onclick="closeVoiceEdit()">取消</button>' : ''}
+      <span style="font-size:11px;color:var(--text-soft)">保存到数据库（立即生效）</span>
+    </div>`;
+    html += '<div id="voice-test-result" style="font-size:13px;margin-top:8px"></div>';
+    html += '</div>';
+    html += '</div>';
+
     const searchConfigured = Boolean(searchCfg.api_key_set);
     const searchBadge = searchConfigured
       ? '<span class="badge badge-ok" style="margin-left:8px">百度优先</span>'
@@ -2453,6 +2536,7 @@ async function loadAdvanced() {
 
     el.innerHTML = html;
     updateEmbeddingFields();
+    updateVoiceFields();
   } catch(e) { el.innerHTML = `<div class="card" style="color:var(--danger)">❌ ${esc(e.message)}</div>`; }
 }
 
@@ -2493,7 +2577,7 @@ function onVendorChange() {
   if (preset.vendor === 'compatible') {
     urlEl.placeholder = 'https://api.example.com/v1';
     urlHelp.style.display = 'block';
-    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions。兼容性以实际测试结果为准。';
+    urlHelp.textContent = '填写 HTTPS API 根地址，不要包含 /chat/completions。绘图模型 qwen-image-3.0-pro 可填业务空间根、compatible-mode/v1，或 /api/v1/services/aigc/multimodal-generation/generation。';
   } else {
     urlEl.placeholder = 'https://...';
     urlHelp.style.display = 'none';
@@ -3154,6 +3238,125 @@ async function testEmbedding(btn) {
       showToast('✅ Embedding 测试通过');
     } else {
       res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ 失败: ${esc(r.error||'未知错误')}${r.code ? ' <small>（code: '+esc(r.code)+'）</small>' : ''}</span>`;
+    }
+  } catch(e) {
+    res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(e.message)}</span>`;
+  } finally { btn.disabled = false; }
+}
+
+function updateVoiceFields() {
+  const sel = document.getElementById('voice-vendor');
+  if (!sel) return;
+  const v = sel.value;
+  const mainFields = document.getElementById('voice-fields-main');
+  const noneFields = document.getElementById('voice-fields-none');
+  if (v === 'none') {
+    if (mainFields) mainFields.style.display = 'none';
+    if (noneFields) noneFields.style.display = 'block';
+  } else {
+    if (mainFields) mainFields.style.display = 'block';
+    if (noneFields) noneFields.style.display = 'none';
+  }
+}
+
+function onVoiceVendorChange() {
+  const sel = document.getElementById('voice-vendor');
+  const preset = VOICE_VENDOR_PRESETS.find(p => p.vendor === sel.value);
+  if (!preset) return;
+  const modelEl = document.getElementById('voice-model');
+  if (modelEl && preset.placeholder && !modelEl.value.trim()) {
+    modelEl.value = preset.placeholder;
+  }
+  updateVoiceFields();
+}
+
+function openVoiceEdit() {
+  const summary = document.getElementById('voice-summary');
+  const form = document.getElementById('voice-form');
+  if (summary) summary.style.display = 'none';
+  if (form) form.style.display = 'block';
+  updateVoiceFields();
+}
+
+function closeVoiceEdit() {
+  const summary = document.getElementById('voice-summary');
+  const form = document.getElementById('voice-form');
+  if (summary) summary.style.display = 'block';
+  if (form) form.style.display = 'none';
+}
+
+async function saveVoiceConfig(skipReload) {
+  const vendorSel = document.getElementById('voice-vendor');
+  const vendor = vendorSel ? vendorSel.value : 'none';
+  const body = {provider: vendor === 'dashscope' ? 'dashscope' : 'none'};
+  if (vendor !== 'none') {
+    const apiKey = (document.getElementById('voice-apikey') || {}).value || '';
+    if (apiKey.trim()) body.api_key = apiKey.trim();
+    body.model = ((document.getElementById('voice-model') || {}).value || '').trim();
+    body.base_url = ((document.getElementById('voice-baseurl') || {}).value || '').trim();
+    body.voice_id = ((document.getElementById('voice-id') || {}).value || '').trim();
+  }
+  try {
+    await api('PUT', '/voice/config', body);
+    if (!skipReload) {
+      showToast('语音配置已保存（立即生效）');
+      loaded.models = false;
+      loadAdvanced();
+    }
+    return true;
+  } catch(e) {
+    showToast('错误: ' + e.message);
+    throw e;
+  }
+}
+
+async function testVoiceSummary(btn) {
+  const orig = btn.textContent;
+  btn.textContent = '测试中...';
+  btn.disabled = true;
+  try {
+    const r = await api('POST', '/voice/test');
+    if (r.ok) {
+      btn.textContent = '✅ 成功';
+      btn.style.color = 'var(--success)';
+      showToast('✅ 语音合成测试通过' + (r.latency_ms ? '（延迟 '+r.latency_ms+'ms）' : ''));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    } else {
+      btn.textContent = '❌ 失败';
+      btn.style.color = 'var(--danger)';
+      showToast('❌ 语音测试失败: ' + (r.error||'未知错误'));
+      setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+    }
+  } catch(e) {
+    btn.textContent = '❌ 失败';
+    btn.style.color = 'var(--danger)';
+    showToast('❌ ' + e.message);
+    setTimeout(() => { btn.textContent = orig; btn.style.color = ''; }, 3000);
+  } finally { btn.disabled = false; }
+}
+
+async function deleteVoiceConfig() {
+  if (!confirm('确定清除语音合成配置？发语音工具会隐藏。')) return;
+  try {
+    await api('DELETE', '/voice/config');
+    showToast('语音合成已关闭');
+    loaded.models = false;
+    loadAdvanced();
+  } catch(e) { showToast('错误: ' + e.message); }
+}
+
+async function testVoice(btn) {
+  const res = document.getElementById('voice-test-result');
+  res.innerHTML = '<span style="color:var(--text-soft)">⏳ 保存并测试中...</span>';
+  btn.disabled = true;
+  try {
+    await saveVoiceConfig(true);
+    const r = await api('POST', '/voice/test');
+    if (r.ok) {
+      res.innerHTML = `<span style="color:var(--success);font-weight:600">✅ 合成成功！模型: ${esc(r.model)}${r.latency_ms ? '，延迟 '+r.latency_ms+'ms' : ''}</span>`;
+      showToast('✅ 语音合成测试通过');
+    } else {
+      res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ 失败: ${esc(r.error||'未知错误')}</span>`;
     }
   } catch(e) {
     res.innerHTML = `<span style="color:var(--danger);font-weight:600">❌ ${esc(e.message)}</span>`;

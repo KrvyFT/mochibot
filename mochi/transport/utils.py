@@ -10,12 +10,15 @@ import re
 
 _IMAGE_FILE_RE = re.compile(r"\[IMAGE_FILE:[^\]]+\]")
 _STICKER_RE = re.compile(r"\[STICKER:[^\]]+\]")
+_VOICE_FILE_RE = re.compile(r"\[VOICE_FILE:[^\]]+\]")
 # History prefixes look like `[2026-09-02 22:01] `. Strip only at line start
 # of outgoing bubbles; leave the same pattern untouched mid-sentence.
 _HISTORY_TIMESTAMP_LINE_PREFIX_RE = re.compile(
     r"^[ \t]*\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}\][ \t]*",
     re.MULTILINE,
 )
+_FULLWIDTH_PAREN_RE = re.compile(r"（[^）]*）")
+_ASCII_CJK_PAREN_RE = re.compile(r"\(([^)]*[\u4e00-\u9fff][^)]*)\)")
 
 
 def normalize_legacy_bubble_delimiters(text: str) -> str:
@@ -38,6 +41,21 @@ def strip_outgoing_history_timestamps(text: str) -> str:
     return _HISTORY_TIMESTAMP_LINE_PREFIX_RE.sub("", text).strip()
 
 
+def strip_stage_directions(text: str) -> str:
+    """Drop parenthetical action/voice narration from outgoing chat."""
+    if not text:
+        return text
+    parts = re.split(r"(```.*?```)", text, flags=re.DOTALL)
+    for index in range(0, len(parts), 2):
+        chunk = _FULLWIDTH_PAREN_RE.sub("", parts[index])
+        chunk = _ASCII_CJK_PAREN_RE.sub("", chunk)
+        chunk = re.sub(r"[ \t]+\n", "\n", chunk)
+        chunk = re.sub(r"\n{3,}", "\n\n", chunk)
+        chunk = re.sub(r"[ \t]{2,}", " ", chunk)
+        parts[index] = chunk
+    return "".join(parts).strip()
+
+
 def clean_reply_markers(text: str) -> str:
     """Strip side-channel markers from LLM reply text.
 
@@ -46,6 +64,8 @@ def clean_reply_markers(text: str) -> str:
     """
     text = _IMAGE_FILE_RE.sub("", text)
     text = _STICKER_RE.sub("", text)
+    text = _VOICE_FILE_RE.sub("", text)
+    text = strip_stage_directions(text)
     return normalize_legacy_bubble_delimiters(text)
 
 
@@ -127,7 +147,7 @@ def split_bubbles(text: str, max_bubbles: int = 8,
         parts = [text.strip()]
 
     if len(parts) <= 1:
-        single = strip_outgoing_history_timestamps(text)
+        single = strip_stage_directions(strip_outgoing_history_timestamps(text))
         return [single] if single else [""]
 
     # Merge short fragments into previous bubble
@@ -146,7 +166,9 @@ def split_bubbles(text: str, max_bubbles: int = 8,
         )
     cleaned: list[str] = []
     for bubble in bubbles:
-        visible = strip_outgoing_history_timestamps(bubble)
+        visible = strip_stage_directions(
+            strip_outgoing_history_timestamps(bubble),
+        )
         if visible:
             cleaned.append(visible)
     return cleaned or [""]

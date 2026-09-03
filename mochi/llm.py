@@ -20,6 +20,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
+from mochi.qwen_image import generate_qwen_image, is_qwen_image_model
+
 log = logging.getLogger(__name__)
 
 # Explicit timeout for OpenAI-compatible HTTP clients. SDK default is 600s read,
@@ -164,7 +166,7 @@ class LLMProvider(ABC):
         *,
         reference_images: list[tuple[str, bytes]] | None = None,
     ) -> bytes:
-        """Generate one image via chat.completions."""
+        """Generate one image via chat.completions or a native image API."""
         raise NotImplementedError(
             f"{self.provider_name()} does not support image generation"
         )
@@ -472,6 +474,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
 
     def __init__(self, api_key: str, model: str, base_url: str = ""):
         from openai import OpenAI
+        self._api_key = api_key
         self._model = model
         self._base_url = base_url
         self._use_max_completion_tokens = None
@@ -506,7 +509,21 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         prompt: str,
         *,
         reference_images: list[tuple[str, bytes]] | None = None,
+        prompt_extend: bool = True,
+        enable_thinking: bool = True,
+        size: str | None = None,
     ) -> bytes:
+        if is_qwen_image_model(self._model):
+            return generate_qwen_image(
+                prompt,
+                api_key=self._api_key,
+                base_url=self._base_url,
+                model=self._model,
+                reference_images=reference_images or [],
+                prompt_extend=prompt_extend,
+                enable_thinking=enable_thinking,
+                size=size,
+            )
         client = self._client.with_options(timeout=_IMAGE_HTTP_TIMEOUT)
         return generate_image_via_chat(
             client, self._model, prompt, reference_images=reference_images or [],

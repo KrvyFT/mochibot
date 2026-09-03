@@ -19,6 +19,7 @@ VOICE_FILENAME = "relationship_voice.md"
 _FOOTER = (
     "以上内化，不要说出口。不要向用户提起这些标题、依恋类型、"
     "爱的语言、评分或英文分档。"
+    "不要用括号写动作、神态或声音旁白。"
 )
 
 # 发展中 is the starting point — a compressed form of the owner's brief.

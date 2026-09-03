@@ -27,8 +27,18 @@ def test_ordinary_free_time_asks_the_owner_not_to_monologue():
     text = _render_autonomous_situation(_entry(direct_search=False))
     assert "找对方说话" in text
     assert "不要自言自语" in text or "不要一个人在路边念叨" in text
+    assert "send_photo" in text
+    assert "真实" in text
     assert "随便做点什么" not in text
     assert "先搜一件" not in text
+
+
+def test_free_time_situation_requires_first_daily_photo(monkeypatch):
+    monkeypatch.setattr(
+        "mochi.admin.admin_db.is_draw_tier_ready", lambda: True,
+    )
+    text = _render_autonomous_situation(_entry(direct_search=False))
+    assert "必须调用 send_photo" in text
 
 
 def test_search_free_time_shares_with_the_owner():

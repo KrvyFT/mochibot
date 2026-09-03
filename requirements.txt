@@ -20,3 +20,6 @@ sqlite-vec>=0.1.6
 
 # WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
 aiohttp>=3.9
+
+# CosyVoice TTS via Alibaba Cloud DashScope WebSocket
+dashscope>=1.20.0

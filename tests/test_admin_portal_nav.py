@@ -27,6 +27,9 @@ def test_setup_guide_and_kept_features():
     assert "配置人格" in HTML
     assert "技能管理" in HTML
     assert "Draw · 绘图" in HTML
+    assert "语音合成" in HTML
     assert "Free Time 自主思考" in HTML
+    assert "允许 Telegram 访客" in HTML
+    assert "TELEGRAM_ALLOW_VISITORS" in HTML
     assert "goToPage('skills')" in HTML
     assert "api('GET','/skills')" in HTML or 'api(\'GET\',\'/skills\')' in HTML
