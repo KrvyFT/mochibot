@@ -48,7 +48,6 @@ from mochi.main_runtime import (
     DurableChatResult,
     MainRuntimeEntry,
     context_policy,
-    visitor_context_policy,
 )
 from mochi.request_tools import ToolLoopBudget, resolve_request
 from mochi.skills.base import SkillResult
@@ -680,23 +679,15 @@ class ChatResult:
         inserted = False
         processed = True
         if pending:
-            if pending.get("visitor"):
-                from mochi.visitor_session import append_visitor_turn
-                append_visitor_turn(
-                    pending["user_id"],
-                    pending.get("user_content") or "",
-                    pending.get("content") or "",
-                )
-            else:
-                processed = bool(pending.get("processed", True))
-                inserted = save_message_once(
-                    pending["user_id"],
-                    "assistant",
-                    pending["content"],
-                    tool_history=pending["tool_history"],
-                    turn_id=pending["turn_id"],
-                    processed=processed,
-                )
+            processed = bool(pending.get("processed", True))
+            inserted = save_message_once(
+                pending["user_id"],
+                "assistant",
+                pending["content"],
+                tool_history=pending["tool_history"],
+                turn_id=pending["turn_id"],
+                processed=processed,
+            )
         self._delivery_confirmed = True
         if inserted and not processed:
             _schedule_continuous_memory(pending["user_id"])
@@ -888,8 +879,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                          runtime_entry: MainRuntimeEntry | None = None,
                          weekly_context: str = "",
                          policy: ContextPolicy | None = None,
-                         defer_runtime_situation: bool = False,
-                         is_visitor: bool = False) -> str:
+                         defer_runtime_situation: bool = False) -> str:
     """Assemble explicit identity, situation, capability, and live-context zones."""
 
     modules = get_system_chat_modules()
@@ -922,17 +912,6 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
                 _deployment_environment(),
             )
         )
-        if is_visitor:
-            visitor_contract = get_prompt("system_chat/visitor")
-            if visitor_contract:
-                stable_identity.append(visitor_contract)
-            try:
-                from mochi.relationship_voice import read_voice
-                voice = read_voice().strip()
-            except Exception:
-                voice = ""
-            if voice:
-                stable_identity.append(voice)
         early_runtime_situation = []
         if (
             policy.early_runtime_situation
@@ -944,7 +923,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
             )
 
     capability_parts = []
-    if not is_weekly and not is_autonomous and not is_core_refresh and not is_visitor:
+    if not is_weekly and not is_autonomous and not is_core_refresh:
         from mochi.skills import get_capability_summary
         cap = get_capability_summary(transport=transport)
         if cap:
@@ -1039,7 +1018,7 @@ def _build_system_prompt(user_id: int, capability_context: str = "",
     from mochi.db import get_last_user_message_time
     last_msg_time = (
         get_last_user_message_time(user_id)
-        if policy.temporal_context and not is_weekly and not is_visitor
+        if policy.temporal_context and not is_weekly
         else None
     )
     if last_msg_time:
@@ -1143,13 +1122,8 @@ async def chat(
         runtime_entry and runtime_entry.kind == "core_refresh"
     )
     is_silent_maintenance = is_weekly or is_core_refresh
-    is_visitor = bool(message is not None and message.visitor)
-    from mochi.config import OWNER_USER_ID
-    memory_user_id = OWNER_USER_ID if is_visitor else user_id
     unanswered_thread: dict | None = None
-    prompt_policy = (
-        visitor_context_policy() if is_visitor else context_policy(runtime_entry)
-    )
+    prompt_policy = context_policy(runtime_entry)
     turn_id = (
         runtime_entry.idempotency_key
         if (is_self_reminder or is_silent_maintenance or is_autonomous)
@@ -1171,31 +1145,29 @@ async def chat(
             and transport in sticker_skill.exclude_transports
         )
         if sticker_skill and not sticker_excluded:
-            emoji = sticker_data.get("emoji", "")
-            if is_visitor:
-                text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
-            else:
-                result = await sticker_skill.learn_sticker(
-                    user_id=user_id,
-                    file_id=sticker_data["file_id"],
-                    set_name=sticker_data.get("set_name", ""),
-                    emoji=emoji,
-                    caption=text,
+            result = await sticker_skill.learn_sticker(
+                user_id=user_id,
+                file_id=sticker_data["file_id"],
+                set_name=sticker_data.get("set_name", ""),
+                emoji=sticker_data.get("emoji", ""),
+                caption=text,
+            )
+
+            if result["learned"]:
+                emoji = sticker_data.get("emoji", "")
+                confirm = (
+                    f"学会了！{emoji} 标签：{result['tags']}\n"
+                    f"（已收集 {result['count']} 个贴纸）"
                 )
+                return ChatResult(text=confirm)
 
-                if result["learned"]:
-                    confirm = (
-                        f"学会了！{emoji} 标签：{result['tags']}\n"
-                        f"（已收集 {result['count']} 个贴纸）"
-                    )
-                    return ChatResult(text=confirm)
-
-                text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
+            emoji = sticker_data.get("emoji", "")
+            text = f"[用户发了一个贴纸 {emoji}]" + (f" {text}" if text else "")
 
     # Keep image bytes ephemeral. History only records a readable placeholder.
     stored_text = f"[图片] {text}" if image else text
     current_user_message_id = None
-    if message is not None and not is_visitor:
+    if message is not None:
         current_user_message_id = save_message(
             user_id,
             "user",
@@ -1214,21 +1186,12 @@ async def chat(
         []
         if (
             is_bedtime or is_self_reminder or is_silent_maintenance
-            or is_autonomous or is_visitor
+            or is_autonomous
         )
         else await asyncio.to_thread(list_habits, user_id)
     )
 
     async def _safe_conversation_context() -> dict:
-        if is_visitor:
-            from mochi.visitor_session import visitor_history
-            recent = visitor_history(user_id)
-            return {
-                "summary": "",
-                "overflow": [],
-                "recent": recent,
-                "trailing": [],
-            }
         if not (
             prompt_policy.conversation_summary
             or prompt_policy.recent_history
@@ -1268,7 +1231,7 @@ async def chat(
         return await asyncio.to_thread(
             _retrieve_memories_for_turn,
             text,
-            memory_user_id,
+            user_id,
             current_user_message_id,
         )
 
@@ -1295,20 +1258,14 @@ async def chat(
             skill_registry.get_recent_multi_turn_skill_names,
             user_id,
         )
-        if (
-            message is not None and runtime_entry is None
-            and not skill_mode_off and not is_visitor
-        )
+        if message is not None and runtime_entry is None and not skill_mode_off
         else []
     )
     escalation_available = (
-        not is_visitor
-        and (
-            is_bedtime
-            or is_self_reminder
-            or is_autonomous
-            or (not is_silent_maintenance and turn_plan.request_tools_enabled)
-        )
+        is_bedtime
+        or is_self_reminder
+        or is_autonomous
+        or (not is_silent_maintenance and turn_plan.request_tools_enabled)
     )
     _health_warning = ""
 
@@ -1376,19 +1333,6 @@ async def chat(
             "trailing": [],
         }
         recalled_memories = []
-        habits = []
-
-    elif is_visitor:
-        from mochi.visitor_session import VISITOR_MEDIA_TOOLS
-        tools = skill_registry.get_tools_by_tool_names(
-            VISITOR_MEDIA_TOOLS,
-            transport=transport,
-        )
-        core_memory, conversation_context, recalled_memories = await asyncio.gather(
-            asyncio.to_thread(read_core),
-            _safe_conversation_context(),
-            _safe_recalled_memories(),
-        )
         habits = []
 
     elif skill_mode_off:
@@ -1518,7 +1462,7 @@ async def chat(
     ):
         from mochi.request_tools import REQUEST_TOOLS_DEF
         tools.append(REQUEST_TOOLS_DEF)
-    if message is not None and runtime_entry is None and not is_visitor:
+    if message is not None and runtime_entry is None:
         from mochi.heartbeat import bedtime_tool_available
 
         if bedtime_tool_available():
@@ -1529,7 +1473,7 @@ async def chat(
     tools = filter_tools(tools)
     tools = skill_registry.filter_tools_for_context(
         tools,
-        user_id=memory_user_id if is_visitor else user_id,
+        user_id=user_id,
         transport=transport,
     )
     availability = ToolAvailability.from_definitions(
@@ -1562,7 +1506,7 @@ async def chat(
     # Fetch diary data for Zone C runtime context. Ordinary chat excludes the
     # status panel to avoid parroting progress; autonomous contexts can opt in.
     from mochi.diary import diary as _diary, refresh_diary_status
-    if prompt_policy.diary_status and not is_visitor:
+    if prompt_policy.diary_status:
         await asyncio.to_thread(refresh_diary_status, user_id)
     _ds = (
         _diary.read(section="今日状態")
@@ -1602,7 +1546,6 @@ async def chat(
         ),
         policy=prompt_policy,
         defer_runtime_situation=is_autonomous or is_self_reminder,
-        is_visitor=is_visitor,
     )
 
     # Build messages array
@@ -1828,9 +1771,6 @@ async def chat(
             "turn_id": turn_id,
             "processed": False,
         }
-        if is_visitor:
-            pending_history["visitor"] = True
-            pending_history["user_content"] = stored_text
         return ChatResult(
             text=reply,
             stickers=pending_stickers,
@@ -1916,7 +1856,7 @@ async def chat(
                 )
 
         _log_main_usage(response)
-        if recalled_memories and not recall_exposure_recorded and not is_visitor:
+        if recalled_memories and not recall_exposure_recorded:
             _record_recalled_memories_exposed(user_id, recalled_memories)
             recall_exposure_recorded = True
 
@@ -2184,11 +2124,6 @@ async def chat(
                 action=action_for(tc["name"], arguments),
                 arguments_json=serialized_arguments(tc["name"], arguments),
             )
-            dispatch_user_id = (
-                memory_user_id
-                if is_visitor and tc["name"] == "send_sticker"
-                else user_id
-            )
             dispatch_args = tc["arguments"]
             if tc["name"] == "update_core" and not is_weekly_tool:
                 core_update_attempted = True
@@ -2226,7 +2161,7 @@ async def chat(
                 else:
                     result = await skill_registry.dispatch(
                         tc["name"], dispatch_args,
-                        user_id=dispatch_user_id, channel_id=channel_id,
+                        user_id=user_id, channel_id=channel_id,
                         transport=transport,
                         actor="main",
                         source=execution_source,

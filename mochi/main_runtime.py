@@ -37,22 +37,6 @@ class ContextPolicy:
     temporal_context: bool = True
 
 
-def visitor_context_policy() -> ContextPolicy:
-    """Owner Core/diary/memories, visitor-only ephemeral transcript, no writes."""
-    return ContextPolicy(
-        diary_status=True,
-        diary_journal=True,
-        conversation_summary=False,
-        recent_history=True,
-        recent_turns=12,
-        trailing_history=False,
-        auto_recall=True,
-        recent_operations=False,
-        prompt_sections=False,
-        temporal_context=True,
-    )
-
-
 def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry is None:
         return ContextPolicy()

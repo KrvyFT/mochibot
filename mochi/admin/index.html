@@ -467,17 +467,6 @@ async function unbindTransport(platform) {
   } catch(e) { showToast('操作失败: ' + e.message); }
 }
 
-async function saveTelegramVisitors(enabled) {
-  const box = document.getElementById('cfg-TELEGRAM_ALLOW_VISITORS');
-  try {
-    await api('PUT', '/basic/config', {TELEGRAM_ALLOW_VISITORS: enabled});
-    showToast(enabled ? '已允许 Telegram 访客' : '已关闭 Telegram 访客');
-  } catch(e) {
-    if (box) box.checked = !enabled;
-    showToast('保存失败: ' + e.message);
-  }
-}
-
 async function saveTransportConfig() {
   const tokenInput = document.getElementById('cfg-TELEGRAM_BOT_TOKEN');
   if (!tokenInput || !tokenInput.value.trim()) return showToast('Bot Token 不能为空');
@@ -1458,14 +1447,13 @@ async function loadSettings() {
   const generation = ++_settingsRequestGeneration;
   const el = document.getElementById('settings-content');
   try {
-    const [s, botStatus, tiers, skillsResp, mem, checkupData, basic] = await Promise.all([
+    const [s, botStatus, tiers, skillsResp, mem, checkupData] = await Promise.all([
       api('GET', '/status'),
       api('GET', '/bot/status').catch(() => ({running: false})),
       api('GET', '/tiers'),
       api('GET', '/skills').catch(() => ({skills: []})),
       api('GET', '/memory').catch(() => ({content: ''})),
       api('GET', '/checkup').catch(() => null),
-      api('GET', '/basic/config').catch(() => ({})),
     ]);
     if (generation !== _settingsRequestGeneration) return;
 
@@ -1547,18 +1535,9 @@ async function loadSettings() {
     }
     let ownerLine = '';
     if (tgConfigured) {
-      const allowVisitors = basic.TELEGRAM_ALLOW_VISITORS?.value !== false
-        && String(basic.TELEGRAM_ALLOW_VISITORS?.value ?? 'true') !== 'false';
       ownerLine = ownerBound
         ? '<div style="font-size:12px;color:var(--success);margin-top:2px">Owner 已绑定</div>'
         : '<div style="font-size:12px;color:var(--warning);margin-top:2px">⚠ 在 Telegram 中向 Bot 发送一条消息即可绑定 Owner</div>';
-      ownerLine += `<div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0;margin-top:6px;border-top:1px solid var(--border)">
-        <label class="toggle"><input id="cfg-TELEGRAM_ALLOW_VISITORS" type="checkbox" ${allowVisitors?'checked':''} onchange="saveTelegramVisitors(this.checked)"><span class="slider"></span></label>
-        <div style="min-width:0;flex:1">
-          <div style="font-size:14px">允许 Telegram 访客</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">其他人私聊可用你的人格和记忆，对话不写入主人记忆。群聊仍只应主人。</div>
-        </div>
-      </div>`;
     }
     let transportConfigArea = '';
     if (!hasTransport) {
@@ -1854,7 +1833,6 @@ async function resetBasicParam(key) {
 
 function renderBasicConfigCards(cfg) {
   const groups = [
-    { title:'Telegram', keys:[['TELEGRAM_ALLOW_VISITORS','允许私聊访客','其他人私聊可用主人人格和记忆，对话不写入主人记忆。群聊仍只应主人。']] },
     { title:'对话', keys:[['AI_CHAT_MAX_COMPLETION_TOKENS','对话最大 tokens','单次对话回复的 token 上限']] },
     { title:'维护', keys:[
       ['MAINTENANCE_ENABLED','启用每日维护','是否启用每日自动维护'],

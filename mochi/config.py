@@ -55,8 +55,6 @@ EMBEDDING_CACHE_TTL_S = _env_int("EMBEDDING_CACHE_TTL_S", 300)
 # ═══════════════════════════════════════════════════════════════════════════
 
 TELEGRAM_BOT_TOKEN = _env("TELEGRAM_BOT_TOKEN")
-# Private-chat visitors may talk; they read owner memory but do not write it.
-TELEGRAM_ALLOW_VISITORS = _env_bool("TELEGRAM_ALLOW_VISITORS", True)
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Transport — WeChat (optional secondary transport)

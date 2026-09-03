@@ -70,7 +70,6 @@ class MessageDebouncer(Generic[T]):
         *,
         text: str,
         on_flush: OnFlush[T],
-        track_activity: bool = True,
     ) -> asyncio.Task[None]:
         """Buffer ``item`` and ensure a runner is waiting for a quiet window."""
         async with self._lock:
@@ -91,7 +90,7 @@ class MessageDebouncer(Generic[T]):
             task = self._flush_tasks.get(key)
             if task is None or task.done():
                 task = asyncio.create_task(
-                    self._run(key, on_flush, track_activity=track_activity),
+                    self._run(key, on_flush),
                     name=f"message-debounce:{key}",
                 )
                 self._flush_tasks[key] = task
@@ -117,9 +116,9 @@ class MessageDebouncer(Generic[T]):
             await asyncio.gather(*tasks, return_exceptions=True)
 
     async def _run(
-        self, key: int, on_flush: OnFlush[T], *, track_activity: bool = True,
+        self, key: int, on_flush: OnFlush[T],
     ) -> None:
-        if track_activity and self._on_runner_start is not None:
+        if self._on_runner_start is not None:
             self._on_runner_start()
         try:
             while True:
@@ -139,7 +138,7 @@ class MessageDebouncer(Generic[T]):
                     return
                 if self._buffers.get(key):
                     self._flush_tasks[key] = asyncio.create_task(
-                        self._run(key, on_flush, track_activity=track_activity),
+                        self._run(key, on_flush),
                         name=f"message-debounce:{key}",
                     )
                     return

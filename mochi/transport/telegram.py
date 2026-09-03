@@ -78,7 +78,6 @@ class _PendingTurn:
     update: Update
     context: ContextTypes.DEFAULT_TYPE
     user_msg_id: int
-    visitor: bool = False
 
 
 def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
@@ -98,7 +97,6 @@ def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
         update=last.update,
         context=last.context,
         user_msg_id=last.user_msg_id,
-        visitor=last.visitor,
     )
 
 
@@ -141,27 +139,6 @@ def _is_owner(user_id: int) -> bool:
     from mochi.config import OWNER_USER_ID as current_owner
     return current_owner and user_id == current_owner
 
-
-def classify_telegram_sender(user_id: int, chat_type: str) -> str:
-    """Admit a Telegram sender: claim, owner, visitor, or reject."""
-    from mochi.config import OWNER_USER_ID
-
-    if not OWNER_USER_ID:
-        return "claim"
-    if user_id == OWNER_USER_ID:
-        return "owner"
-    if _telegram_allow_visitors() and chat_type == "private":
-        return "visitor"
-    return "reject"
-
-
-def _telegram_allow_visitors() -> bool:
-    try:
-        from mochi.admin.admin_db import get_system_config
-        return bool(get_system_config("TELEGRAM_ALLOW_VISITORS"))
-    except Exception:
-        from mochi.config import TELEGRAM_ALLOW_VISITORS
-        return bool(TELEGRAM_ALLOW_VISITORS)
 
 # Message handler callback — set by main.py during initialization
 _on_message_callback = None
@@ -438,21 +415,17 @@ class TelegramTransport(Transport):
 
     # ── Handlers ──────────────────────────────────────────────
 
-    async def _admit(self, update: Update) -> tuple[int, bool] | None:
-        """Return (user_id, visitor) or reply with rejection and return None."""
+    async def _check_owner(self, update: Update) -> int | None:
+        """Validate owner and return user_id, or reply with rejection and return None."""
         user_id = update.effective_user.id
-        chat_type = getattr(update.effective_chat, "type", "") or ""
-        verdict = classify_telegram_sender(user_id, chat_type)
-        if verdict == "claim":
+        from mochi.config import OWNER_USER_ID as _current_owner
+        if not _current_owner:
             set_owner_user_id(user_id)
             log.info("Owner auto-detected: user_id=%d", user_id)
-            return user_id, False
-        if verdict == "owner":
-            return user_id, False
-        if verdict == "visitor":
-            return user_id, True
-        await update.message.reply_text("Sorry, I'm a personal companion bot.")
-        return None
+        elif user_id != _current_owner:
+            await update.message.reply_text("Sorry, I'm a personal companion bot.")
+            return None
+        return user_id
 
     @staticmethod
     def _dispatch_state_signals() -> None:
@@ -495,10 +468,9 @@ class TelegramTransport(Transport):
         if not update.message or not (update.message.text or update.message.photo):
             return
 
-        admitted = await self._admit(update)
-        if admitted is None:
+        user_id = await self._check_owner(update)
+        if user_id is None:
             return
-        user_id, visitor = admitted
 
         image = None
         text = update.message.text or update.message.caption or "请看看这张图片。"
@@ -519,8 +491,7 @@ class TelegramTransport(Transport):
                 return
             image = ImageAttachment(data=data, media_type="image/jpeg")
 
-        if not visitor:
-            self._dispatch_state_signals()
+        self._dispatch_state_signals()
 
         pending = _PendingTurn(
             user_id=user_id,
@@ -530,7 +501,6 @@ class TelegramTransport(Transport):
             update=update,
             context=context,
             user_msg_id=update.message.message_id,
-            visitor=visitor,
         )
 
         if not _on_message_callback:
@@ -538,9 +508,8 @@ class TelegramTransport(Transport):
             return
 
         if not TG_AGGREGATE_ENABLED or TG_MESSAGE_DEBOUNCE_S <= 0:
-            if not pending.visitor:
-                from mochi.heartbeat import track_active_chat_task
-                track_active_chat_task()
+            from mochi.heartbeat import track_active_chat_task
+            track_active_chat_task()
             await self._run_owner_turn(pending)
             return
 
@@ -552,7 +521,6 @@ class TelegramTransport(Transport):
             pending,
             text=pending.text,
             on_flush=self._flush_pending_turns,
-            track_activity=not pending.visitor,
         )
 
     async def _flush_pending_turns(self, items: list[_PendingTurn]) -> None:
@@ -635,7 +603,6 @@ class TelegramTransport(Transport):
             transport="telegram",
             image=pending.image,
             on_interim=_on_interim,
-            visitor=pending.visitor,
         )
 
         from mochi.heartbeat import (
@@ -779,15 +746,14 @@ class TelegramTransport(Transport):
         if not update.message or not update.message.sticker:
             return
 
-        admitted = await self._admit(update)
-        if admitted is None:
+        user_id = await self._check_owner(update)
+        if user_id is None:
             return
-        user_id, visitor = admitted
 
-        if not visitor:
-            from mochi.heartbeat import track_active_chat_task
-            track_active_chat_task()
-            self._dispatch_state_signals()
+        from mochi.heartbeat import track_active_chat_task
+        track_active_chat_task()
+
+        self._dispatch_state_signals()
 
         sticker = update.message.sticker
         msg = IncomingMessage(
@@ -795,7 +761,6 @@ class TelegramTransport(Transport):
             channel_id=update.effective_chat.id,
             text=update.message.caption or "",
             transport="telegram",
-            visitor=visitor,
             raw={
                 "sticker": {
                     "file_id": sticker.file_id,

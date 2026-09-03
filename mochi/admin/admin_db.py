@@ -368,7 +368,6 @@ BASIC_CONFIG_KEYS = (
     "FALLBACK_WAKE_HOUR",
     "SILENCE_PAUSE_DAYS",
     "BEDTIME_ENTRY_ENABLED",
-    "TELEGRAM_ALLOW_VISITORS",
 )
 
 SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
@@ -394,7 +393,6 @@ SYSTEM_DEFAULTS: dict[str, tuple[str, any]] = {
     "RELATIONSHIP_MORNING_HOUR":      ("int",   8),
     "CORE_REFRESH_ENABLED":           ("bool",  True),
     "CORE_REFRESH_HOURS":             ("str",   "12,23"),
-    "TELEGRAM_ALLOW_VISITORS":        ("bool",  True),
 }
 
 
