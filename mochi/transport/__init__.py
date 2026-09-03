@@ -46,6 +46,8 @@ class IncomingMessage:
     on_interim: Callable[..., Awaitable[None]] | None = field(
         default=None, repr=False,
     )
+    # Telegram private-chat guest: reads owner memory, does not persist it.
+    visitor: bool = False
 
 
 class Transport(ABC):

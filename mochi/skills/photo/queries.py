@@ -22,6 +22,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_photo_refs_source
     ON photo_refs(source_url) WHERE source_url != '';
 CREATE INDEX IF NOT EXISTS idx_photo_refs_kind_region
     ON photo_refs(kind, region);
+CREATE TABLE IF NOT EXISTS photo_sends (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id       INTEGER NOT NULL,
+    logical_date  TEXT    NOT NULL,
+    bucket        TEXT    NOT NULL,
+    turn_id       TEXT    DEFAULT '',
+    created_at    TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_photo_sends_day
+    ON photo_sends(user_id, logical_date, bucket);
 """
 
 
@@ -106,3 +116,32 @@ def list_photo_refs(
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def count_photo_sends(user_id: int, logical_date: str, bucket: str) -> int:
+    conn = _connect()
+    row = conn.execute(
+        "SELECT COUNT(*) AS n FROM photo_sends "
+        "WHERE user_id = ? AND logical_date = ? AND bucket = ?",
+        (user_id, logical_date, bucket),
+    ).fetchone()
+    conn.close()
+    return int(row["n"] if row else 0)
+
+
+def record_photo_send(
+    user_id: int,
+    logical_date: str,
+    bucket: str,
+    turn_id: str = "",
+) -> None:
+    now = datetime.now(TZ).isoformat()
+    conn = _connect()
+    conn.execute(
+        "INSERT INTO photo_sends "
+        "(user_id, logical_date, bucket, turn_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (user_id, logical_date, bucket, turn_id or "", now),
+    )
+    conn.commit()
+    conn.close()

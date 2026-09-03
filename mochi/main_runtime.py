@@ -37,6 +37,22 @@ class ContextPolicy:
     temporal_context: bool = True
 
 
+def visitor_context_policy() -> ContextPolicy:
+    """Owner Core/diary/memories, visitor-only ephemeral transcript, no writes."""
+    return ContextPolicy(
+        diary_status=True,
+        diary_journal=True,
+        conversation_summary=False,
+        recent_history=True,
+        recent_turns=12,
+        trailing_history=False,
+        auto_recall=True,
+        recent_operations=False,
+        prompt_sections=False,
+        temporal_context=True,
+    )
+
+
 def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
     if entry is None:
         return ContextPolicy()
@@ -299,6 +315,7 @@ class DurableChatResult:
     text: str = ""
     stickers: tuple[str, ...] = ()
     images: tuple[str, ...] = ()
+    voices: tuple[str, ...] = ()
     pending_history: dict | None = None
     tool_audit: tuple[dict, ...] = ()
     successful_effects: bool = False
@@ -311,6 +328,7 @@ class DurableChatResult:
                 "text": self.text,
                 "stickers": list(self.stickers),
                 "images": list(self.images),
+                "voices": list(self.voices),
                 "pending_history": self.pending_history,
                 "tool_audit": list(self.tool_audit),
                 "successful_effects": self.successful_effects,
@@ -328,6 +346,7 @@ class DurableChatResult:
         text = payload.get("text", "")
         stickers = payload.get("stickers", [])
         images = payload.get("images", [])
+        voices = payload.get("voices", [])
         pending_history = payload.get("pending_history")
         tool_audit = payload.get("tool_audit", [])
         disposition = payload.get("disposition", "invalid")
@@ -341,6 +360,10 @@ class DurableChatResult:
             isinstance(item, str) and item for item in images
         ):
             raise ValueError("durable chat result images are invalid")
+        if not isinstance(voices, list) or not all(
+            isinstance(item, str) and item for item in voices
+        ):
+            raise ValueError("durable chat result voices are invalid")
         if pending_history is not None and not isinstance(pending_history, dict):
             raise ValueError("durable chat result history is invalid")
         if not isinstance(tool_audit, list) or not all(
@@ -353,6 +376,7 @@ class DurableChatResult:
             text=text,
             stickers=tuple(stickers),
             images=tuple(images),
+            voices=tuple(voices),
             pending_history=pending_history,
             tool_audit=tuple(tool_audit),
             successful_effects=bool(payload.get("successful_effects")),

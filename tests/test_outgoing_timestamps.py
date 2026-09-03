@@ -1,7 +1,11 @@
 """Outgoing replies must not start with history timestamps."""
 
 from mochi.ai_client import _clean_model_reply
-from mochi.transport.utils import split_bubbles, strip_outgoing_history_timestamps
+from mochi.transport.utils import (
+    split_bubbles,
+    strip_outgoing_history_timestamps,
+    strip_stage_directions,
+)
 
 
 def test_strips_prefix_from_sent_reply():
@@ -30,3 +34,14 @@ def test_clean_model_reply_drops_copied_prefixes():
     )
     assert not _clean_model_reply(reply).startswith("[2026-09-02")
     assert "我自己都没数清楚" in _clean_model_reply(reply)
+
+
+def test_clean_model_reply_drops_parenthetical_stage_directions():
+    reply = (
+        "（缓了半拍，声音落下来，轻轻软软地递过去）\n"
+        "风把我的声音顺过来了。"
+    )
+    cleaned = _clean_model_reply(reply)
+    assert "缓了半拍" not in cleaned
+    assert cleaned == "风把我的声音顺过来了。"
+    assert strip_stage_directions("ok (fine)") == "ok (fine)"

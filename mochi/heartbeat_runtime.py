@@ -581,6 +581,13 @@ def store_prepared_result(claimed: dict, durable: DurableChatResult) -> bool:
         conn.close()
 
 
+_AUTONOMOUS_SKIP_OUTCOMES = frozenset({
+    "skipped_busy",
+    "skipped_sleep",
+    "skipped_quiet_wake",
+})
+
+
 def complete_without_delivery(
     claimed: dict, durable: DurableChatResult, outcome: str,
 ) -> bool:
@@ -594,8 +601,7 @@ def complete_without_delivery(
         "delivery_failed",
         "delivery_unknown",
         "asleep",
-        "skipped_busy",
-        "skipped_sleep",
+        *_AUTONOMOUS_SKIP_OUTCOMES,
     }:
         raise ValueError("invalid autonomous Main outcome")
     now_iso = _iso(_utc_now())
@@ -767,6 +773,10 @@ def remove_delivered_component(
         images = list(durable.images)
         images.remove(value)
         return replace(durable, images=tuple(images))
+    if kind == "voice":
+        voices = list(durable.voices)
+        voices.remove(value)
+        return replace(durable, voices=tuple(voices))
     stickers = list(durable.stickers)
     stickers.remove(value)
     return replace(durable, stickers=tuple(stickers))

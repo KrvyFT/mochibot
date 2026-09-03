@@ -648,6 +648,21 @@ if HAS_FASTAPI:
                 entry["model"], entry["base_url"],
             )
             start = time.monotonic()
+            from mochi.qwen_image import is_qwen_image_model
+            if is_qwen_image_model(entry["model"]):
+                data = await asyncio.to_thread(
+                    client.generate_image,
+                    "一只橘猫坐在窗边",
+                    prompt_extend=False,
+                    enable_thinking=False,
+                )
+                elapsed = int((time.monotonic() - start) * 1000)
+                return {
+                    "ok": True,
+                    "model": entry["model"],
+                    "latency_ms": elapsed,
+                    "bytes": len(data or b""),
+                }
             resp = await asyncio.to_thread(
                 client.chat,
                 messages=[{"role": "user", "content": "Hi"}],
@@ -892,6 +907,138 @@ if HAS_FASTAPI:
         except (httpx.HTTPError, ValueError, OSError) as exc:
             return {"ok": False, "error": _search_error_label(exc)}
 
+    # ── Voice synthesis config (shown on Advanced / Models page) ─────────
+
+    _VOICE_CONFIG_KEYS = (
+        "VOICE_PROVIDER", "VOICE_API_KEY", "VOICE_MODEL",
+        "VOICE_BASE_URL", "VOICE_ID",
+    )
+
+    def _voice_skill():
+        from mochi import skills as skill_registry
+        _ensure_skills_discovered()
+        return skill_registry.get_skill("voice")
+
+    def _voice_config_payload(skill) -> dict:
+        from mochi.skills.voice.handler import is_voice_config_ready
+
+        cfg = skill.config if skill else {}
+        provider = str(cfg.get("VOICE_PROVIDER") or "").strip().lower()
+        api_key = str(cfg.get("VOICE_API_KEY") or "").strip()
+        return {
+            "provider": provider or "none",
+            "model": str(cfg.get("VOICE_MODEL") or "").strip(),
+            "base_url": str(cfg.get("VOICE_BASE_URL") or "").strip(),
+            "voice_id": str(cfg.get("VOICE_ID") or "").strip(),
+            "api_key_set": bool(api_key),
+            "configured": is_voice_config_ready(cfg),
+        }
+
+    def _clear_voice_config(skill) -> None:
+        from mochi.db import delete_skill_config
+
+        for key in _VOICE_CONFIG_KEYS:
+            delete_skill_config("voice", key)
+        if skill is not None:
+            skill.refresh_config()
+
+    @app.get("/api/voice/config", dependencies=[Depends(_verify_token)])
+    async def api_get_voice_config():
+        skill = _voice_skill()
+        return _voice_config_payload(skill)
+
+    @app.put("/api/voice/config", dependencies=[Depends(_verify_token)])
+    async def api_set_voice_config(request: Request):
+        from mochi.credential_crypto import encrypt_secret, is_encrypted
+        from mochi.db import set_skill_config
+        from mochi.skills import refresh_capability_summary
+        from mochi.skills.voice.handler import websocket_url_from_base
+
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise HTTPException(400, "config must be an object")
+        skill = _voice_skill()
+        if skill is None:
+            raise HTTPException(503, "voice skill is unavailable")
+
+        provider = str(body.get("provider") or "").strip().lower()
+        if provider in {"", "none"}:
+            _clear_voice_config(skill)
+            refresh_capability_summary()
+            return {"ok": True, **_voice_config_payload(skill)}
+        if provider != "dashscope":
+            raise HTTPException(400, "Unsupported voice provider")
+
+        model = str(body.get("model") or "").strip()
+        base_url = str(body.get("base_url") or "").strip()
+        voice_id = str(body.get("voice_id") or "").strip()
+        api_key = str(body.get("api_key") or "").strip()
+        if not model or not base_url or not voice_id:
+            raise HTTPException(400, "模型、Base URL 和 Voice ID 都要填")
+        try:
+            websocket_url_from_base(base_url)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        existing_key = str(skill.config.get("VOICE_API_KEY") or "").strip()
+        if not api_key and not existing_key:
+            raise HTTPException(400, "API Key is required")
+        if api_key:
+            if len(api_key) > 4096 or any(
+                char in api_key for char in ("\n", "\r", "\0")
+            ):
+                raise HTTPException(400, "API Key is invalid")
+            if not os.environ.get("ADMIN_TOKEN"):
+                from mochi.admin.__main__ import _ensure_admin_token
+                _ensure_admin_token(log)
+            encrypted = encrypt_secret(api_key)
+            if not is_encrypted(encrypted):
+                raise HTTPException(
+                    503,
+                    "Credential encryption is unavailable; API Key was not saved",
+                )
+            set_skill_config("voice", "VOICE_API_KEY", encrypted)
+
+        set_skill_config("voice", "VOICE_PROVIDER", provider)
+        set_skill_config("voice", "VOICE_MODEL", model)
+        set_skill_config("voice", "VOICE_BASE_URL", base_url)
+        set_skill_config("voice", "VOICE_ID", voice_id)
+        skill.refresh_config()
+        refresh_capability_summary()
+        return {"ok": True, **_voice_config_payload(skill)}
+
+    @app.delete("/api/voice/config", dependencies=[Depends(_verify_token)])
+    async def api_delete_voice_config():
+        from mochi.skills import refresh_capability_summary
+
+        skill = _voice_skill()
+        if skill is None:
+            raise HTTPException(503, "voice skill is unavailable")
+        _clear_voice_config(skill)
+        refresh_capability_summary()
+        return {"ok": True, **_voice_config_payload(skill)}
+
+    @app.post("/api/voice/test", dependencies=[Depends(_verify_token)])
+    async def api_test_voice():
+        _check_test_rate()
+        from mochi.llm import describe_error
+        from mochi.skills.voice.handler import run_voice_test
+
+        skill = _voice_skill()
+        if skill is None:
+            return {"ok": False, "error": "voice skill is unavailable"}
+        try:
+            start = time.monotonic()
+            result = await asyncio.to_thread(run_voice_test, skill.config)
+            elapsed = int((time.monotonic() - start) * 1000)
+            return {
+                "ok": True,
+                "model": result["model"],
+                "bytes": result["bytes"],
+                "latency_ms": elapsed,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": describe_error(exc)}
+
     # ═══════════════════════════════════════════════════════════════════════
     # User preferences
     # ═══════════════════════════════════════════════════════════════════════
@@ -982,6 +1129,20 @@ if HAS_FASTAPI:
             }
         return payload
 
+    def _sync_telegram_allow_visitors(raw_value: str | None) -> None:
+        """Keep runtime config and .env aligned with the admin toggle."""
+        import mochi.config as cfg
+        from mochi.admin.admin_env import write_env_value
+
+        enabled = True if raw_value is None else str(raw_value).lower() in (
+            "true", "1", "yes",
+        )
+        cfg.TELEGRAM_ALLOW_VISITORS = enabled
+        try:
+            write_env_value("TELEGRAM_ALLOW_VISITORS", "true" if enabled else "false")
+        except Exception:
+            log.warning("Could not persist TELEGRAM_ALLOW_VISITORS to .env")
+
     @app.get("/api/basic/config", dependencies=[Depends(_verify_token)])
     async def api_get_basic_config():
         return _basic_payload()
@@ -1010,6 +1171,10 @@ if HAS_FASTAPI:
             else:
                 set_system_override(key, value)
             updated.append(key)
+        if "TELEGRAM_ALLOW_VISITORS" in normalized:
+            _sync_telegram_allow_visitors(
+                normalized["TELEGRAM_ALLOW_VISITORS"],
+            )
         return {"ok": True, "updated": updated}
 
     @app.get("/api/heartbeat/state", dependencies=[Depends(_verify_token)])

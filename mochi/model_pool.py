@@ -3,7 +3,7 @@
 Tiers:
     lite  — cheap/fast model for classification, tagging, simple tasks
     main  — Mochi's conversation and background reasoning model
-    draw  — optional image-generation model (chat.completions)
+    draw  — optional image-generation model (chat.completions or Qwen-Image native)
 
 All tier config comes from DB. .env model vars are seed data only —
 auto-imported on first startup via seed_models_from_env().

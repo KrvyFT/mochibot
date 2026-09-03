@@ -443,3 +443,20 @@ def test_skipped_slot_is_consumed_and_does_not_move_the_floor():
     assert dict(row)["attempt_count"] == 1
     assert dict(row)["text_delivered_at"] is None
     assert last_delivered_free_time_at(1) == delivered_at
+
+
+def test_quiet_wake_skip_is_a_valid_autonomous_outcome():
+    from mochi.heartbeat_runtime import claim_run, complete_without_delivery
+    from mochi.main_runtime import DurableChatResult
+
+    due = datetime(2026, 9, 2, 6, 20, tzinfo=UTC)
+    _insert_run(
+        run_key="free_time:2026-09-02:0:quiet",
+        status="pending",
+        next_attempt_at=due.isoformat(),
+    )
+    claimed = claim_run("free_time:2026-09-02:0:quiet", now=due)
+    assert claimed is not None
+    assert complete_without_delivery(
+        claimed, DurableChatResult(disposition="skip"), "skipped_quiet_wake",
+    )
