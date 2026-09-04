@@ -336,10 +336,10 @@ async def _deliver_self_reminder(
 
     remaining = durable
     components = []
+    components.extend(("image", item) for item in remaining.images)
     if remaining.text:
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
-    components.extend(("image", item) for item in remaining.images)
     components.extend(("voice", item) for item in remaining.voices)
     for component_kind, value in components:
         if component_kind == "text":

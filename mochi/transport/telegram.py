@@ -281,11 +281,21 @@ class TelegramTransport(Transport):
             log.error("Photo file missing: %s", path)
             return False
 
+        from mochi.config import TG_PHOTO_SEND_MAX_ATTEMPTS, TG_PHOTO_SEND_TIMEOUT_S
+
         async def _send():
             with file_path.open("rb") as handle:
                 await self._app.bot.send_photo(chat_id=chat_id, photo=handle)
 
-        return await call_telegram_api(_send, label="send_photo")
+        # Cap retries: TimedOut after a successful upload often means Telegram
+        # already has the photo; infinite retry floods duplicates.
+        return await call_telegram_api(
+            _send,
+            label="send_photo",
+            timeout_s=TG_PHOTO_SEND_TIMEOUT_S,
+            quick_retries=min(2, TG_PHOTO_SEND_MAX_ATTEMPTS),
+            max_attempts=TG_PHOTO_SEND_MAX_ATTEMPTS,
+        )
 
     async def send_voice_file(self, chat_id: int, path: str) -> bool:
         """Send a local OGG/Opus file as a Telegram voice note."""
@@ -479,16 +489,21 @@ class TelegramTransport(Transport):
         *,
         reply_to_message_id: int | None = None,
     ) -> bool:
-        """Send a ChatResult — text message + any pending stickers/photos/voices."""
+        """Send a ChatResult — photos first, then text/stickers/voices."""
         attempted = False
         delivered = True
+        # Photos before text so a finished draw is not stuck behind bubble typing.
+        for path in getattr(result, "images", None) or []:
+            attempted = True
+            photo_delivered = await self.send_photo_file(chat_id, path)
+            delivered = photo_delivered and delivered
         if result.text:
             attempted = True
             delivered = await self.send_message(
                 chat_id,
                 result.text,
                 reply_to_message_id=reply_to_message_id,
-            )
+            ) and delivered
             if delivered:
                 result.confirm_delivered()
         for file_id in result.stickers:
@@ -499,10 +514,6 @@ class TelegramTransport(Transport):
             sticker_skill = skill_registry.get_skill("sticker")
             if sticker_delivered and sticker_skill:
                 sticker_skill.record_last_sent(chat_id, file_id)
-        for path in getattr(result, "images", None) or []:
-            attempted = True
-            photo_delivered = await self.send_photo_file(chat_id, path)
-            delivered = photo_delivered and delivered
         for path in getattr(result, "voices", None) or []:
             attempted = True
             voice_delivered = await self.send_voice_file(chat_id, path)
@@ -628,7 +639,18 @@ class TelegramTransport(Transport):
             )
         status = _StatusState()
 
-        async def _on_interim(text=None, *, tool_name: str | None = None) -> None:
+        async def _on_interim(
+            text=None,
+            *,
+            tool_name: str | None = None,
+            image_path: str | None = None,
+        ) -> None:
+            # Ready photos go out immediately; do not wait for the final bubble.
+            if image_path:
+                if not await self.send_photo_file(chat_id, image_path):
+                    raise RuntimeError(f"early photo delivery failed: {image_path}")
+                return
+
             # Refresh typing indicator only — no interim chat lines to TG
             # until the final reply is ready (generation must finish first).
             try:
@@ -759,6 +781,10 @@ class TelegramTransport(Transport):
                                 raise RuntimeError("bubble send failed")
                     delivered = True
                     result.confirm_delivered()
+                    for path in getattr(result, "images", None) or []:
+                        delivered = (
+                            await self.send_photo_file(chat_id, path) and delivered
+                        )
                     for file_id in result.stickers:
                         sticker_delivered = await self.send_sticker(chat_id, file_id)
                         delivered = sticker_delivered and delivered
@@ -766,10 +792,6 @@ class TelegramTransport(Transport):
                         sticker_skill = skill_registry.get_skill("sticker")
                         if sticker_delivered and sticker_skill:
                             sticker_skill.record_last_sent(chat_id, file_id)
-                    for path in getattr(result, "images", None) or []:
-                        delivered = (
-                            await self.send_photo_file(chat_id, path) and delivered
-                        )
                     for path in getattr(result, "voices", None) or []:
                         delivered = (
                             await self.send_voice_file(chat_id, path) and delivered

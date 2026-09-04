@@ -1186,6 +1186,7 @@ async def chat(
     pending_stickers: list[str] = []
     pending_images: list[str] = []
     pending_voices: list[str] = []
+    early_delivered_images: set[str] = set()
 
     # ── Sticker learning: intercept sticker metadata from transport ──
     raw = message.raw or {} if message is not None else {}
@@ -1721,10 +1722,41 @@ async def chat(
             runtime_entry.free_time_chat_generation,
         )
 
+    async def _enqueue_image(path: str) -> None:
+        """Dedupe + send photo as soon as Draw finishes when possible."""
+        if not path or path in early_delivered_images or path in pending_images:
+            return
+        sent = False
+        if on_interim is not None:
+            try:
+                await on_interim(None, image_path=path)
+                sent = True
+            except TypeError:
+                # Older interim callbacks only accept tool_name.
+                sent = False
+            except Exception:
+                log.debug("early photo via on_interim failed", exc_info=True)
+                sent = False
+        if not sent and is_autonomous:
+            from mochi.heartbeat import try_early_image_delivery
+
+            try:
+                sent = await try_early_image_delivery(channel_id, path)
+            except Exception:
+                log.warning("early Free Time photo push failed", exc_info=True)
+                sent = False
+        if sent:
+            early_delivered_images.add(path)
+        else:
+            pending_images.append(path)
+
     def _final_result(reply: str) -> ChatResult:
+        # Early-pushed photos are already on the wire; keep them out of
+        # ChatResult.images so final delivery does not send duplicates.
+        history_images = pending_images + sorted(early_delivered_images)
         if is_bedtime or bedtime_requested:
             reply, _ = _parse_runtime_reply(reply)
-        if pending_images:
+        if history_images:
             from mochi.skills.photo.handler import finish_line_for_user
             reply = finish_line_for_user(reply)
         if pending_voices:
@@ -1734,11 +1766,11 @@ async def chat(
             if tool_names_used else None
         )
         history = _history_placeholder(
-            reply, pending_stickers, pending_images, pending_voices,
+            reply, pending_stickers, history_images, pending_voices,
         )
         if is_bedtime:
             if not _has_visible_payload(
-                reply, pending_stickers, pending_images, pending_voices,
+                reply, pending_stickers, history_images, pending_voices,
             ):
                 return ChatResult()
             return ChatResult(
@@ -1756,17 +1788,17 @@ async def chat(
             )
         if is_self_reminder or is_autonomous:
             reply, skipped = _parse_runtime_reply(reply)
-            if pending_images:
+            if history_images:
                 from mochi.skills.photo.handler import finish_line_for_user
                 reply = finish_line_for_user(reply)
             if pending_voices:
                 reply = ""
             history = _history_placeholder(
-                reply, pending_stickers, pending_images, pending_voices,
+                reply, pending_stickers, history_images, pending_voices,
             )
             if (
                 skipped and not successful_effects
-                and not pending_stickers and not pending_images
+                and not pending_stickers and not history_images
                 and not pending_voices
             ):
                 return ChatResult(
@@ -1774,7 +1806,7 @@ async def chat(
                     disposition="skip",
                 )
             if not _has_visible_payload(
-                reply, pending_stickers, pending_images, pending_voices,
+                reply, pending_stickers, history_images, pending_voices,
             ):
                 return ChatResult(
                     tool_audit=tool_audit,
@@ -1809,7 +1841,7 @@ async def chat(
                 disposition="handled" if successful_effects else "skip",
             )
         if bedtime_requested and not _has_visible_payload(
-            reply, pending_stickers, pending_images, pending_voices,
+            reply, pending_stickers, history_images, pending_voices,
         ):
             return ChatResult(
                 bedtime_requested=True,
@@ -2266,7 +2298,7 @@ async def chat(
                 for m in IMAGE_FILE_RE.finditer(result.output):
                     path = m.group(1).strip()
                     if path:
-                        pending_images.append(path)
+                        await _enqueue_image(path)
                 for m in VOICE_FILE_RE.finditer(result.output):
                     path = m.group(1).strip()
                     if path:

@@ -47,3 +47,38 @@ async def test_call_telegram_api_keeps_retrying_past_quick_then_caps_in_tests():
     )
     assert ok is False
     assert attempts["n"] == 4
+
+
+@pytest.mark.asyncio
+async def test_photo_send_uses_hard_attempt_cap(monkeypatch):
+    """Photo TimedOut must not retry forever (duplicate uploads)."""
+    from pathlib import Path
+    import tempfile
+
+    from mochi.transport import telegram as tg
+
+    class _Bot:
+        def __init__(self):
+            self.n = 0
+
+        async def send_photo(self, **kwargs):
+            self.n += 1
+            raise TimeoutError("Timed out")
+
+    class _App:
+        def __init__(self, bot):
+            self.bot = bot
+
+    bot = _Bot()
+    transport = tg.TelegramTransport.__new__(tg.TelegramTransport)
+    transport._app = _App(bot)
+
+    monkeypatch.setattr("mochi.config.TG_PHOTO_SEND_TIMEOUT_S", 0.01)
+    monkeypatch.setattr("mochi.config.TG_PHOTO_SEND_MAX_ATTEMPTS", 2)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "a.jpg"
+        path.write_bytes(b"\xff\xd8\xff\xd9")
+        ok = await transport.send_photo_file(1, str(path))
+    assert ok is False
+    assert bot.n == 2

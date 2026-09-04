@@ -42,7 +42,7 @@ class IncomingMessage:
     image: ImageAttachment | None = field(default=None, repr=False)
     runtime_entry: "MainRuntimeEntry | None" = field(default=None, repr=False)
     # Optional callback fired during tool execution (set by transport layer).
-    # Signature: async def on_interim(text=None, *, tool_name=None) -> None
+    # Signature: async def on_interim(text=None, *, tool_name=None, image_path=None) -> None
     on_interim: Callable[..., Awaitable[None]] | None = field(
         default=None, repr=False,
     )

@@ -207,6 +207,25 @@ def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: s
     _runtime_transport = transport
 
 
+async def try_early_image_delivery(channel_id: int, path: str) -> bool:
+    """Push a Free Time photo as soon as Draw finishes (before prepare ends)."""
+    if _runtime_delivery_callback is None or not path:
+        return False
+    if has_active_chat():
+        return False
+    from mochi.ai_client import ChatResult
+
+    try:
+        return bool(
+            await _runtime_delivery_callback(
+                channel_id, ChatResult(images=[path]),
+            )
+        )
+    except Exception:
+        log.warning("early Free Time photo delivery failed", exc_info=True)
+        return False
+
+
 def track_active_chat_task() -> None:
     """Mark the current owner-message task active through its final delivery."""
     global _chat_activity_generation
@@ -696,7 +715,16 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
         return None
 
     force_direct_search_on_claim(claimed)
-    timeout_s = _effective("LLM_HEARTBEAT_TIMEOUT_SECONDS")
+    timeout_s = float(_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"))
+    try:
+        from mochi.config import FREE_TIME_PHOTO_PREPARE_TIMEOUT_S
+        from mochi.skills.photo.quota import free_time_photo_must_send
+
+        if free_time_photo_must_send(int(claimed["user_id"])):
+            # Must-try photo needs room for skill timeout + a text fallback round.
+            timeout_s = max(timeout_s, float(FREE_TIME_PHOTO_PREPARE_TIMEOUT_S))
+    except Exception:
+        log.debug("Free Time photo prepare timeout bump skipped", exc_info=True)
     last_error = ""
     durable: DurableChatResult | None = None
     _free_time_preparing += 1
@@ -785,10 +813,11 @@ async def _deliver_autonomous(
 
     remaining = durable
     components = []
+    # Photos first: generation already finished; do not wait on text/stickers.
+    components.extend(("image", item) for item in remaining.images)
     if remaining.text:
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
-    components.extend(("image", item) for item in remaining.images)
     components.extend(("voice", item) for item in remaining.voices)
     for kind, value in components:
         if not free_time_turn_available(

@@ -117,6 +117,13 @@ FREE_TIME_UNAVAILABLE_FLOOR_MINUTES = max(
     1, _env_int("FREE_TIME_UNAVAILABLE_FLOOR_MINUTES", 45),
 )
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
+# Hard cap for draw+download inside send_photo. Past this Main speaks
+# in-character ("找不到了") instead of waiting on a hung Draw job.
+PHOTO_GENERATE_TIMEOUT_S = _env_float("PHOTO_GENERATE_TIMEOUT_S", 120.0)
+# Must-photo Free Time: skill cap + one short text round after miss/success.
+FREE_TIME_PHOTO_PREPARE_TIMEOUT_S = _env_int(
+    "FREE_TIME_PHOTO_PREPARE_TIMEOUT_S", 160,
+)
 
 # Sleep/Wake State Machine
 WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # sleep ends; auto-wake and message-wake
@@ -411,6 +418,10 @@ TG_SEND_QUICK_RETRIES = max(1, _env_int("TG_SEND_QUICK_RETRIES", 3))
 TG_SEND_MAX_BACKOFF_S = _env_float("TG_SEND_MAX_BACKOFF_S", 60.0)
 # 0 = retry forever (production). Tests may set a positive cap.
 TG_SEND_MAX_ATTEMPTS = max(0, _env_int("TG_SEND_MAX_ATTEMPTS", 0))
+# Photo uploads: longer per-attempt wait, hard attempt cap. Infinite TimedOut
+# retries often re-upload a photo Telegram already accepted → duplicate images.
+TG_PHOTO_SEND_TIMEOUT_S = _env_float("TG_PHOTO_SEND_TIMEOUT_S", 60.0)
+TG_PHOTO_SEND_MAX_ATTEMPTS = max(1, _env_int("TG_PHOTO_SEND_MAX_ATTEMPTS", 2))
 
 # Tool-call status UX (Telegram DM only)
 TG_STATUS_REACTIONS_ENABLED = _env_bool("TG_STATUS_REACTIONS_ENABLED", True)
