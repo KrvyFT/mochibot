@@ -41,14 +41,11 @@ def init_restart_event() -> asyncio.Event:
     return _restart_event
 
 
-def request_restart(channel_id: int = 0, *,
-                    weixin_id: str | None = None) -> None:
+def request_restart(channel_id: int = 0) -> None:
     """Write restart flag and signal the main loop to exit."""
     try:
         _RESTART_FLAG.parent.mkdir(parents=True, exist_ok=True)
         payload: dict = {"channel_id": channel_id}
-        if weixin_id:
-            payload["weixin_id"] = weixin_id
         _RESTART_FLAG.write_text(json.dumps(payload))
     except Exception as e:
         log.warning("Failed to write restart flag: %s", e)
@@ -75,8 +72,7 @@ def requested_exit_code() -> int:
 def consume_restart_flag() -> dict | None:
     """Read and delete the restart flag.
 
-    Returns dict with ``channel_id`` (int) and optionally ``weixin_id``
-    (str), or *None* if no flag exists.
+    Returns dict with ``channel_id`` (int), or *None* if no flag exists.
     """
     if not _RESTART_FLAG.exists():
         return None

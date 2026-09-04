@@ -18,7 +18,7 @@ cryptography>=42.0.0
 # Native vector search (used by memory auto-recall)
 sqlite-vec>=0.1.6
 
-# WeChat transport (iLink API) — required by current bootstrap even if Telegram-only
+# HTTP client used by optional integrations
 aiohttp>=3.9
 
 # CosyVoice TTS via Alibaba Cloud DashScope WebSocket

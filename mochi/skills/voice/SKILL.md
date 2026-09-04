@@ -2,7 +2,6 @@
 name: voice
 description: 用已复刻的音色合成一句短语音，作为 Telegram 语音气泡发出
 type: tool
-exclude_transports: [wechat]
 config:
   VOICE_PROVIDER:
     type: str

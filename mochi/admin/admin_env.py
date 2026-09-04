@@ -34,9 +34,6 @@ _WRITABLE_KEYS: frozenset[str] = frozenset({
     "EMBEDDING_PROVIDER", "EMBEDDING_API_KEY", "EMBEDDING_MODEL", "EMBEDDING_BASE_URL",
     # Transport — Telegram
     "TELEGRAM_BOT_TOKEN",
-    # Transport — WeChat
-    "WEIXIN_ENABLED", "WEIXIN_BOT_TOKEN", "WEIXIN_BASE_URL",
-    "WEIXIN_ALLOWED_USERS",
     # Owner (needed for first-time setup)
     "OWNER_USER_ID",
 })

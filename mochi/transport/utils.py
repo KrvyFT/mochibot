@@ -1,6 +1,6 @@
 """Shared transport utilities — bubble splitting & marker cleaning.
 
-Used by both Telegram and WeChat transports to avoid code duplication.
+Used by Telegram transport to avoid code duplication.
 """
 
 import re

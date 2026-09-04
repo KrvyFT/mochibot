@@ -23,7 +23,7 @@ def _context(
         trigger="tool_call",
         user_id=user_id,
         channel_id=user_id,
-        transport="wechat",
+        transport="telegram",
         actor="main",
         source="chat",
         turn_id="turn-reminder",

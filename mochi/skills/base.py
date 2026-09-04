@@ -69,7 +69,7 @@ class SkillContext:
     trigger: str            # "tool_call" | "heartbeat" | "cron" | "slash" | "script"
     user_id: int = 0
     channel_id: int = 0
-    transport: str = ""     # "telegram" | "wechat" — from IncomingMessage
+    transport: str = ""     # "telegram" — from IncomingMessage
     actor: str = ""          # "main" only when invoked by a Main tool loop
     source: str = ""         # "chat" | "runtime:..." | "weekly"
     turn_id: str = ""

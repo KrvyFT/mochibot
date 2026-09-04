@@ -94,7 +94,7 @@ else
     echo "    Then open http://localhost:8080?token=YOUR_TOKEN"
     echo ""
     echo "  Option 2: Phone setup via /admin"
-    echo "    Only fill in the transport token (Telegram or WeChat) below."
+    echo "    Only fill in the Telegram bot token below."
     echo "    The bot starts in setup mode — send /admin from your phone"
     echo "    to get the admin portal link, then finish config on mobile."
     echo ""

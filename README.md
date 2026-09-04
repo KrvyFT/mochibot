@@ -6,7 +6,7 @@
 
 有长期记忆，会主动关心你，也能帮你管理习惯、提醒和日常琐事。
 
-轻量自托管 · Telegram / 微信 · OpenAI / DeepSeek / Claude / Gemini
+轻量自托管 · Telegram · OpenAI / DeepSeek / Claude / Gemini
 
 </div>
 
@@ -24,7 +24,7 @@
 
 有配置后台，使用简单，小白也可以上手。
 
-支持微信和 Telegram。
+支持 Telegram。
 
 ## 快速开始
 
@@ -32,7 +32,7 @@
 
 - Python 3.11+
 - 一个受支持的模型服务 API Key
-- Telegram Bot Token，或一个可扫码登录的微信账号
+- Telegram Bot Token
 
 ```bash
 git clone https://github.com/shikidmsh-rgb/mochibot.git
@@ -46,7 +46,7 @@ cd mochibot
 
 1. 添加模型并测试连接。
 2. 将模型分配给 **Main** 和 **Lite**；两者可以使用同一个模型。
-3. 配置 Telegram 或微信。
+3. 配置 Telegram。
 4. 编辑 Core，写下身份和长期事实；日常相处方式会随关系评估改写。
 5. 启动 MochiBot，然后由你发送第一条消息成为唯一的主人（Owner）。
 
@@ -103,7 +103,7 @@ cd mochibot
 
 ## 聊天命令
 
-Telegram 和微信均支持以下命令：
+Telegram 支持以下命令：
 
 | 命令 | 说明 |
 | --- | --- |

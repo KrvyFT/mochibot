@@ -164,12 +164,6 @@ def stage_update(
         "channel_id": int(channel_id),
         "transport": transport,
     }
-    if transport == "wechat":
-        from mochi.db import get_skill_config
-
-        owner_id = get_skill_config("_transport:wechat").get("owner_weixin_id")
-        if owner_id:
-            payload["weixin_id"] = owner_id
     _write_json(UPDATE_REQUEST_PATH, payload)
 
 
@@ -182,7 +176,6 @@ def record_update_result(request: dict, result: dict) -> None:
         "user_id": request.get("user_id", 0),
         "channel_id": request.get("channel_id", 0),
         "transport": request.get("transport", ""),
-        "weixin_id": request.get("weixin_id", ""),
         **result,
     }
     _write_json(UPDATE_RESULT_PATH, payload)

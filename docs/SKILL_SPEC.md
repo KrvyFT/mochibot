@@ -63,7 +63,7 @@ config:
     description: "API key for external service"
 
 # 平台排除
-exclude_transports: [wechat]      # 隐藏此 skill 的平台
+exclude_transports: []                # 隐藏此 skill 的平台（当前仅 telegram）
 
 # 子技能（暴露多组工具的 skill）
 sub_skills:
@@ -122,30 +122,23 @@ sense:
 
 ### 平台兼容性（`exclude_transports`）
 
-MochiBot 支持多个消息平台（transport）。部分 skill 可能只在特定平台上才有意义，或因平台限制无法正常工作。用 `exclude_transports` 声明不兼容的平台：
+MochiBot 通过 transport 对接消息平台。部分 skill 可能只在特定平台上才有意义，或因平台限制无法正常工作。用 `exclude_transports` 声明不兼容的平台：
 
 ```yaml
-exclude_transports: [wechat]
+exclude_transports: [telegram]
 ```
 
-**当前支持的 transport 值**：`telegram`、`wechat`
+**当前支持的 transport 值**：`telegram`
 
 **框架行为**：被排除平台上，该 skill 的工具：
 - 不出现在 LLM 工具列表中（`get_tools()` 过滤）
 - 不出现在能力摘要中（`_build_capability_summary()` 过滤）
 - 即使被直接调用也会被拒绝（`dispatch()` 返回 "not available on this platform"）
 
-**实际示例** — `sticker` skill 排除 wechat：
-```yaml
-# mochi/skills/sticker/SKILL.md
-exclude_transports: [wechat]
-```
-原因：sticker 使用 Telegram 的 `file_id` 机制存储和发送贴纸，这个机制在 WeChat 上不存在。
-
 **注意事项**：
 - 大多数 skill 不需要此字段 — 默认在所有平台可用
 - 只在技术上确实不兼容时才排除，不要仅因为"没测过"就排除
-- 可排除多个平台：`exclude_transports: [wechat, telegram]`
+- 可排除多个平台：`exclude_transports: [telegram]`
 
 ## Handler 类
 
@@ -184,7 +177,7 @@ class MySkill(Skill):
 | `trigger` | str | 触发方式（`"tool_call"`、`"cron"` 等） |
 | `user_id` | int | 触发 skill 的用户 |
 | `channel_id` | int | 聊天频道 ID |
-| `transport` | str | 平台标识（`"telegram"`、`"wechat"` 等） |
+| `transport` | str | 平台标识（`"telegram"`） |
 | `tool_name` | str | 被调用的工具名称 |
 | `args` | dict | 传给工具的参数 |
 | `observation` | dict \| None | 仅 heartbeat 触发时有值，包含 observer 数据。普通 tool 类 skill 不用关心 |
