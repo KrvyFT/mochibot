@@ -66,15 +66,21 @@ class Transport(ABC):
         ...
 
     @abstractmethod
-    async def send_message(self, user_id: int, text: str) -> bool:
+    async def send_message(
+        self, user_id: int, text: str, *, reply_to_message_id: int | None = None,
+    ) -> bool:
         """Send a text message and report whether it was delivered."""
         ...
 
-    async def send_chat_result(self, user_id: int, result) -> bool:
+    async def send_chat_result(
+        self, user_id: int, result, *, reply_to_message_id: int | None = None,
+    ) -> bool:
         """Deliver a ChatResult through this transport."""
         if not result.text:
             return False
-        delivered = await self.send_message(user_id, result.text)
+        delivered = await self.send_message(
+            user_id, result.text, reply_to_message_id=reply_to_message_id,
+        )
         if delivered:
             result.confirm_delivered()
         return delivered

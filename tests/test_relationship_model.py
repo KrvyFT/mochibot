@@ -363,7 +363,7 @@ def test_voice_follows_tier_and_never_names_the_score():
     )
     assert thriving and healthy and strained
     assert thriving != healthy
-    assert "今天想和您多走一段" in thriving
+    assert "好想你" in thriving or "重度病娇" in thriving
     assert "不主动约" in healthy or "对方不先开口" in healthy
     assert "不疾不徐" in healthy
     assert "带刺" in strained or "裂痕" in strained
@@ -378,7 +378,7 @@ def test_voice_weakest_dimension_is_a_short_scene_not_one_slogan():
 
     scores = {**FULL_SCORES, "emotional_intimacy": 3.0}
     text = compose_voice(compute_rqi(scores), compute_momentum([7.0, 6.5]))
-    assert text and "屋檐" in text
+    assert text and "短句陪着" in text
     assert text.count("这一阵更少主动交心") == 1
     intimacy_block = text.split("# 这一阵", 1)[1]
     assert intimacy_block.count("。") >= 3

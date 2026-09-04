@@ -266,7 +266,7 @@ async def _prepare_self_reminder(
         )
         return None
     if durable.disposition != "deliver" or not (
-        durable.text or durable.stickers or durable.images
+        durable.text or durable.stickers or durable.images or durable.voices
     ):
         await _persist_failure(
             claimed, "Main returned no deliverable or handled outcome",

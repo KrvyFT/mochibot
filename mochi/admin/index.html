@@ -1044,6 +1044,10 @@ function renderPreferenceCard(prefs) {
   const wakeClock = hourToClock(wakeEarliest.value, 6);
   const ftStartClock = clockValue(ftStart.value, '08:00');
   const ftEndClock = clockValue(ftEnd.value, '00:30');
+  _freeTimeGapMinutes = Number(freeTime.gap_minutes) || _freeTimeGapMinutes;
+  _freeTimeSearchMin = Number(freeTime.search_daily_min) || _freeTimeSearchMin;
+  _freeTimePhotoMin = Number(freeTime.photo_daily_min) || _freeTimePhotoMin;
+  _freeTimePhotoMax = Number(freeTime.photo_daily_max) || _freeTimePhotoMax;
   _freeTimeMax = Number(freeTime.max) || windowCapacity(ftStartClock, ftEndClock) || _freeTimeMax;
   const freeTimeLimit = freeTimeEnabled ? Number(freeTime.value) : Number(freeTime.default);
   return `<div class="card"><div class="card-title">相处偏好</div>
@@ -1074,7 +1078,7 @@ function renderPreferenceCard(prefs) {
       <div class="config-form-row" style="display:flex;align-items:center;gap:12px;padding:10px 0">
         <div style="min-width:220px;flex:1">
           <div style="font-size:14px">Free Time 活跃时段</div>
-          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">机会铺在这个区间里；结束早于开始时视为跨过午夜</div>
+          <div style="font-size:11px;color:var(--text-soft);margin-top:2px">机会铺在这个区间里；结束早于开始时视为跨过午夜。建议每天约 ${_freeTimeGapMinutes} 分钟一次（约每小时 2–3 次）。</div>
         </div>
         <input class="form-input" id="pref-ft-start" type="time" style="width:120px" value="${esc(ftStartClock)}" onchange="syncFreeTimeCap()">
         <span style="font-size:12px;color:var(--text-soft)">至</span>
@@ -1096,11 +1100,28 @@ async function loadHeartbeat() {
       api('GET', '/basic/config').catch(() => ({})),
     ]);
     if (generation !== _heartbeatRequestGeneration) return;
+    const delivered = state.free_time_delivered_today ?? 0;
+    const attempted = state.free_time_thoughts_today ?? 0;
+    const failed = state.free_time_failed_today ?? 0;
+    const limit = state.free_time_thought_limit ?? '—';
+    const searchToday = state.free_time_search_today ?? 0;
+    const searchMin = state.free_time_search_min ?? _freeTimeSearchMin;
+    const photoToday = state.free_time_photo_today ?? 0;
+    const photoMin = state.free_time_photo_min ?? _freeTimePhotoMin;
+    const photoMax = state.free_time_photo_max ?? _freeTimePhotoMax;
+    const searchOk = searchToday >= searchMin;
+    const photoOk = photoToday >= photoMin;
     let html = '<div class="stat-grid">';
     html += `<div class="stat-card"><div class="stat-number" style="font-size:18px">${esc(state.state||'UNKNOWN')}</div><div class="stat-label">状态</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number">${state.free_time_thoughts_today||0}</div><div class="stat-label">今日 Free Time</div></div>`;
-    html += `<div class="stat-card"><div class="stat-number">${state.free_time_thought_limit??'—'}</div><div class="stat-label">每日上限</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${delivered}<span style="font-size:14px;color:var(--text-soft)">/${esc(limit)}</span></div><div class="stat-label">今日送达</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number">${attempted}</div><div class="stat-label">今日尝试${failed?` · 失败 ${failed}`:''}</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="${searchOk?'':'color:var(--warning, #c47d2a)'}">${searchToday}<span style="font-size:14px;color:var(--text-soft)">/${searchMin}</span></div><div class="stat-label">今日搜索分享</div></div>`;
+    html += `<div class="stat-card"><div class="stat-number" style="${photoOk?'':'color:var(--warning, #c47d2a)'}">${photoToday}<span style="font-size:14px;color:var(--text-soft)">/${photoMin}</span></div><div class="stat-label">今日 FT 照片 · 上限 ${photoMax}</div></div>`;
     html += '</div>';
+    html += `<div class="card" style="padding:12px 16px;margin-bottom:16px;font-size:12px;color:var(--text-soft)">`
+      + `以<strong style="color:var(--text)">真正送达</strong>为准验收。搜索未满 ${searchMin} 次时后续格会优先联网分享；照片未满 ${photoMin} 张时尽量发图，出图失败仍可文字送达。`
+      + `${state.plan_date?` · 计划日 ${esc(state.plan_date)}`:''}`
+      + `</div>`;
     html += renderPreferenceCard(prefs);
 
     const extraKeys = [
@@ -1416,7 +1437,8 @@ function windowCapacity(start, end) {
   let finish = finishRaw;
   if (finish <= begin) finish += 24 * 60;
   const span = finish - begin;
-  return Math.max(1, Math.floor(span / 15));
+  const gap = Math.max(1, Number(_freeTimeGapMinutes) || 20);
+  return Math.max(1, Math.floor(span / gap));
 }
 
 function clockHour(value) {
@@ -1453,7 +1475,7 @@ function syncFreeTimeCap() {
   if (hint) {
     const sleepLabel = (sleepStart && sleepEnd) ? `${sleepStart}–${sleepEnd}` : '01:00–06:00';
     const windowLabel = (start && end) ? `${start}–${end}` : '08:00–00:30';
-    hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，安排数即当天至少要排的次数。约 20% 的机会带上联网搜索，去找一件有趣或你可能感兴趣的事。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。过了睡眠结束点会自动醒；她醒了你还没开口时主动找你会变少。`;
+    hint.textContent = `机会在 ${windowLabel} 内均匀分布并带随机抖动，相邻至少间隔 ${_freeTimeGapMinutes} 分钟（约每小时 2–3 次）。安排数即当天要排的次数。每天至少 ${_freeTimeSearchMin} 次联网分享、至少 ${_freeTimePhotoMin} 张 Free Time 照片（最多 ${_freeTimePhotoMax} 张）；未达标时会优先补。热聊中的到期机会会过期；中途调大会补足当天剩余时段。当前窗口最多 ${_freeTimeMax} 次。睡眠时段是 ${sleepLabel}。过了睡眠结束点会自动醒；她醒了你还没开口时主动找你会变少。`;
   }
 }
 
@@ -1690,7 +1712,11 @@ let _modelEditGeneration = 0;
 let _modelTargetTier = null;
 let _modelCredentialSources = [];
 let _lastAutoBaseUrl = '';  // tracks auto-filled base_url to detect manual edits
-let _freeTimeMax = 66;      // replaced by the server-sent bound on first render
+let _freeTimeMax = 49;      // replaced by the server-sent bound on first render
+let _freeTimeGapMinutes = 20;
+let _freeTimeSearchMin = 2;
+let _freeTimePhotoMin = 1;
+let _freeTimePhotoMax = 3;
 let _lastAutoModel = '';
 
 async function loadAdvanced() {

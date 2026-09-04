@@ -19,6 +19,7 @@ from mochi.transport.message_debounce import (
     MessageDebouncer,
     aggregate_user_turn_text,
 )
+from mochi.transport.tg_send import call_telegram_api
 from mochi.transport.utils import (
     format_usage_summary,
     split_bubbles as _split_bubbles_util,
@@ -78,17 +79,26 @@ class _PendingTurn:
     update: Update
     context: ContextTypes.DEFAULT_TYPE
     user_msg_id: int
+    # Preserves every buffered owner message for topic-split + reply_to.
+    source_items: list[tuple[str, int]] | None = None
+
+    def topic_items(self) -> list[tuple[str, int]]:
+        if self.source_items:
+            return list(self.source_items)
+        return [(self.text, self.user_msg_id)]
 
 
 def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
     last = items[-1]
     last_image = None
     parts: list[tuple[str, bool]] = []
+    source_items: list[tuple[str, int]] = []
     for item in items:
         is_image = item.image is not None
         if is_image:
             last_image = item.image
         parts.append((item.text, is_image))
+        source_items.extend(item.topic_items())
     return _PendingTurn(
         user_id=last.user_id,
         channel_id=last.channel_id,
@@ -97,6 +107,7 @@ def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
         update=last.update,
         context=last.context,
         user_msg_id=last.user_msg_id,
+        source_items=source_items,
     )
 
 
@@ -209,39 +220,57 @@ class TelegramTransport(Transport):
             await self._app.shutdown()
             log.info("Telegram transport stopped")
 
-    async def send_message(self, user_id: int, text: str) -> bool:
+    async def send_message(
+        self,
+        user_id: int,
+        text: str,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> bool:
         if not self._app:
             log.warning("Telegram not started, cannot send message")
             return False
-        try:
-            bubbles = _split_bubbles(text, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS)
-            for i, bubble in enumerate(bubbles):
-                if i > 0:
+        bubbles = _split_bubbles(text, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS)
+        for i, bubble in enumerate(bubbles):
+            if i > 0:
+                async def _typing():
                     await self._app.bot.send_chat_action(
                         chat_id=user_id, action="typing",
                     )
-                    await asyncio.sleep(TG_BUBBLE_DELAY_S)
-                # Respect Telegram 4096 char limit per message
-                for start in range(0, len(bubble), 4096):
-                    await self._app.bot.send_message(
-                        chat_id=user_id,
-                        text=bubble[start:start + 4096],
-                    )
-            return True
-        except Exception as e:
-            log.error("Failed to send Telegram message: %s", e)
-            return False
+                await call_telegram_api(_typing, label="typing")
+                await asyncio.sleep(TG_BUBBLE_DELAY_S)
+            for start in range(0, len(bubble), 4096):
+                chunk = bubble[start:start + 4096]
+                # Everyday chat: only the first bubble replies to the user's
+                # last message in the topic group; the rest are plain sends.
+                reply_id = (
+                    reply_to_message_id
+                    if i == 0 and start == 0 and reply_to_message_id is not None
+                    else None
+                )
+
+                async def _send(chunk=chunk, reply_id=reply_id):
+                    kwargs = {"chat_id": user_id, "text": chunk}
+                    if reply_id is not None:
+                        kwargs["reply_to_message_id"] = reply_id
+                    await self._app.bot.send_message(**kwargs)
+
+                ok = await call_telegram_api(
+                    _send, label=f"send_message[{i}:{start}]",
+                )
+                if not ok:
+                    return False
+        return True
 
     async def send_sticker(self, chat_id: int, file_id: str) -> bool:
         """Send a Telegram sticker by file_id."""
         if not self._app:
             return False
-        try:
+
+        async def _send():
             await self._app.bot.send_sticker(chat_id=chat_id, sticker=file_id)
-            return True
-        except Exception as e:
-            log.error("Failed to send sticker: %s", e)
-            return False
+
+        return await call_telegram_api(_send, label="send_sticker")
 
     async def send_photo_file(self, chat_id: int, path: str) -> bool:
         """Send a local image file as a Telegram photo."""
@@ -251,13 +280,12 @@ class TelegramTransport(Transport):
         if not file_path.is_file():
             log.error("Photo file missing: %s", path)
             return False
-        try:
+
+        async def _send():
             with file_path.open("rb") as handle:
                 await self._app.bot.send_photo(chat_id=chat_id, photo=handle)
-            return True
-        except Exception as e:
-            log.error("Failed to send photo: %s", e)
-            return False
+
+        return await call_telegram_api(_send, label="send_photo")
 
     async def send_voice_file(self, chat_id: int, path: str) -> bool:
         """Send a local OGG/Opus file as a Telegram voice note."""
@@ -267,13 +295,12 @@ class TelegramTransport(Transport):
         if not file_path.is_file():
             log.error("Voice file missing: %s", path)
             return False
-        try:
+
+        async def _send():
             with file_path.open("rb") as handle:
                 await self._app.bot.send_voice(chat_id=chat_id, voice=handle)
-            return True
-        except Exception as e:
-            log.error("Failed to send voice: %s", e)
-            return False
+
+        return await call_telegram_api(_send, label="send_voice")
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
@@ -338,8 +365,18 @@ class TelegramTransport(Transport):
             "📊 系统状态",
             "",
             f"状态: {stats['state']}",
-            f"今日 Free Time 思考: "
-            f"{stats['free_time_thoughts_today']}/{stats['free_time_thought_limit']}",
+            f"今日 Free Time 送达: "
+            f"{stats.get('free_time_delivered_today', 0)}/"
+            f"{stats['free_time_thought_limit']}",
+            f"今日尝试: {stats['free_time_thoughts_today']}"
+            f"（失败 {stats.get('free_time_failed_today', 0)}）",
+            f"今日搜索分享: "
+            f"{stats.get('free_time_search_today', 0)}/"
+            f"{stats.get('free_time_search_min', 2)}",
+            f"今日 FT 照片: "
+            f"{stats.get('free_time_photo_today', 0)}/"
+            f"{stats.get('free_time_photo_min', 1)}"
+            f"（上限 {stats.get('free_time_photo_max', 3)}）",
             f"上次思考: {stats['last_think_at'] or '无'}",
         ]
 
@@ -435,13 +472,23 @@ class TelegramTransport(Transport):
             wake_up("user_message")
         clear_silent_pause()
 
-    async def send_chat_result(self, chat_id: int, result) -> bool:
+    async def send_chat_result(
+        self,
+        chat_id: int,
+        result,
+        *,
+        reply_to_message_id: int | None = None,
+    ) -> bool:
         """Send a ChatResult — text message + any pending stickers/photos/voices."""
         attempted = False
         delivered = True
         if result.text:
             attempted = True
-            delivered = await self.send_message(chat_id, result.text)
+            delivered = await self.send_message(
+                chat_id,
+                result.text,
+                reply_to_message_id=reply_to_message_id,
+            )
             if delivered:
                 result.confirm_delivered()
         for file_id in result.stickers:
@@ -501,6 +548,7 @@ class TelegramTransport(Transport):
             update=update,
             context=context,
             user_msg_id=update.message.message_id,
+            source_items=[(text, update.message.message_id)],
         )
 
         if not _on_message_callback:
@@ -510,7 +558,7 @@ class TelegramTransport(Transport):
         if not TG_AGGREGATE_ENABLED or TG_MESSAGE_DEBOUNCE_S <= 0:
             from mochi.heartbeat import track_active_chat_task
             track_active_chat_task()
-            await self._run_owner_turn(pending)
+            await self._run_topic_grouped_turns(pending)
             return
 
         self._debouncer.delay_s = TG_MESSAGE_DEBOUNCE_S
@@ -524,36 +572,80 @@ class TelegramTransport(Transport):
         )
 
     async def _flush_pending_turns(self, items: list[_PendingTurn]) -> None:
-        await self._run_owner_turn(_merge_pending_turns(items))
+        pending = _merge_pending_turns(items)
+        await self._run_topic_grouped_turns(pending)
+        # Messages that arrived while we were unreplied / retrying.
+        while True:
+            backlog = await self._debouncer.drain(pending.channel_id)
+            if not backlog:
+                return
+            await self._run_topic_grouped_turns(_merge_pending_turns(backlog))
 
-    async def _run_owner_turn(self, pending: _PendingTurn) -> None:
+    async def _run_topic_grouped_turns(self, pending: _PendingTurn) -> None:
+        from mochi.topic_groups import TopicGroup, split_user_topics
+
+        topic_items = pending.topic_items()
+        groups = await split_user_topics(topic_items)
+        if not groups:
+            group = TopicGroup(
+                texts=(pending.text,),
+                user_msg_ids=(pending.user_msg_id,),
+            )
+            await self._run_owner_turn(pending, topic_group=group)
+            return
+        for index, group in enumerate(groups):
+            group_pending = _PendingTurn(
+                user_id=pending.user_id,
+                channel_id=pending.channel_id,
+                text=group.combined_text or pending.text,
+                image=pending.image if index == len(groups) - 1 else None,
+                update=pending.update,
+                context=pending.context,
+                user_msg_id=group.anchor_msg_id or pending.user_msg_id,
+                source_items=list(zip(group.texts, group.user_msg_ids)),
+            )
+            await self._run_owner_turn(group_pending, topic_group=group)
+            if index + 1 < len(groups):
+                await asyncio.sleep(TG_BUBBLE_DELAY_S)
+
+    async def _run_owner_turn(
+        self,
+        pending: _PendingTurn,
+        *,
+        topic_group=None,
+    ) -> None:
+        from mochi.topic_groups import TopicGroup, choose_reply_anchor
+
         update = pending.update
         context = pending.context
         chat_id = pending.channel_id
         user_msg_id = pending.user_msg_id
+        if topic_group is None:
+            topic_group = TopicGroup(
+                texts=tuple(t for t, _ in pending.topic_items()) or (pending.text,),
+                user_msg_ids=tuple(i for _, i in pending.topic_items())
+                or (pending.user_msg_id,),
+            )
         status = _StatusState()
 
         async def _on_interim(text=None, *, tool_name: str | None = None) -> None:
-            # Refresh typing indicator
+            # Refresh typing indicator only — no interim chat lines to TG
+            # until the final reply is ready (generation must finish first).
             try:
                 await context.bot.send_chat_action(chat_id=chat_id, action="typing")
             except Exception:
                 pass
 
             if text:
-                try:
-                    await context.bot.send_message(chat_id=chat_id, text=text)
-                except Exception as e:
-                    log.debug("Interim chat line failed (ignored): %s", e)
+                # Hold character lines until the final deliver path.
+                log.debug("Suppressing interim chat line until final deliver")
                 return
 
-            # Reaction: set 👨‍💻 on first tool call (last user message in a batch)
             if TG_STATUS_REACTIONS_ENABLED and tool_name is not None:
                 if status.reaction_state != "working":
                     status.reaction_state = "working"
                     await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F468\u200D\U0001F4BB")
 
-            # send_photo / send_voice talk in character; drop the robotic status bubble.
             if tool_name in {"send_photo", "send_voice"}:
                 if status.status_msg_id:
                     try:
@@ -566,7 +658,6 @@ class TelegramTransport(Transport):
                     status.last_label = ""
                 return
 
-            # Status message
             if not TG_STATUS_MESSAGE_ENABLED or tool_name is None:
                 return
 
@@ -580,7 +671,11 @@ class TelegramTransport(Transport):
 
             try:
                 if status.status_msg_id is None:
-                    sent = await update.message.reply_text(label)
+                    # Plain status — reply anchor is chosen only after the final text.
+                    sent = await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=label,
+                    )
                     status.status_msg_id = sent.message_id
                     status.last_edit_time = now
                     status.last_label = label
@@ -611,17 +706,99 @@ class TelegramTransport(Transport):
         )
         bedtime_claimed = False
 
+        async def _deliver_final(result, reply_to: int | None) -> bool:
+            """Send final text; only the first bubble may carry reply_to."""
+            if status.status_msg_id and result.text and reply_to is None:
+                # Edit plain status into the first bubble (no reply needed).
+                try:
+                    bubbles = _split_bubbles(
+                        result.text, TG_BUBBLE_MAX,
+                        TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS,
+                    )
+                    first = bubbles[0]
+
+                    async def _edit_first(chunk=first[:4096]):
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id,
+                            message_id=status.status_msg_id,
+                            text=chunk,
+                        )
+
+                    if not await call_telegram_api(_edit_first, label="edit_status"):
+                        raise RuntimeError("edit status failed")
+                    for start in range(4096, len(first), 4096):
+                        chunk = first[start:start + 4096]
+
+                        async def _send_chunk(chunk=chunk):
+                            await context.bot.send_message(
+                                chat_id=chat_id, text=chunk,
+                            )
+
+                        if not await call_telegram_api(
+                            _send_chunk, label="send_overflow",
+                        ):
+                            raise RuntimeError("overflow send failed")
+                    for bubble in bubbles[1:]:
+                        async def _typing():
+                            await context.bot.send_chat_action(
+                                chat_id=chat_id, action="typing",
+                            )
+                        await call_telegram_api(_typing, label="typing")
+                        await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                        for start in range(0, len(bubble), 4096):
+                            chunk = bubble[start:start + 4096]
+
+                            async def _send_bubble(chunk=chunk):
+                                await context.bot.send_message(
+                                    chat_id=chat_id, text=chunk,
+                                )
+
+                            if not await call_telegram_api(
+                                _send_bubble, label="send_bubble",
+                            ):
+                                raise RuntimeError("bubble send failed")
+                    delivered = True
+                    result.confirm_delivered()
+                    for file_id in result.stickers:
+                        sticker_delivered = await self.send_sticker(chat_id, file_id)
+                        delivered = sticker_delivered and delivered
+                        import mochi.skills as skill_registry
+                        sticker_skill = skill_registry.get_skill("sticker")
+                        if sticker_delivered and sticker_skill:
+                            sticker_skill.record_last_sent(chat_id, file_id)
+                    for path in getattr(result, "images", None) or []:
+                        delivered = (
+                            await self.send_photo_file(chat_id, path) and delivered
+                        )
+                    for path in getattr(result, "voices", None) or []:
+                        delivered = (
+                            await self.send_voice_file(chat_id, path) and delivered
+                        )
+                    return delivered
+                except Exception:
+                    pass
+            # Need a reply_to, or edit failed: drop status and send fresh.
+            if status.status_msg_id:
+                try:
+                    await context.bot.delete_message(
+                        chat_id=chat_id, message_id=status.status_msg_id,
+                    )
+                except Exception:
+                    pass
+                status.status_msg_id = None
+            return await self.send_chat_result(
+                chat_id, result, reply_to_message_id=reply_to,
+            )
+
         async def _process_main_turn() -> None:
             nonlocal bedtime_claimed
             result = None
             try:
                 result = await _on_message_callback(msg)
             finally:
-                # Finalize status UX: set 👍
                 if TG_STATUS_REACTIONS_ENABLED and status.reaction_state not in ("", "done"):
                     status.reaction_state = "done"
                     await _set_reaction(context.bot, chat_id, user_msg_id, "\U0001F44D")
-                # Clean up orphan status message on error
                 if result is None and status.status_msg_id:
                     try:
                         await context.bot.delete_message(
@@ -669,66 +846,10 @@ class TelegramTransport(Transport):
                                 pass
                             status.status_msg_id = None
                         return
-                delivered = False
-                if status.status_msg_id and result.text:
-                    # Edit status message into final reply, with bubble splitting
-                    try:
-                        bubbles = _split_bubbles(
-                            result.text, TG_BUBBLE_MAX,
-                            TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS,
-                        )
-                        # First bubble → edit status message in-place
-                        first = bubbles[0]
-                        for start in range(0, len(first), 4096):
-                            if start == 0:
-                                await context.bot.edit_message_text(
-                                    chat_id=chat_id,
-                                    message_id=status.status_msg_id,
-                                    text=first[:4096],
-                                )
-                            else:
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=first[start:start + 4096],
-                                )
-                        # Remaining bubbles → send with typing delay
-                        for bubble in bubbles[1:]:
-                            await context.bot.send_chat_action(
-                                chat_id=chat_id, action="typing",
-                            )
-                            await asyncio.sleep(TG_BUBBLE_DELAY_S)
-                            for start in range(0, len(bubble), 4096):
-                                await context.bot.send_message(
-                                    chat_id=chat_id,
-                                    text=bubble[start:start + 4096],
-                                )
-                        # Stickers
-                        delivered = True
-                        result.confirm_delivered()
-                        for file_id in result.stickers:
-                            sticker_delivered = await self.send_sticker(
-                                chat_id, file_id,
-                            )
-                            delivered = sticker_delivered and delivered
-                            import mochi.skills as skill_registry
-                            sticker_skill = skill_registry.get_skill("sticker")
-                            if sticker_delivered and sticker_skill:
-                                sticker_skill.record_last_sent(chat_id, file_id)
-                        for path in getattr(result, "images", None) or []:
-                            photo_delivered = await self.send_photo_file(
-                                chat_id, path,
-                            )
-                            delivered = photo_delivered and delivered
-                        for path in getattr(result, "voices", None) or []:
-                            voice_delivered = await self.send_voice_file(
-                                chat_id, path,
-                            )
-                            delivered = voice_delivered and delivered
-                    except Exception:
-                        # Fallback: send normally if edit fails
-                        delivered = await self.send_chat_result(chat_id, result)
-                else:
-                    delivered = await self.send_chat_result(chat_id, result)
+                reply_to = None
+                if result.text or result.stickers or getattr(result, "images", None) or getattr(result, "voices", None):
+                    reply_to = await choose_reply_anchor(topic_group, result.text or "")
+                delivered = await _deliver_final(result, reply_to)
                 if delivered:
                     result.confirm_delivered()
 

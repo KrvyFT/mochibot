@@ -100,12 +100,12 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # 08:00–00:30 is the default Free Time window (16.5 hours). Adjacent slots
-# stay at least this far apart; the hard ceiling is how many such points
-# fit in the configured window (66 for the default).
-FREE_TIME_MIN_GAP_MINUTES = 15
+# stay at least this far apart; target ~2–3 Free Times per hour (gap 20m).
+FREE_TIME_MIN_GAP_MINUTES = 20
 FREE_TIME_WINDOW_MINUTES = 16 * 60 + 30
 FREE_TIME_DAILY_MAX = FREE_TIME_WINDOW_MINUTES // FREE_TIME_MIN_GAP_MINUTES
-MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", FREE_TIME_DAILY_MAX)
+# Soft daily target (~2.5/hour over 16h) below the hard capacity ceiling.
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", min(40, FREE_TIME_DAILY_MAX))
 FREE_TIME_AWAKE_START = _env("FREE_TIME_AWAKE_START", "08:00")
 FREE_TIME_AWAKE_END = _env("FREE_TIME_AWAKE_END", "00:30")
 # Fraction of daily Free Time slots that come with web_search already loaded
@@ -405,6 +405,12 @@ TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
 TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 10.0)
 TG_MESSAGE_DEBOUNCE_MAX_ITEMS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_ITEMS", 20)
 TG_MESSAGE_DEBOUNCE_MAX_CHARS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_CHARS", 8000)
+# Outbound Bot API: wait_for each attempt, then retry forever after 3 quick tries.
+TG_SEND_TIMEOUT_S = _env_float("TG_SEND_TIMEOUT_S", 20.0)
+TG_SEND_QUICK_RETRIES = max(1, _env_int("TG_SEND_QUICK_RETRIES", 3))
+TG_SEND_MAX_BACKOFF_S = _env_float("TG_SEND_MAX_BACKOFF_S", 60.0)
+# 0 = retry forever (production). Tests may set a positive cap.
+TG_SEND_MAX_ATTEMPTS = max(0, _env_int("TG_SEND_MAX_ATTEMPTS", 0))
 
 # Tool-call status UX (Telegram DM only)
 TG_STATUS_REACTIONS_ENABLED = _env_bool("TG_STATUS_REACTIONS_ENABLED", True)

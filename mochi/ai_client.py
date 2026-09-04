@@ -838,8 +838,61 @@ def _render_autonomous_situation(
     photo_guide = free_time_photo_guidance(runtime_entry.user_id)
     if photo_guide:
         parts.extend(["", photo_guide])
+    intimacy = _free_time_intimacy_guidance(runtime_entry)
+    if intimacy:
+        parts.extend(["", intimacy])
     parts.append("</autonomous_runtime_event>")
     return "\n".join(parts)
+
+
+def _free_time_intimacy_guidance(runtime_entry: MainRuntimeEntry) -> str:
+    """Inject tier-based intimacy / send-shape rules for Free Time."""
+    tier = "Developing"
+    try:
+        from mochi.skills.relationship_health.queries import (
+            DEFAULT_SUBJECT,
+            get_latest_assessment,
+        )
+
+        latest = get_latest_assessment(runtime_entry.user_id, DEFAULT_SUBJECT)
+        if latest and latest.get("tier"):
+            tier = str(latest["tier"])
+    except Exception:
+        log.debug("Free Time intimacy tier lookup failed", exc_info=True)
+
+    if runtime_entry.free_time_direct_search:
+        send_shape = (
+            "这一轮是搜索档：正常发送，短气泡即可，不要刷屏，不要句句亲密。"
+        )
+    else:
+        send_shape = (
+            "这一轮是普通档：正常发送，短、贴，不要刻意刷屏。"
+        )
+
+    by_tier = {
+        "Thriving": (
+            "当前相处偏满分档：可以重度病娇——想绑缎带、好想你、盯着他，"
+            "仍保持天真礼貌外壳。若这一轮自然落到亲密话，允许轻度刷屏："
+            "一次生成里用多条短气泡连发（大约四到六句想你/黏人），"
+            "不要边想边发。不是每格都必须病娇；分享/问事也可以。"
+        ),
+        "Healthy": (
+            "当前相处偏健康：偶尔可以轻轻说「有点想你了」；多数格仍是分享/问事。"
+            "亲密时气泡可以略多，但仍短；不要句句表白。"
+        ),
+        "Developing": (
+            "当前相处仍在发展：以路过、分享、轻轻关心为主；亲密话极少，偏含蓄。"
+            "不要主动说「好想你」。"
+        ),
+        "Strained": (
+            "当前相处偏紧：禁止主动「好想你」类表白；保持距离感的关心或安静分享。"
+        ),
+        "At Risk": (
+            "当前相处偏危：禁止主动亲密表白；话更短，可以安静分享或走开。"
+        ),
+    }
+    body = by_tier.get(tier, by_tier["Developing"])
+    return f"{send_shape}\n{body}"
 
 
 def _render_self_reminder_event(runtime_entry: MainRuntimeEntry) -> str:

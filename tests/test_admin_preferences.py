@@ -7,7 +7,7 @@ from mochi.admin.preferences import normalize_preference_updates
 
 CURRENT = {
     "TIMEZONE_OFFSET_HOURS": 8.0,
-    "MAX_DAILY_FREE_TIME": 66,
+    "MAX_DAILY_FREE_TIME": 49,
     "SLEEP_AFTER_HOUR": 1,
     "WAKE_EARLIEST_HOUR": 6,
     "FREE_TIME_AWAKE_START": "08:00",

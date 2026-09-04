@@ -38,7 +38,18 @@ def test_free_time_situation_requires_first_daily_photo(monkeypatch):
         "mochi.admin.admin_db.is_draw_tier_ready", lambda: True,
     )
     text = _render_autonomous_situation(_entry(direct_search=False))
-    assert "必须调用 send_photo" in text
+    assert "还没发过照片" in text
+    assert "send_photo" in text
+    assert "出图失败" in text
+
+
+def test_free_time_situation_includes_intimacy_guidance(monkeypatch):
+    monkeypatch.setattr(
+        "mochi.ai_client._free_time_intimacy_guidance",
+        lambda entry: "禁止主动「好想你」",
+    )
+    text = _render_autonomous_situation(_entry(direct_search=False))
+    assert "禁止主动「好想你」" in text
 
 
 def test_search_free_time_shares_with_the_owner():

@@ -52,7 +52,7 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             trailing_history=False,
             auto_recall=False,
             recent_operations=False,
-            prompt_sections=False,
+            prompt_sections=True,
             temporal_context=True,
         )
     if entry.kind == "weekly_maintenance":

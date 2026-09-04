@@ -1055,6 +1055,14 @@ if HAS_FASTAPI:
                 item["min"] = 0
                 # Bound matches the currently configured Free Time window.
                 item["max"] = free_time_max
+                from mochi.config import FREE_TIME_MIN_GAP_MINUTES
+                from mochi.heartbeat_runtime import FREE_TIME_SEARCH_DAILY_MIN
+                from mochi.skills.photo.quota import FREE_TIME_MAX, FREE_TIME_MIN
+
+                item["gap_minutes"] = int(FREE_TIME_MIN_GAP_MINUTES)
+                item["search_daily_min"] = int(FREE_TIME_SEARCH_DAILY_MIN)
+                item["photo_daily_min"] = int(FREE_TIME_MIN)
+                item["photo_daily_max"] = int(FREE_TIME_MAX)
             elif key in {"SLEEP_AFTER_HOUR", "WAKE_EARLIEST_HOUR"}:
                 item["kind"] = "hour"
                 item["min"] = 0
@@ -1146,7 +1154,14 @@ if HAS_FASTAPI:
             return {
                 "state": "UNKNOWN",
                 "free_time_thoughts_today": 0,
+                "free_time_delivered_today": 0,
+                "free_time_failed_today": 0,
                 "free_time_thought_limit": None,
+                "free_time_search_today": 0,
+                "free_time_search_min": 2,
+                "free_time_photo_today": 0,
+                "free_time_photo_min": 1,
+                "free_time_photo_max": 3,
             }
 
     # ── Generic .env writer ───────────────────────────────────────────────

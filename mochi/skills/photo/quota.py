@@ -91,8 +91,10 @@ def free_time_photo_guidance(user_id: int, *, day: str | None = None) -> str:
         return "今日 Free Time 照片已满三张，不要再调用 send_photo。"
     if n < FREE_TIME_MIN:
         return (
-            "今日 Free Time 还没发过照片。这一轮必须调用 send_photo，"
-            "发一张自己一个人在外面散步、游玩或吃饭的照片，背景必须是真实世界。"
+            "今日 Free Time 还没发过照片。这一轮尽量调用 send_photo，"
+            "递一张照片给他看：可以是自己在真实世界散步/游玩/吃饭，"
+            "也可以是刚在网上看到的景物或物件画成/拍成的样子。"
+            "字仍然要找他说话。若出图失败，仍用文字把事说完，不要空轮。"
         )
     remaining = FREE_TIME_MAX - n
     return (

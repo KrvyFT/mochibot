@@ -111,6 +111,24 @@ async def test_cancel_all_drops_pending_without_flush():
 
 
 @pytest.mark.asyncio
+async def test_drain_takes_items_buffered_during_flush():
+    debouncer = MessageDebouncer(delay_s=0.05)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def on_flush(items: list[str]) -> None:
+        started.set()
+        await release.wait()
+
+    await debouncer.enqueue(1, "a", text="a", on_flush=on_flush)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await debouncer.enqueue(1, "b", text="b", on_flush=on_flush)
+    drained = await debouncer.drain(1)
+    assert drained == ["b"]
+    release.set()
+    await asyncio.sleep(0.02)
+
+@pytest.mark.asyncio
 async def test_telegram_defers_main_until_quiet_window(monkeypatch):
     import mochi.transport.telegram as tg
     from mochi.ai_client import ChatResult

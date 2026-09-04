@@ -219,17 +219,17 @@ def test_schedules_at_least_configured_count_across_overnight_window():
     assert gaps and min(gaps) >= timedelta(minutes=FREE_TIME_MIN_GAP_MINUTES)
 
 
-def test_window_capacity_is_fifteen_minute_grid():
+def test_window_capacity_is_gap_minute_grid():
     start = datetime(2026, 9, 1, 8, 0, tzinfo=UTC)
     end = datetime(2026, 9, 2, 0, 30, tzinfo=UTC)
     assert max_free_time_slots(start, end) == FREE_TIME_DAILY_MAX
-    assert FREE_TIME_DAILY_MAX == 66
+    assert FREE_TIME_DAILY_MAX == 49
     packed = plan_free_time_slot_times(start, end, 999, random.Random(0))
-    assert len(packed) == 66
+    assert len(packed) == 49
     assert packed[0] >= start
     assert packed[-1] < end
     gaps = [later - earlier for earlier, later in zip(packed, packed[1:])]
-    assert min(gaps) >= timedelta(minutes=15)
+    assert min(gaps) >= timedelta(minutes=FREE_TIME_MIN_GAP_MINUTES)
 
 
 def test_late_start_does_not_compress_into_the_leftover_window():
