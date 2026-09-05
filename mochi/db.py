@@ -17,6 +17,7 @@ from mochi.config import (
     RECALL_VEC_SIM_THRESHOLD, RECALL_BM25_WEIGHT, RECALL_VEC_SIM_WEIGHT,
     RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
     VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
+    CONV_OVERFLOW_MAX_MESSAGES, CONV_OVERFLOW_MAX_TOKENS,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,14 +76,30 @@ def init_db() -> None:
             category   TEXT    NOT NULL DEFAULT '',
             content    TEXT    NOT NULL,
             importance INTEGER NOT NULL DEFAULT 1,
-            source     TEXT    NOT NULL DEFAULT 'extracted',
+            source     TEXT    NOT NULL DEFAULT '',
             processed  INTEGER NOT NULL DEFAULT 0,
             evidence_message_ids TEXT NOT NULL DEFAULT '[]',
+            tags       TEXT    NOT NULL DEFAULT '[]',
             created_at TEXT    NOT NULL,
             updated_at TEXT    NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_memory_items_user
             ON memory_items(user_id);
+
+        -- Same-day short-lived memories; cleared on Nightly rollover.
+        CREATE TABLE IF NOT EXISTS temp_memory_items (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            content    TEXT    NOT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            tags       TEXT    NOT NULL DEFAULT '[]',
+            evidence_message_ids TEXT NOT NULL DEFAULT '[]',
+            day        TEXT    NOT NULL,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_temp_memory_items_user_day
+            ON temp_memory_items(user_id, day);
 
         -- Durable cursor for continuous Lite memory extraction.
         CREATE TABLE IF NOT EXISTS memory_extraction_state (
@@ -318,6 +335,41 @@ _FTS_AVAILABLE = False
 _VEC_AVAILABLE = False
 
 
+def _row_tags(raw: str | None) -> list[str]:
+    from mochi.memory_contract import decode_memory_tags
+
+    try:
+        return list(decode_memory_tags(raw))
+    except ValueError:
+        return []
+
+
+def _backfill_memory_item_tags(conn: sqlite3.Connection) -> None:
+    """Fill empty tags on existing Memory Items with heuristic labels."""
+    from mochi.memory_contract import encode_memory_tags, infer_memory_tags
+
+    rows = conn.execute(
+        "SELECT id, content, tags FROM memory_items"
+    ).fetchall()
+    updated = 0
+    for row in rows:
+        raw = row["tags"] if "tags" in row.keys() else "[]"
+        if raw and raw not in ("[]", ""):
+            try:
+                if _row_tags(raw):
+                    continue
+            except Exception:
+                pass
+        tags_json = encode_memory_tags(infer_memory_tags(row["content"]))
+        conn.execute(
+            "UPDATE memory_items SET tags = ? WHERE id = ?",
+            (tags_json, row["id"]),
+        )
+        updated += 1
+    if updated:
+        logger.info("Backfilled tags on %d memory item(s)", updated)
+
+
 def _run_migrations(conn: sqlite3.Connection) -> None:
     """Safe column additions for framework-level tables.
 
@@ -365,9 +417,33 @@ def _run_migrations(conn: sqlite3.Connection) -> None:
         "TEXT NOT NULL DEFAULT '[]'",
     )
     _add_col(
+        "memory_items", "tags",
+        "TEXT NOT NULL DEFAULT '[]'",
+    )
+    _add_col(
         "memory_trash", "evidence_message_ids",
         "TEXT NOT NULL DEFAULT '[]'",
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS temp_memory_items (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            content    TEXT    NOT NULL,
+            importance INTEGER NOT NULL DEFAULT 1,
+            tags       TEXT    NOT NULL DEFAULT '[]',
+            evidence_message_ids TEXT NOT NULL DEFAULT '[]',
+            day        TEXT    NOT NULL,
+            created_at TEXT    NOT NULL,
+            updated_at TEXT    NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_temp_memory_items_user_day "
+        "ON temp_memory_items(user_id, day)"
+    )
+    _backfill_memory_item_tags(conn)
     had_kg_provenance = _has_col("kg_triples", "source_memory_id")
     _add_col("kg_triples", "source_memory_id", "INTEGER DEFAULT NULL")
     conn.execute(
@@ -1362,6 +1438,30 @@ def get_memory_extraction_batch(
         conn.close()
 
 
+def get_memory_extraction_pending_turns(
+    user_id: int, *, limit: int | None = None,
+) -> list[dict]:
+    """Return pending complete turns after the extraction cursor (newest-last)."""
+    conn = _connect()
+    try:
+        state = _ensure_memory_extraction_state(conn, user_id)
+        turns = [
+            turn for turn in _pair_conversation_turns(
+                _eligible_conversation_messages(conn, user_id)
+            )
+            if (
+                turn["through_message_id"]
+                > state["last_processed_message_id"]
+            )
+        ]
+        conn.commit()
+        if limit is not None:
+            turns = turns[:max(0, int(limit))]
+        return turns
+    finally:
+        conn.close()
+
+
 def get_memory_extraction_status(
     user_id: int, batch_turns: int = 10,
 ) -> dict:
@@ -1645,6 +1745,31 @@ def get_conversation_context(
                 flattened.extend((turn["user"], turn["assistant"]))
             return flattened
 
+        def _cap_overflow(messages: list[dict]) -> list[dict]:
+            """Keep the newest overflow window under message/token budgets."""
+            max_messages = int(CONV_OVERFLOW_MAX_MESSAGES or 0)
+            max_tokens = int(CONV_OVERFLOW_MAX_TOKENS or 0)
+            if not messages or (max_messages <= 0 and max_tokens <= 0):
+                return messages
+            from mochi.token_estimator import estimate_tokens
+
+            selected: list[dict] = []
+            used_tokens = 0
+            for message in reversed(messages):
+                if max_messages > 0 and len(selected) >= max_messages:
+                    break
+                content = str(message.get("content") or "")
+                cost = estimate_tokens(content) if content else 0
+                if (
+                    max_tokens > 0
+                    and selected
+                    and used_tokens + cost > max_tokens
+                ):
+                    break
+                selected.append(message)
+                used_tokens += cost
+            return list(reversed(selected))
+
         recent = [
             message
             for _, item_messages, _ in recent_timeline
@@ -1654,7 +1779,7 @@ def get_conversation_context(
         return {
             "summary": summary,
             "through_message_id": through_message_id,
-            "overflow": _flatten(overflow),
+            "overflow": _cap_overflow(_flatten(overflow)),
             "recent": recent,
             "trailing": trailing,
         }
@@ -1795,26 +1920,34 @@ def insert_memory_item(
     content: str,
     importance: int,
     *,
-    source: str,
+    tags: list[str] | tuple[str, ...] | None = None,
+    source: str = "",
     embedding: bytes | None = None,
     evidence_message_ids: list[int] | tuple[int, ...] | None = None,
     conn: sqlite3.Connection | None = None,
 ) -> int:
     """Insert one Memory Item without rewriting any existing item."""
-    from mochi.memory_contract import encode_evidence_message_ids
+    from mochi.memory_contract import (
+        encode_evidence_message_ids,
+        encode_memory_tags,
+        infer_memory_tags,
+    )
 
     own_conn = conn is None
     if own_conn:
         conn = _connect()
     now = datetime.now(TZ).isoformat()
     evidence_json = encode_evidence_message_ids(evidence_message_ids)
+    tag_values = tags if tags else infer_memory_tags(content)
+    tags_json = encode_memory_tags(tag_values)
     cursor = conn.execute(
         "INSERT INTO memory_items "
         "(user_id, category, content, importance, source, created_at, updated_at, "
-        "embedding, evidence_message_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "embedding, evidence_message_ids, tags) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            user_id, "", content, importance, source, now, now,
-            embedding, evidence_json,
+            user_id, "", content, importance, source or "", now, now,
+            embedding, evidence_json, tags_json,
         ),
     )
     item_id = cursor.lastrowid
@@ -1832,9 +1965,15 @@ def commit_memory_extraction_batch(
     through_message_id: int,
     batch_user_message_ids: list[int],
     memories: list[dict],
-) -> list[int]:
-    """Insert validated items and advance the extraction cursor together."""
+    temp_memories: list[dict] | None = None,
+    day: str | None = None,
+) -> dict:
+    """Insert validated core/temp items and advance the extraction cursor."""
     now = datetime.now(TZ).isoformat()
+    from mochi.config import logical_today
+
+    day_key = day or logical_today()
+    temp_memories = temp_memories or []
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -1890,7 +2029,7 @@ def commit_memory_extraction_batch(
         allowed_evidence = {int(row["id"]) for row in user_rows}
         existing_rows = [
             dict(row) for row in conn.execute(
-                "SELECT id, content, source FROM memory_items "
+                "SELECT id, content FROM memory_items "
                 "WHERE user_id = ? ORDER BY importance DESC, updated_at DESC",
                 (user_id,),
             ).fetchall()
@@ -1900,6 +2039,15 @@ def commit_memory_extraction_batch(
         existing_normalized = {
             normalize_memory_exact(row["content"])
             for row in existing_rows
+            if normalize_memory_exact(row["content"])
+        }
+        existing_temp = {
+            normalize_memory_exact(row["content"])
+            for row in conn.execute(
+                "SELECT content FROM temp_memory_items "
+                "WHERE user_id = ? AND day = ?",
+                (user_id, day_key),
+            ).fetchall()
             if normalize_memory_exact(row["content"])
         }
 
@@ -1926,7 +2074,8 @@ def commit_memory_extraction_batch(
                 user_id,
                 content=memory["content"],
                 importance=memory["importance"],
-                source="lite_extracted",
+                tags=memory.get("tags"),
+                source="",
                 embedding=memory.get("embedding"),
                 evidence_message_ids=evidence,
                 conn=conn,
@@ -1935,6 +2084,38 @@ def commit_memory_extraction_batch(
             if normalized:
                 existing_normalized.add(normalized)
 
+        temp_ids: list[int] = []
+        for memory in temp_memories:
+            evidence = memory.get("evidence_message_ids")
+            if (
+                not isinstance(evidence, list)
+                or not evidence
+                or any(
+                    isinstance(message_id, bool)
+                    or not isinstance(message_id, int)
+                    or message_id not in allowed_evidence
+                    for message_id in evidence
+                )
+            ):
+                raise ValueError(
+                    "temp memory evidence must reference same-user batch user messages"
+                )
+            normalized = normalize_memory_exact(memory["content"])
+            if normalized and normalized in existing_temp:
+                continue
+            temp_id = insert_temp_memory_item(
+                user_id,
+                content=memory["content"],
+                importance=memory["importance"],
+                tags=memory.get("tags"),
+                evidence_message_ids=evidence,
+                day=day_key,
+                conn=conn,
+            )
+            temp_ids.append(temp_id)
+            if normalized:
+                existing_temp.add(normalized)
+
         conn.execute(
             "UPDATE memory_extraction_state SET "
             "last_processed_message_id = ?, last_success_at = ?, "
@@ -1942,7 +2123,7 @@ def commit_memory_extraction_batch(
             (through_message_id, now, now, user_id),
         )
         conn.commit()
-        return inserted_ids
+        return {"core_ids": inserted_ids, "temp_ids": temp_ids}
     except Exception:
         conn.rollback()
         raise
@@ -1950,10 +2131,114 @@ def commit_memory_extraction_batch(
         conn.close()
 
 
+def insert_temp_memory_item(
+    user_id: int,
+    content: str,
+    importance: int,
+    *,
+    tags: list[str] | tuple[str, ...] | None = None,
+    evidence_message_ids: list[int] | tuple[int, ...] | None = None,
+    day: str | None = None,
+    conn: sqlite3.Connection | None = None,
+) -> int:
+    """Insert one same-day temporary memory item."""
+    from mochi.config import logical_today
+    from mochi.memory_contract import (
+        encode_evidence_message_ids,
+        encode_memory_tags,
+        infer_memory_tags,
+    )
+
+    own_conn = conn is None
+    if own_conn:
+        conn = _connect()
+    now = datetime.now(TZ).isoformat()
+    day_key = day or logical_today()
+    evidence_json = encode_evidence_message_ids(evidence_message_ids)
+    tag_values = tags if tags else infer_memory_tags(content)
+    tags_json = encode_memory_tags(tag_values)
+    cursor = conn.execute(
+        "INSERT INTO temp_memory_items "
+        "(user_id, content, importance, tags, evidence_message_ids, day, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            user_id, content, importance, tags_json, evidence_json,
+            day_key, now, now,
+        ),
+    )
+    item_id = cursor.lastrowid
+    if own_conn:
+        conn.commit()
+        conn.close()
+    return item_id
+
+
+def list_temp_memories(
+    user_id: int,
+    *,
+    day: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """List temporary memories for one logical day (default today)."""
+    from mochi.config import logical_today
+
+    day_key = day or logical_today()
+    conn = _connect()
+    rows = conn.execute(
+        "SELECT id, content, importance, tags, day, created_at, updated_at "
+        "FROM temp_memory_items WHERE user_id = ? AND day = ? "
+        "ORDER BY updated_at DESC LIMIT ?",
+        (user_id, day_key, max(1, min(int(limit), 200))),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            **dict(row),
+            "tags": _row_tags(row["tags"]),
+        }
+        for row in rows
+    ]
+
+
+def delete_temp_memory_items(ids: list[int]) -> int:
+    if not ids:
+        return 0
+    conn = _connect()
+    placeholders = ",".join("?" * len(ids))
+    cursor = conn.execute(
+        f"DELETE FROM temp_memory_items WHERE id IN ({placeholders})",
+        ids,
+    )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
+def clear_temp_memories_before(day: str, user_id: int | None = None) -> int:
+    """Delete temporary memories strictly older than ``day`` (YYYY-MM-DD)."""
+    conn = _connect()
+    if user_id is None:
+        cursor = conn.execute(
+            "DELETE FROM temp_memory_items WHERE day < ?",
+            (day,),
+        )
+    else:
+        cursor = conn.execute(
+            "DELETE FROM temp_memory_items WHERE user_id = ? AND day < ?",
+            (user_id, day),
+        )
+    count = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return count
+
+
 def save_memory_item(user_id: int, content: str,
-                     importance: int = 1, source: str = "extracted",
+                     importance: int = 1, source: str = "",
                      embedding: bytes | None = None,
-                     evidence_message_ids: list[int] | tuple[int, ...] | None = None) -> int:
+                     evidence_message_ids: list[int] | tuple[int, ...] | None = None,
+                     tags: list[str] | tuple[str, ...] | None = None) -> int:
     """Save a memory item with on-insert smart dedup.
 
     Dedup priority:
@@ -1965,12 +2250,16 @@ def save_memory_item(user_id: int, content: str,
     from mochi.memory_contract import (
         decode_evidence_message_ids,
         encode_evidence_message_ids,
+        encode_memory_tags,
+        infer_memory_tags,
         merge_evidence_message_ids,
     )
 
     now = datetime.now(TZ).isoformat()
     conn = _connect()
     new_evidence = tuple(evidence_message_ids or ())
+    tag_values = tags if tags else infer_memory_tags(content)
+    tags_json = encode_memory_tags(tag_values)
     norm_content = _normalize_text(content)
     candidates = conn.execute(
         "SELECT id, content, access_count, embedding, evidence_message_ids "
@@ -2010,8 +2299,9 @@ def save_memory_item(user_id: int, content: str,
         # Skip if content is identical
         if existing["content"] == content:
             conn.execute(
-                "UPDATE memory_items SET evidence_message_ids = ? WHERE id = ?",
-                (evidence_json, existing["id"]),
+                "UPDATE memory_items SET evidence_message_ids = ?, tags = ? "
+                "WHERE id = ?",
+                (evidence_json, tags_json, existing["id"]),
             )
             conn.commit()
             conn.close()
@@ -2028,22 +2318,28 @@ def save_memory_item(user_id: int, content: str,
             if len(content) >= len(existing["content"])
             else existing["embedding"]
         )
+        keep_tags = tags_json if keep_content == content else (
+            encode_memory_tags(infer_memory_tags(keep_content))
+        )
 
         if keep_emb is not None:
             conn.execute(
                 "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
                 "updated_at = ?, embedding = ?, "
-                "evidence_message_ids = ? WHERE id = ?",
+                "evidence_message_ids = ?, tags = ? WHERE id = ?",
                 (
                     keep_content, importance, now, keep_emb,
-                    evidence_json, existing["id"],
+                    evidence_json, keep_tags, existing["id"],
                 ),
             )
         else:
             conn.execute(
                 "UPDATE memory_items SET content = ?, importance = MAX(importance, ?), "
-                "updated_at = ?, evidence_message_ids = ? WHERE id = ?",
-                (keep_content, importance, now, evidence_json, existing["id"]),
+                "updated_at = ?, evidence_message_ids = ?, tags = ? WHERE id = ?",
+                (
+                    keep_content, importance, now, evidence_json,
+                    keep_tags, existing["id"],
+                ),
             )
         item_id = existing["id"]
         if keep_content != existing["content"]:
@@ -2054,11 +2350,11 @@ def save_memory_item(user_id: int, content: str,
         evidence_json = encode_evidence_message_ids(new_evidence)
         cur = conn.execute(
             "INSERT INTO memory_items (user_id, category, content, importance, "
-            "source, created_at, updated_at, embedding, evidence_message_ids) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "source, created_at, updated_at, embedding, evidence_message_ids, tags) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                user_id, "", content, importance, source, now, now,
-                embedding, evidence_json,
+                user_id, "", content, importance, source or "", now, now,
+                embedding, evidence_json, tags_json,
             ),
         )
         item_id = cur.lastrowid
@@ -2269,7 +2565,7 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
     fetch_params: list = id_list + [user_id]
 
     rows = conn.execute(
-        "SELECT id, content, importance, access_count, source, "
+        "SELECT id, content, importance, access_count, source, tags, "
         "last_accessed, embedding, evidence_message_ids, created_at, updated_at "
         f"FROM memory_items WHERE {' AND '.join(fetch_conditions)}",
         fetch_params,
@@ -2331,7 +2627,7 @@ def recall_memory(user_id: int, query: str = "", limit: int = 20,
             "id": rid,
             "content": r["content"],
             "importance": r["importance"],
-            "source": r["source"],
+            "tags": _row_tags(r["tags"] if "tags" in r.keys() else "[]"),
             "created_at": r["created_at"],
             "updated_at": r["updated_at"],
             **evidence_dates.get(rid, {
@@ -2598,14 +2894,29 @@ def list_all_memories(
     user_id: int,
     limit: int = 50,
     offset: int = 0,
+    tag: str | None = None,
 ) -> list[dict]:
     """List recent Memory Items with their user-evidence dates."""
+    from mochi.memory_contract import normalize_memory_tag
+
     conn = _connect()
+    conditions = ["user_id = ?"]
+    params: list = [user_id]
+    tag_key = None
+    if tag:
+        try:
+            tag_key = normalize_memory_tag(tag)
+        except ValueError:
+            conn.close()
+            return []
+        conditions.append("tags LIKE ?")
+        params.append(f'%"{tag_key}"%')
+    where = " AND ".join(conditions)
     rows = conn.execute(
-        "SELECT id, content, importance, source, evidence_message_ids, "
-        "created_at, updated_at FROM memory_items WHERE user_id = ? "
-        "ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-        (user_id, limit, offset),
+        f"SELECT id, content, importance, tags, evidence_message_ids, "
+        f"created_at, updated_at FROM memory_items WHERE {where} "
+        f"ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+        params + [limit, offset],
     ).fetchall()
     evidence_dates = _memory_evidence_dates(conn, user_id, rows)
     conn.close()
@@ -2613,8 +2924,9 @@ def list_all_memories(
         {
             **{
                 key: value for key, value in dict(row).items()
-                if key != "evidence_message_ids"
+                if key not in ("evidence_message_ids", "tags")
             },
+            "tags": _row_tags(row["tags"]),
             **evidence_dates.get(row["id"], {
                 "evidence_start": "",
                 "evidence_end": "",
@@ -2677,15 +2989,19 @@ def restore_memory_from_trash(trash_id: int, user_id: int) -> int | None:
         if not item:
             conn.rollback()
             return None
+        from mochi.memory_contract import encode_memory_tags, infer_memory_tags
+
+        tags_json = encode_memory_tags(infer_memory_tags(item["content"]))
         cursor = conn.execute(
             "INSERT INTO memory_items "
             "(user_id, category, content, importance, access_count, source, "
-            "evidence_message_ids, created_at, updated_at, last_accessed) "
-            "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?)",
+            "evidence_message_ids, tags, created_at, updated_at, last_accessed) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
             (
                 item["user_id"], "", item["content"],
-                item["importance"], item["source"],
-                item["evidence_message_ids"], item["original_created"], now, now,
+                item["importance"], "",
+                item["evidence_message_ids"], tags_json,
+                item["original_created"], now, now,
             ),
         )
         new_id = cursor.lastrowid
@@ -2707,9 +3023,13 @@ def update_memory_item(
     content: str,
     importance: int,
     embedding: bytes | None = None,
+    tags: list[str] | tuple[str, ...] | None = None,
 ) -> bool:
     """Update one item and every derived index in one transaction."""
+    from mochi.memory_contract import encode_memory_tags, infer_memory_tags
+
     now = datetime.now(TZ).isoformat()
+    tags_json = encode_memory_tags(tags if tags else infer_memory_tags(content))
     conn = _connect()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -2723,9 +3043,10 @@ def update_memory_item(
             return False
         cursor = conn.execute(
             "UPDATE memory_items SET content = ?, importance = ?, "
-            "updated_at = ?, embedding = ? WHERE id = ? AND user_id = ?",
+            "updated_at = ?, embedding = ?, tags = ? "
+            "WHERE id = ? AND user_id = ?",
             (
-                content, importance, now, embedding,
+                content, importance, now, embedding, tags_json,
                 item_id, user_id,
             ),
         )

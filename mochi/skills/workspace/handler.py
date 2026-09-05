@@ -3,7 +3,7 @@
 import logging
 from pathlib import Path
 
-from mochi.diary import diary
+from mochi.diary import DiaryConflictError, diary
 from mochi.skills.base import Skill, SkillContext, SkillResult
 
 log = logging.getLogger(__name__)
@@ -37,14 +37,72 @@ class WorkspaceSkill(Skill):
         return SkillResult(output=f"Unknown tool: {tool_name}", success=False)
 
     def _write_diary(self, args: dict) -> SkillResult:
-        entry = (args.get("entry") or "").strip()
-        if not entry:
-            return SkillResult(output="Error: entry is required.", success=False)
-        before = diary.read_raw()
-        output = diary.append(entry, source="chat", section="今日日記")
+        content = args.get("content")
+        if not isinstance(content, str):
+            return SkillResult(
+                output="Error: content is required.",
+                success=False,
+            )
+        day = (args.get("day") or "today").strip().lower()
+        if day not in ("today", "tomorrow"):
+            return SkillResult(
+                output="Error: day must be today or tomorrow.",
+                success=False,
+            )
+        expected = args.get("_expected_content")
+        source_date = args.get("_source_date")
+        target_date = args.get("_target_date")
+        if not isinstance(expected, str):
+            return SkillResult(
+                output="Diary update context is unavailable. Try again next turn.",
+                success=False,
+            )
+        try:
+            if day == "tomorrow":
+                if not isinstance(source_date, str) or not isinstance(target_date, str):
+                    return SkillResult(
+                        output="Tomorrow diary context is unavailable.",
+                        success=False,
+                    )
+                result = diary.replace_tomorrow_exact(
+                    source_date=source_date,
+                    target_date=target_date,
+                    expected_content=expected,
+                    content=content,
+                )
+                label = "Tomorrow diary"
+            else:
+                result = diary.replace_section_exact(
+                    "今日日記",
+                    expected_content=expected,
+                    content=content,
+                    target_date=(
+                        target_date if isinstance(target_date, str) else None
+                    ),
+                )
+                label = "Today's diary"
+        except DiaryConflictError as exc:
+            _source, today, tomorrow = diary.read_write_snapshot()
+            current = tomorrow if day == "tomorrow" else today
+            return SkillResult(
+                output=(
+                    f"Diary update rejected: {exc}\n\n"
+                    f"Current {label.lower()}:\n{current or '(empty)'}"
+                ),
+                success=False,
+            )
+        except ValueError as exc:
+            return SkillResult(output=f"Error: {exc}", success=False)
+
+        receipt = (
+            f"{label} {'updated' if result['changed'] else 'unchanged'} "
+            f"({result['chars']} chars)."
+        )
         return SkillResult(
-            output=output,
-            state_changed=diary.read_raw() != before,
+            output=receipt,
+            summary=receipt,
+            entity_refs=["diary"],
+            state_changed=bool(result["changed"]),
         )
 
     def _read_diary(self, args: dict) -> SkillResult:

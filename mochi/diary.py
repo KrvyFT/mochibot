@@ -868,6 +868,89 @@ def search_diary_entries(
     return results, truncated
 
 
+def _diary_blocks_by_date() -> dict[str, str]:
+    """Collect current + archived diary day blocks without triggering rollover."""
+    blocks_by_date: dict[str, str] = {}
+    if diary.path.exists():
+        raw = diary.path.read_text(encoding="utf-8")
+        for date_str, block in diary._archive_blocks(raw):
+            blocks_by_date[date_str] = block
+
+    archive_dir = diary.path.parent / "diary_archive"
+    if archive_dir.exists():
+        for archive_path in sorted(archive_dir.glob("*.md")):
+            raw = archive_path.read_text(encoding="utf-8")
+            for date_str, block in diary._archive_blocks(raw):
+                blocks_by_date.setdefault(date_str, block)
+    return blocks_by_date
+
+
+def _diary_journal_body(block: str) -> str:
+    try:
+        return diary._section_content(block, "今日日記").strip()
+    except ValueError:
+        return ""
+
+
+def list_diary_dates() -> list[str]:
+    """Dates that have non-empty journal text, newest first."""
+    dates: list[str] = []
+    for date_str, block in _diary_blocks_by_date().items():
+        if _diary_journal_body(block):
+            dates.append(date_str)
+    dates.sort(reverse=True)
+    return dates
+
+
+def list_diary_days(
+    *,
+    page: int = 1,
+    limit: int = 10,
+) -> dict:
+    """Paginate diary days that have journal content (newest first)."""
+    page = max(1, int(page))
+    limit = max(1, min(int(limit), 50))
+    dates = list_diary_dates()
+    total = len(dates)
+    start = (page - 1) * limit
+    page_dates = dates[start:start + limit]
+    blocks = _diary_blocks_by_date()
+    items = []
+    for date_str in page_dates:
+        content = _diary_journal_body(blocks[date_str])
+        items.append({
+            "date": date_str,
+            "content": content,
+            "preview": content[:200] + ("…" if len(content) > 200 else ""),
+            "chars": len(content),
+        })
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "pages": max(1, (total + limit - 1) // limit) if total else 1,
+        "items": items,
+        "dates": dates,
+    }
+
+
+def read_diary_day(date_str: str) -> dict | None:
+    """Return one day's journal body, or None if missing/empty."""
+    date.fromisoformat(date_str)
+    block = _diary_blocks_by_date().get(date_str)
+    if not block:
+        return None
+    content = _diary_journal_body(block)
+    if not content:
+        return None
+    return {
+        "date": date_str,
+        "content": content,
+        "chars": len(content),
+        "raw": block,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Status refresh — rebuild 今日状態 from DB
 # ---------------------------------------------------------------------------

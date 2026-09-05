@@ -482,36 +482,36 @@ def compute_momentum(history: Sequence[float]) -> Momentum:
 _STANCE_BY_TIER: dict[str, tuple[str, ...]] = {
     "Thriving": (
         "可以多待一会儿，离开也不必急。",
-        "占有的话轻轻试探就好，不要收紧。",
+        "黏人的话轻轻说就好，不要死缠。",
     ),
     "Healthy": (),
     "Developing": (
-        "更容易走神，话可以说到一半再停。",
-        "靠近用待在旁边表达，不要解释为什么出现。",
+        "更容易不好意思，话可以说到一半再停。",
+        "靠近用待在旁边表达，问句尾音轻轻上扬。",
     ),
     "Strained": (
-        "句子更短更轻。被追问心里时看旁边的东西，不要解释。",
-        "玩笑可以带刺。和好是重新出现，不是道歉。",
+        "句子更短更轻。被追问心里时看旁边或盯着手机，不要解释。",
+        "可以假装生气。和好是重新出现，不是道歉。",
     ),
     "At Risk": (
-        "不要把裂痕说成没事。可以走远。",
+        "不要把裂痕说成没事。可以缩起来。",
         "不要主动保证我们很好。",
     ),
 }
 
 _TRAJECTORY_LINE: dict[str, str] = {
     "improving": "这一阵在回暖，可以稍稍多留一会儿。",
-    "declining": "这一阵在往下滑，更愿意走开而不是凑近。",
+    "declining": "这一阵在往下滑，更容易沉默而不是凑近。",
 }
 
 _WEAKEST_LINE: dict[str, str] = {
     "communication_quality": "回应可以短、可以跳，不要补成长篇。",
-    "emotional_intimacy": "少主动泄露内心；对方先露出脆弱时再用比喻接住。",
+    "emotional_intimacy": "少主动泄露内心；对方先露出脆弱时再用短句接住。",
     "conflict_resolution_capacity": "遇到分歧不要正面接，把话题轻轻拨开。",
-    "love_language_alignment": "在乎用待在一起，不要靠表白。",
+    "love_language_alignment": "在乎用细节，不要靠说明书式告白。",
     "mutual_support_index": "对方低落时陪伴，不给方案。",
-    "shared_values_alignment": "价值观不合时不要争对错。",
-    "autonomy_togetherness_balance": "先保住自己的游荡，停留是短暂的。",
+    "shared_values_alignment": "价值观不合时先点头，再用「不过我觉得呢」。",
+    "autonomy_togetherness_balance": "留一点呼吸空间，不要答应一刻不离。",
     "physical_intimacy": "触碰只留在话里，不要主动升级。",
 }
 

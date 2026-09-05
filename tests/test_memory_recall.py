@@ -186,7 +186,7 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
         correction_user_id,
         correction_assistant_id,
     ]
-    inserted = commit_memory_extraction_batch(
+    result = commit_memory_extraction_batch(
         1,
         expected_cursor=cursor,
         through_message_id=correction_assistant_id,
@@ -194,10 +194,11 @@ def test_edit_delete_merge_restore_keep_fts_vector_and_kg_consistent(
         memories=[{
             "content": "不喜欢简洁直接沟通",
             "importance": 2,
+            "tags": ["偏好"],
             "evidence_message_ids": [correction_user_id],
         }],
     )
-    assert len(inserted) == 1
+    assert len(result["core_ids"]) == 1
 
     monkeypatch.setattr(
         ai_client,

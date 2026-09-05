@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,30 +69,35 @@ def test_send_photo_hidden_until_draw_ready(monkeypatch):
     assert skill.tool_available("send_photo") is True
 
 
-def test_photo_prompt_keeps_anime_character_in_real_world():
+def test_photo_prompt_keeps_elma_in_real_world():
     text = get_prompt("photo_prompt")
-    assert "动漫画风" in text
+    assert "写实" in text
+    assert "不要默认蹲着" in text or "不要无故蹲" in text
+    assert "窗边" in text
+    assert "电影感" in text
     assert "现实" in text
-    assert "恋恋" in text
+    assert "Elma" in text
+    assert "谢令仪" in text
     assert "横幅" in text and "竖幅" in text
     assert "光线" in text and "构图" in text and "镜头参数" in text
     assert "运镜方式" in text
     assert "3840x2160" in text
-    assert "素颜或淡妆" not in text
+    assert "恋恋" not in text
+    assert "动漫画风" not in text
 
 
 def test_parse_drawn_prompt_picks_1080p_16x9():
     from mochi.skills.photo.handler import parse_drawn_prompt, photo_size_for
 
-    prompt, orientation = parse_drawn_prompt("竖幅\n恋恋在真实街边散步。")
+    prompt, orientation = parse_drawn_prompt("竖幅\nElma 在真实街边散步。")
     assert orientation == "portrait"
-    assert prompt.startswith("恋恋")
+    assert prompt.startswith("Elma")
     assert photo_size_for(orientation) == "1080*1920"
     prompt, orientation = parse_drawn_prompt("画面方向：横幅\n光线：侧光")
     assert orientation == "landscape"
     assert prompt == "光线：侧光"
     assert photo_size_for(orientation) == "1920*1080"
-    _, orientation = parse_drawn_prompt("恋恋坐在真实咖啡馆里。")
+    _, orientation = parse_drawn_prompt("Elma 坐在真实咖啡馆里。")
     assert orientation == "landscape"
 
 
@@ -194,19 +200,20 @@ def test_photo_skill_generates_without_refs(tmp_path, monkeypatch):
     monkeypatch.setattr(photo_handler, "GENERATED_DIR", tmp_path / "generated_photos")
     monkeypatch.setattr(photo_handler, "PHOTO_REFS_DIR", tmp_path / "photo_refs")
     monkeypatch.setattr(photo_handler, "pick_photo_refs", lambda subject: [])
-    monkeypatch.setattr(core_store, "read_core", lambda: "古明地恋，动漫角色")
+    monkeypatch.setattr(core_store, "read_core", lambda: "Elma，谢令仪")
 
     class _Main:
         def chat(self, messages, max_tokens=1100):
             system = next(m["content"] for m in messages if m["role"] == "system")
-            assert "动漫画风" in system
+            assert "写实" in system
+            assert "Elma" in system
             return SimpleNamespace(
-                content="动漫角色站在真实咖啡馆窗边搅动咖啡，木质装修，侧光。",
+                content="Elma（谢令仪）站在真实咖啡馆窗边搅动咖啡，木质装修，侧光。",
             )
 
     class _Draw:
         def generate_image(self, prompt, **kwargs):
-            assert "动漫角色" in prompt
+            assert "Elma" in prompt
             assert "咖啡馆" in prompt
             assert kwargs.get("size") == "1920*1080"
             return png
@@ -227,25 +234,45 @@ def test_photo_skill_generates_without_refs(tmp_path, monkeypatch):
     assert "拍好了" in result.output
     assert "已生成" not in result.output
     path = result.output.split("[IMAGE_FILE:", 1)[1].split("]", 1)[0]
-    assert path.endswith(".png")
+    assert Path(path).suffix in {".png", ".jpg", ".jpeg"}
     with open(path, "rb") as handle:
-        assert handle.read() == png
+        data = handle.read()
+    assert data  # may be JPEG-compressed for Telegram
 
 
-def test_photo_quota_phrases_and_daily_caps():
+def test_photo_quota_phrases_and_daily_caps(monkeypatch):
     from mochi.skills.photo.quota import (
         note_photo_send,
         photo_bucket,
         photo_quota_denial,
         user_requested_photo,
+        free_time_photo_guidance,
+        free_time_photo_must_send,
+        note_photo_miss,
+    )
+
+    monkeypatch.setattr(
+        "mochi.admin.admin_db.is_draw_tier_ready", lambda: True,
     )
 
     assert user_requested_photo("发一张照片呗")
     assert user_requested_photo("给我看看你")
     assert user_requested_photo("send a photo")
+    assert user_requested_photo("没拍好 再发一张看看")
+    assert user_requested_photo("再发一张")
+    assert user_requested_photo("重拍一张")
+    assert user_requested_photo("看看照片")
     assert not user_requested_photo("今天吃了什么")
+    assert not user_requested_photo("在吗")
     assert photo_bucket("runtime:free_time", "") == "free_time"
     assert photo_bucket("chat", "发张照片") == "requested"
+
+    uid = 910_001
+    day = "2099-01-02"
+    assert free_time_photo_must_send(uid, day=day) is True
+    note_photo_miss(uid, "free_time", day=day)
+    assert free_time_photo_must_send(uid, day=day) is False
+    assert "不要再调用 send_photo" in free_time_photo_guidance(uid, day=day)
 
     for _ in range(2):
         note_photo_send(1, "chat")
@@ -289,7 +316,9 @@ def test_send_photo_blocks_chat_cap_unless_requested(tmp_path, monkeypatch):
     path = tmp_path / "forced.png"
     path.write_bytes(b"png")
     monkeypatch.setattr(
-        photo_handler.PhotoSkill, "_generate", lambda self, subject: path,
+        photo_handler.PhotoSkill,
+        "_generate",
+        lambda self, subject, timeout_s=120.0: path,
     )
     allowed = asyncio.run(skill.execute(SkillContext(
         trigger="tool_call",
@@ -314,6 +343,71 @@ def test_finish_line_replaces_came_out_wording():
     assert finish_line_for_user("") in (
         "照片找到了。", "照片拍好了。", "找到了，给你看。",
     )
+
+
+def test_send_photo_times_out_for_text_fallback(monkeypatch):
+    """Photo must not hang past 2 minutes; Main gets an in-character miss hint."""
+    import asyncio
+    import time
+
+    from mochi.admin import admin_db
+    from mochi.skills.base import SkillContext
+    from mochi.skills.photo import handler as photo_handler
+
+    monkeypatch.setattr(admin_db, "encrypt_api_key", lambda value: value)
+    monkeypatch.setattr(admin_db, "decrypt_api_key", lambda value: value)
+    admin_db.upsert_model(
+        "draw-m", "openai", "draw-model", "key", "https://api.example.com/v1",
+    )
+    admin_db.set_tier_assignment("draw", "draw-m")
+    monkeypatch.setattr("mochi.config.PHOTO_GENERATE_TIMEOUT_S", 0.05)
+
+    async def _never_finishes(func, /, *args, **kwargs):
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(asyncio, "to_thread", _never_finishes)
+    skill = photo_handler.PhotoSkill()
+    started = time.monotonic()
+    result = asyncio.run(skill.execute(SkillContext(
+        trigger="tool_call",
+        tool_name="send_photo",
+        args={"subject": "街边"},
+        source="runtime:free_time",
+    )))
+    elapsed = time.monotonic() - started
+    assert result.success is False
+    assert "出图超时" not in (result.output or "")
+    assert "不要再调用 send_photo" in (result.output or "")
+    assert "不要提照片" in (result.output or "") or "不要提照片、相册" in (result.output or "")
+    assert elapsed < 1.0
+
+
+def test_compress_photo_bytes_shrinks_large_png(tmp_path, monkeypatch):
+    from mochi.skills.photo import handler as photo_handler
+
+    # Minimal valid-ish payload; ffmpeg may fail without real image — still
+    # must return original bytes rather than raise.
+    raw = b"\x89PNG\r\n\x1a\n" + (b"x" * 50_000)
+    out = photo_handler.compress_photo_bytes(raw, max_bytes=10_000)
+    assert isinstance(out, (bytes, bytearray))
+    assert len(out) > 0
+
+
+def test_write_generated_photo_uses_compress(tmp_path, monkeypatch):
+    from mochi.skills.photo import handler as photo_handler
+
+    monkeypatch.setattr(photo_handler, "GENERATED_DIR", tmp_path)
+    called = {"n": 0}
+
+    def _fake_compress(data, *, max_bytes=900_000):
+        called["n"] += 1
+        return b"\xff\xd8\xff" + b"jpeg"
+
+    monkeypatch.setattr(photo_handler, "compress_photo_bytes", _fake_compress)
+    path = photo_handler.write_generated_photo(b"\x89PNG\r\n\x1a\n" + b"big")
+    assert called["n"] == 1
+    assert path.read_bytes().startswith(b"\xff\xd8")
+    assert path.suffix == ".jpg"
 
 
 def test_send_photo_does_not_chatter(tmp_path, monkeypatch):

@@ -23,12 +23,15 @@ UTC = timezone.utc
 # Default window; live bounds come from system config and may wrap midnight.
 FREE_TIME_AWAKE_START = time(8, 0)
 FREE_TIME_AWAKE_END = time(0, 30)
-FREE_TIME_MISSED_GRACE = timedelta(seconds=45)
+FREE_TIME_MISSED_GRACE = timedelta(seconds=180)
+FREE_TIME_SEARCH_DAILY_MIN = 2
+# Prepare may take several LLM timeouts; keep the lease alive across retries.
+FREE_TIME_PREPARE_LEASE_SECONDS = 600
+FREE_TIME_PREPARE_MAX_ATTEMPTS = 3
 # Opportunities are spread over even buckets and jittered inside them. The
 # margin keeps consecutive slots at least 2*margin*bucket apart, so a 30s
 # heartbeat tick can still claim each one within FREE_TIME_MISSED_GRACE.
 FREE_TIME_JITTER_MARGIN = 0.2
-_LEASE_SECONDS = 300
 _UNAVAILABLE_NEG = re.compile(r"(睡不着|失眠|还不睡|没睡|不忙|没在忙|不困)")
 _SLEEP_CUE = re.compile(
     r"(我睡了|去睡了|睡觉了|先睡了|要睡了|去睡觉|先去睡|睡啦|晚安)",
@@ -441,8 +444,15 @@ def expire_unusable_free_time_runs(
     now: datetime,
     active_chat: bool,
     awake: bool,
+    preparing: bool = False,
 ) -> int:
-    """Expire missed, sleeping, or chat-conflicting opportunities."""
+    """Expire missed, sleeping, or chat-conflicting opportunities.
+
+    While a Free Time prepare/retry is in flight, skip expiring other pending
+    slots so a long LLM call cannot burn the rest of the day's plan.
+    """
+    if preparing:
+        return 0
     now_iso = _iso(now)
     cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
     conn = _connect()
@@ -475,6 +485,105 @@ def expire_unusable_free_time_runs(
         conn.close()
 
 
+def count_delivered_search_shares(
+    user_id: int, *, day: str | None = None,
+) -> int:
+    """Count Free Time slots that delivered a web-search share today."""
+    from mochi.config import logical_today
+
+    day = day or logical_today()
+    prefix = f"free_time:{day}:"
+    conn = _connect()
+    try:
+        rows = conn.execute(
+            "SELECT run_key, facts_json, result_json FROM heartbeat_runs "
+            "WHERE entry_kind = 'free_time' AND user_id = ? "
+            "AND status = 'delivered' AND outcome = 'delivered' "
+            "AND run_key LIKE ?",
+            (user_id, f"{prefix}%"),
+        ).fetchall()
+    finally:
+        conn.close()
+    count = 0
+    for row in rows:
+        try:
+            facts = json.loads(row["facts_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            facts = {}
+        if isinstance(facts, dict) and facts.get("direct_search"):
+            count += 1
+            continue
+        try:
+            result = json.loads(row["result_json"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            result = {}
+        audit = result.get("tool_audit") if isinstance(result, dict) else None
+        if not isinstance(audit, list):
+            continue
+        names = {
+            item.get("name")
+            for item in audit
+            if isinstance(item, dict)
+        }
+        if names & {"web_search", "read_web_page"}:
+            count += 1
+    return count
+
+
+def free_time_search_must_share(user_id: int, *, day: str | None = None) -> bool:
+    return count_delivered_search_shares(user_id, day=day) < FREE_TIME_SEARCH_DAILY_MIN
+
+
+def renew_claim_lease(
+    claimed: dict, *, lease_seconds: int = FREE_TIME_PREPARE_LEASE_SECONDS,
+) -> bool:
+    """Extend the claim lease so prepare retries do not look abandoned."""
+    now = _utc_now()
+    lease_until = _iso(now + timedelta(seconds=lease_seconds))
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            "UPDATE heartbeat_runs SET lease_until = ? "
+            "WHERE run_key = ? AND claim_token = ? "
+            "AND status IN ('running', 'ready')",
+            (lease_until, claimed["run_key"], claimed["claim_token"]),
+        )
+        conn.commit()
+        if cursor.rowcount == 1:
+            claimed["lease_until"] = lease_until
+            return True
+        return False
+    finally:
+        conn.close()
+
+
+def force_direct_search_on_claim(claimed: dict) -> None:
+    """Ensure today's remaining slots prioritize search until the daily min is met."""
+    if not free_time_search_must_share(int(claimed["user_id"])):
+        return
+    try:
+        payload = json.loads(claimed.get("facts_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    if payload.get("direct_search"):
+        return
+    payload["direct_search"] = True
+    encoded = json.dumps(payload, separators=(",", ":"))
+    conn = _connect()
+    try:
+        conn.execute(
+            "UPDATE heartbeat_runs SET facts_json = ? "
+            "WHERE run_key = ? AND claim_token = ?",
+            (encoded, claimed["run_key"], claimed["claim_token"]),
+        )
+        conn.commit()
+        claimed["facts_json"] = encoded
+    finally:
+        conn.close()
+
+
 def get_schedulable_runs(*, now: datetime) -> list[dict]:
     now_iso = _iso(now)
     cutoff = _iso(now.astimezone(UTC) - FREE_TIME_MISSED_GRACE)
@@ -493,7 +602,10 @@ def get_schedulable_runs(*, now: datetime) -> list[dict]:
 
 
 def claim_run(
-    run_key: str, *, now: datetime, lease_seconds: int = _LEASE_SECONDS,
+    run_key: str,
+    *,
+    now: datetime,
+    lease_seconds: int = FREE_TIME_PREPARE_LEASE_SECONDS,
 ) -> dict | None:
     now = now.astimezone(UTC)
     now_iso = _iso(now)

@@ -512,6 +512,7 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
         prompt_extend: bool = True,
         enable_thinking: bool = True,
         size: str | None = None,
+        timeout_s: float | None = None,
     ) -> bytes:
         if is_qwen_image_model(self._model):
             return generate_qwen_image(
@@ -523,8 +524,12 @@ class OpenAIProvider(_OpenAICompatChat, LLMProvider):
                 prompt_extend=prompt_extend,
                 enable_thinking=enable_thinking,
                 size=size,
+                timeout_s=timeout_s,
             )
-        client = self._client.with_options(timeout=_IMAGE_HTTP_TIMEOUT)
+        image_timeout = _IMAGE_HTTP_TIMEOUT
+        if timeout_s is not None and timeout_s > 0:
+            image_timeout = float(timeout_s)
+        client = self._client.with_options(timeout=image_timeout)
         return generate_image_via_chat(
             client, self._model, prompt, reference_images=reference_images or [],
         )

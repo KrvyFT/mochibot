@@ -24,6 +24,7 @@ class MemorySkill(Skill):
 
         if tool == "recall_memory":
             query = args.get("query", "")
+            tag = args.get("tag") or None
             # Generate embedding for hybrid vector search
             query_embedding = None
             if query:
@@ -40,10 +41,22 @@ class MemorySkill(Skill):
             except Exception as e:
                 log.error("recall_memory failed: %s", e, exc_info=True)
                 return SkillResult(output=f"Failed to recall memories: {e}", success=False)
+            if tag:
+                from mochi.memory_contract import normalize_memory_tag
+                try:
+                    tag_key = normalize_memory_tag(tag)
+                except ValueError as exc:
+                    return SkillResult(output=str(exc), success=False)
+                items = [
+                    m for m in items
+                    if tag_key in (m.get("tags") or [])
+                ]
             if not items:
                 return SkillResult(output="No matching memories found.")
+            from mochi.memory_contract import format_memory_tags_zh
             lines = [
-                f"- #{m['id']} ★{m['importance']} | {m['content']}"
+                f"- #{m['id']} ★{m['importance']} "
+                f"[{format_memory_tags_zh(m.get('tags') or ())}] | {m['content']}"
                 for m in items[:15]
             ]
             return SkillResult(output=f"Found {len(items)} memories:\n" + "\n".join(lines))
@@ -87,8 +100,9 @@ class MemorySkill(Skill):
             if isinstance(paging, SkillResult):
                 return paging
             limit, offset = paging
+            tag = args.get("tag") or None
             try:
-                items = db_list_all(uid, limit=limit, offset=offset)
+                items = db_list_all(uid, limit=limit, offset=offset, tag=tag)
                 total = db_stats(uid)["total"]
             except Exception as e:
                 log.error("list_memories failed: %s", e, exc_info=True)
@@ -96,8 +110,10 @@ class MemorySkill(Skill):
             header = _page_header("Memories", total, len(items), offset)
             if not items:
                 return SkillResult(output=f"{header}\nNo memories on this page.")
+            from mochi.memory_contract import format_memory_tags_zh
             lines = [
-                f"#{m['id']} ★{m['importance']} | {m['content']} "
+                f"#{m['id']} ★{m['importance']} "
+                f"[{format_memory_tags_zh(m.get('tags') or ())}] | {m['content']} "
                 f"(evidence {_evidence_label(m)})"
                 for m in items
             ]

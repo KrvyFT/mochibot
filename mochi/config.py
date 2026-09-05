@@ -100,12 +100,12 @@ def _persist_owner(user_id: int) -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 
 # 08:00–00:30 is the default Free Time window (16.5 hours). Adjacent slots
-# stay at least this far apart; the hard ceiling is how many such points
-# fit in the configured window (66 for the default).
-FREE_TIME_MIN_GAP_MINUTES = 15
+# stay at least this far apart; target ~2–3 Free Times per hour (gap 20m).
+FREE_TIME_MIN_GAP_MINUTES = 20
 FREE_TIME_WINDOW_MINUTES = 16 * 60 + 30
 FREE_TIME_DAILY_MAX = FREE_TIME_WINDOW_MINUTES // FREE_TIME_MIN_GAP_MINUTES
-MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", FREE_TIME_DAILY_MAX)
+# Soft daily target (~2.5/hour over 16h) below the hard capacity ceiling.
+MAX_DAILY_FREE_TIME = _env_int("MAX_DAILY_FREE_TIME", min(40, FREE_TIME_DAILY_MAX))
 FREE_TIME_AWAKE_START = _env("FREE_TIME_AWAKE_START", "08:00")
 FREE_TIME_AWAKE_END = _env("FREE_TIME_AWAKE_END", "00:30")
 # Fraction of daily Free Time slots that come with web_search already loaded
@@ -117,6 +117,13 @@ FREE_TIME_UNAVAILABLE_FLOOR_MINUTES = max(
     1, _env_int("FREE_TIME_UNAVAILABLE_FLOOR_MINUTES", 45),
 )
 LLM_HEARTBEAT_TIMEOUT_SECONDS = _env_int("LLM_HEARTBEAT_TIMEOUT_SECONDS", 120)
+# Hard cap for draw+download inside send_photo. Past this Main speaks
+# in-character ("找不到了") instead of waiting on a hung Draw job.
+PHOTO_GENERATE_TIMEOUT_S = _env_float("PHOTO_GENERATE_TIMEOUT_S", 120.0)
+# Must-photo Free Time: skill cap + one short text round after miss/success.
+FREE_TIME_PHOTO_PREPARE_TIMEOUT_S = _env_int(
+    "FREE_TIME_PHOTO_PREPARE_TIMEOUT_S", 160,
+)
 
 # Sleep/Wake State Machine
 WAKE_EARLIEST_HOUR = _env_int("WAKE_EARLIEST_HOUR", 6)   # sleep ends; auto-wake and message-wake
@@ -145,7 +152,18 @@ CONV_SUMMARY_MAX_TOKENS: int = max(
 MEMORY_EXTRACTION_BATCH_TURNS: int = max(
     1, _env_int("MEMORY_EXTRACTION_BATCH_TURNS", 10),
 )
-CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 2500)
+# High-signal turns (identity/preference/body/commitment) flush sooner.
+MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS: int = max(
+    1, _env_int("MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS", 4),
+)
+# When rolling summary lags, bound overflow fed into Main.
+CONV_OVERFLOW_MAX_MESSAGES: int = max(
+    0, _env_int("CONV_OVERFLOW_MAX_MESSAGES", 8),
+)
+CONV_OVERFLOW_MAX_TOKENS: int = max(
+    0, _env_int("CONV_OVERFLOW_MAX_TOKENS", 2000),
+)
+CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 4000)
 TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -395,16 +413,28 @@ TOOL_RATE_LIMIT_PER_MIN = _env_int("TOOL_RATE_LIMIT_PER_MIN", 10)
 
 BUBBLE_ENABLED = _env_bool("BUBBLE_ENABLED", True)
 TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", True)
-TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
+# Gap between outbound bubbles. Keep a short breath, not a full second.
+TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 0.25)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 8)
 TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
 TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
 # Quiet-window coalescing for Telegram text/photo. Commands and stickers
 # stay immediate. False restores one-turn-per-message.
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
-TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 10.0)
+# Wait after the last owner message before starting a turn. Lower = snappier.
+TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 15.0)
 TG_MESSAGE_DEBOUNCE_MAX_ITEMS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_ITEMS", 20)
 TG_MESSAGE_DEBOUNCE_MAX_CHARS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_CHARS", 8000)
+# Outbound Bot API: wait_for each attempt, then retry forever after 3 quick tries.
+TG_SEND_TIMEOUT_S = _env_float("TG_SEND_TIMEOUT_S", 20.0)
+TG_SEND_QUICK_RETRIES = max(1, _env_int("TG_SEND_QUICK_RETRIES", 3))
+TG_SEND_MAX_BACKOFF_S = _env_float("TG_SEND_MAX_BACKOFF_S", 60.0)
+# 0 = retry forever (production). Tests may set a positive cap.
+TG_SEND_MAX_ATTEMPTS = max(0, _env_int("TG_SEND_MAX_ATTEMPTS", 0))
+# Photo uploads: longer per-attempt wait, hard attempt cap. Infinite TimedOut
+# retries often re-upload a photo Telegram already accepted → duplicate images.
+TG_PHOTO_SEND_TIMEOUT_S = _env_float("TG_PHOTO_SEND_TIMEOUT_S", 60.0)
+TG_PHOTO_SEND_MAX_ATTEMPTS = max(1, _env_int("TG_PHOTO_SEND_MAX_ATTEMPTS", 2))
 
 # Tool-call status UX (Telegram DM only)
 TG_STATUS_REACTIONS_ENABLED = _env_bool("TG_STATUS_REACTIONS_ENABLED", True)

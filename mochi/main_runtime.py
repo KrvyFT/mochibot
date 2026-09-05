@@ -52,7 +52,7 @@ def context_policy(entry: "MainRuntimeEntry | None") -> ContextPolicy:
             trailing_history=False,
             auto_recall=False,
             recent_operations=False,
-            prompt_sections=False,
+            prompt_sections=True,
             temporal_context=True,
         )
     if entry.kind == "weekly_maintenance":
@@ -100,6 +100,7 @@ class MainRuntimeEntry:
     wake_reason: str | None = None
     free_time_direct_search: bool = False
     free_time_chat_generation: int = 0
+    is_last_refresh_of_day: bool = False
 
     @classmethod
     def bedtime(
@@ -211,6 +212,7 @@ class MainRuntimeEntry:
         user_id: int,
         channel_id: int,
         transport: str,
+        is_last_refresh_of_day: bool = False,
     ) -> "MainRuntimeEntry":
         date.fromisoformat(logical_date)
         if not isinstance(period_key, str) or not period_key.strip():
@@ -224,6 +226,7 @@ class MainRuntimeEntry:
             logical_date=logical_date,
             period_key=key,
             idempotency_key=f"core-refresh:{user_id}:{key}",
+            is_last_refresh_of_day=bool(is_last_refresh_of_day),
         )
 
     @classmethod

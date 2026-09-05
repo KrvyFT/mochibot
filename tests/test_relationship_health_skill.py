@@ -352,8 +352,9 @@ async def test_prompt_section_starts_developing_and_rewrites_after_assess():
     assert before.startswith("# 行为准则")
     assert "# 深层人格" in before
     assert "# 关系互动" in before
-    assert "刚好走到这里" in before
+    assert "路过" in before or "软软地待在旁边" in before
     assert "RQI" not in before
+    assert "病娇" not in before
 
     await _assess(
         skill,

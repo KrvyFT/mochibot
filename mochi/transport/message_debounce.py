@@ -166,3 +166,8 @@ class MessageDebouncer(Generic[T]):
         self._char_counts.pop(key, None)
         self._last_arrival.pop(key, None)
         return items
+
+    async def drain(self, key: int) -> list[T]:
+        """Take any items buffered while a flush/turn was in progress."""
+        async with self._lock:
+            return self._take_locked(key)

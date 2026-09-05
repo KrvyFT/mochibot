@@ -117,6 +117,7 @@ def generate_qwen_image(
     enable_thinking: bool = True,
     size: str | None = None,
     download=None,
+    timeout_s: float | None = None,
 ) -> bytes:
     """Synchronous T2I/I2I. I2I accepts at most three reference images."""
     queued = time.monotonic()
@@ -134,7 +135,20 @@ def generate_qwen_image(
             enable_thinking=enable_thinking,
             size=size,
             download=download,
+            timeout_s=timeout_s,
         )
+
+
+def _http_timeout(timeout_s: float | None) -> httpx.Timeout:
+    if timeout_s is None or timeout_s <= 0:
+        return _TIMEOUT
+    read_s = max(15.0, float(timeout_s))
+    return httpx.Timeout(
+        connect=15.0,
+        read=read_s,
+        write=min(180.0, read_s),
+        pool=10.0,
+    )
 
 
 def _generate_qwen_image_locked(
@@ -148,6 +162,7 @@ def _generate_qwen_image_locked(
     enable_thinking: bool,
     size: str | None,
     download,
+    timeout_s: float | None = None,
 ) -> bytes:
     url = generation_url_from_base(base_url)
     synth_model = canonical_qwen_image_model(model)
@@ -189,7 +204,9 @@ def _generate_qwen_image_locked(
         url,
     )
     try:
-        with httpx.Client(timeout=_TIMEOUT, follow_redirects=True) as http:
+        with httpx.Client(
+            timeout=_http_timeout(timeout_s), follow_redirects=True,
+        ) as http:
             response = http.post(url, json=payload, headers=headers)
             try:
                 body = response.json()

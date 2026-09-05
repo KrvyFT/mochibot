@@ -247,13 +247,15 @@ class RelationshipHealthSkill(Skill):
 
         Ordinary chat does not load diary status, so this is the path that
         reaches Main every turn. Starts at 发展中 before the first scored
-        snapshot. Numbers stay out.
+        snapshot. Numbers stay out. Free Time uses a compact tier summary.
         """
         from mochi.config import OWNER_USER_ID
-        from mochi.relationship_voice import read_voice
+        from mochi.relationship_voice import compact_voice_summary, read_voice
 
         if not OWNER_USER_ID:
             return ""
+        if compact:
+            return compact_voice_summary().strip()
         return read_voice().strip()
 
     def diary_status(self, user_id: int, today: str, now) -> list[str] | None:

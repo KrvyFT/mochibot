@@ -38,7 +38,18 @@ def test_free_time_situation_requires_first_daily_photo(monkeypatch):
         "mochi.admin.admin_db.is_draw_tier_ready", lambda: True,
     )
     text = _render_autonomous_situation(_entry(direct_search=False))
-    assert "必须调用 send_photo" in text
+    assert "还没发过照片" in text
+    assert "send_photo" in text
+    assert "出图失败" in text
+
+
+def test_free_time_situation_includes_intimacy_guidance(monkeypatch):
+    monkeypatch.setattr(
+        "mochi.ai_client._free_time_intimacy_guidance",
+        lambda entry: "禁止主动「好想你」",
+    )
+    text = _render_autonomous_situation(_entry(direct_search=False))
+    assert "禁止主动「好想你」" in text
 
 
 def test_search_free_time_shares_with_the_owner():
@@ -124,14 +135,29 @@ def test_evidence_preface_tells_free_time_to_continue_outreach():
     open_thread = _render_completed_conversation_evidence(
         history, continue_unanswered_outreach=True,
     )
-    assert "尚未被接上的 Free Time 话头" in open_thread
-    assert "不要当成已经结束的独白" in open_thread
+    assert "开放的 Free Time 话头" in open_thread
+    assert "unanswered" in open_thread
+
+    omitted = _render_completed_conversation_evidence(
+        history,
+        continue_unanswered_outreach=True,
+        omit_outreach=True,
+    )
+    assert "completed_outreach" not in omitted
+    assert "你在干嘛呀" in omitted or omitted == ""
 
 
 def test_thread_renderer_truncates_long_previous_lines():
     block = _render_unanswered_free_time_thread({
         "count": 1,
-        "items": [{"content": "啊" * 250}],
+        "items": [
+            {"content": "旧话头"},
+            {"content": "啊" * 250},
+        ],
     })
+    assert "previous_hint:" in block
     assert "…" in block
-    assert len([line for line in block.splitlines() if line.startswith("- ")]) == 1
+    assert "旧话头" not in block
+    assert len([
+        line for line in block.splitlines() if line.startswith("previous_hint:")
+    ]) == 1

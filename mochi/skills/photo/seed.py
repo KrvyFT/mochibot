@@ -50,15 +50,11 @@ _FILE_LINK_RE = re.compile(
     re.IGNORECASE,
 )
 
-CHARACTER_URLS = (
-    "https://i.pximg.net/img-original/img/2019/07/15/10/26/36/75732553_p0.jpg",
-    "https://i.pximg.net/img-original/img/2020/05/14/00/00/07/81542324_p0.jpg",
-    "https://i.pximg.net/img-original/img/2021/11/25/00/03/49/94353597_p0.jpg",
-    "https://i.pximg.net/img-original/img/2024/04/10/00/01/58/117702405_p0.jpg",
-    "https://i.pximg.net/img-original/img/2020/08/28/00/00/05/83975848_p0.jpg",
-    "https://i.pximg.net/img-original/img/2019/09/05/00/00/04/76625949_p0.png",
-)
-GOOGLE_PHOTOS_ALBUM = "https://photos.app.goo.gl/X7J76bhNRtdfChTF9"
+CHARACTER_URLS = ()
+# Former Pixiv / Google Photos self albums removed; Elma refs are seeded from
+# local operator-provided files under data/photo_refs (kind=self).
+GOOGLE_PHOTOS_ALBUM = ""
+
 
 JAPAN_CATEGORIES = (
     ("Category:Shinto shrines in Japan", "神社"),
@@ -266,6 +262,8 @@ def _download_and_save(
 
 
 def _seed_character_urls() -> None:
+    if not CHARACTER_URLS:
+        return
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         for url in CHARACTER_URLS:
             _download_and_save(
@@ -279,6 +277,8 @@ def _seed_character_urls() -> None:
 
 
 def _seed_google_photos() -> None:
+    if not GOOGLE_PHOTOS_ALBUM:
+        return
     with httpx.Client(timeout=30.0, follow_redirects=True) as client:
         try:
             response = _http_get(GOOGLE_PHOTOS_ALBUM, client=client)

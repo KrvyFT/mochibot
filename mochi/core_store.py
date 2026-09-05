@@ -224,6 +224,18 @@ def _hygiene_error_message(issue: dict) -> str:
             f"{duplicate_start}-{duplicate_end}"
         )
         fix = "Merge, rewrite, or remove one exact paragraph"
+    elif code == "diary_chronicle_heading":
+        location = f"line {issue['line']}"
+        fix = (
+            "Remove diary headings such as「今日近况」from Core; "
+            "keep only durable relationship/play facts"
+        )
+    elif code == "diary_chronicle_timeline":
+        location = f"{issue['count']} dated clock lines"
+        fix = (
+            "Remove timed daily chronicle lines from Core; "
+            "speak them at the last heartbeat instead of storing them"
+        )
     else:
         location = f"lines {issue['first_line']} and {issue['duplicate_line']}"
         fix = "Merge, rewrite, or remove one exact list item"
@@ -231,6 +243,30 @@ def _hygiene_error_message(issue: dict) -> str:
         f"Core hygiene conflict [{code}] at {location}. {fix}, then retry "
         "with a revised document. No content was written."
     )
+
+
+def _chronicle_issues(live: str) -> list[dict]:
+    """Reject diary-style daily chronicles from the living Core half."""
+    if not live or not live.strip():
+        return []
+    issues: list[dict] = []
+    for line_number, line in enumerate(live.splitlines(), start=1):
+        if re.match(r"^#\s*今日近况\s*$", line.strip()):
+            issues.append({
+                "code": "diary_chronicle_heading",
+                "line": line_number,
+            })
+            break
+    timed = re.findall(
+        r"(?m)^\s*\d{4}-\d{2}-\d{2}\b.*\b\d{1,2}:\d{2}\b",
+        live,
+    )
+    if len(timed) >= 2:
+        issues.append({
+            "code": "diary_chronicle_timeline",
+            "count": len(timed),
+        })
+    return issues
 
 
 def _validate_budget(content: str) -> str:
@@ -247,6 +283,8 @@ def _validate_budget(content: str) -> str:
 def _validate(content: str) -> str:
     normalized = _validate_budget(content)
     issues = _hygiene_issues(normalized)
+    pinned, live = split_pinned_core(normalized)
+    issues.extend(_chronicle_issues(live if pinned else normalized))
     if issues:
         raise CoreHygieneError(_hygiene_error_message(issues[0]))
     return normalized

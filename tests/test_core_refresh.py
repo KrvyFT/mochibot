@@ -73,3 +73,27 @@ def test_core_refresh_entry_period_key():
     )
     assert entry.kind == "core_refresh"
     assert entry.idempotency_key == "core-refresh:1:2026-09-02-12"
+    assert entry.is_last_refresh_of_day is False
+
+
+def test_is_last_core_refresh_of_day():
+    hours = (12, 23)
+    assert not heartbeat.is_last_core_refresh_of_day("2026-09-02-12", hours)
+    assert heartbeat.is_last_core_refresh_of_day("2026-09-02-23", hours)
+    assert not heartbeat.is_last_core_refresh_of_day("force-20260902T120000", hours)
+    assert heartbeat.core_refresh_hour_from_period_key("2026-09-02-23") == 23
+    assert heartbeat.core_refresh_hour_from_period_key("force-x") is None
+
+
+def test_last_refresh_entry_flag():
+    from mochi.main_runtime import MainRuntimeEntry
+
+    entry = MainRuntimeEntry.core_refresh(
+        logical_date="2026-09-02",
+        period_key="2026-09-02-23",
+        user_id=1,
+        channel_id=1,
+        transport="telegram",
+        is_last_refresh_of_day=True,
+    )
+    assert entry.is_last_refresh_of_day is True

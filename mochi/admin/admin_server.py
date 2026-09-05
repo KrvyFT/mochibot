@@ -1055,6 +1055,14 @@ if HAS_FASTAPI:
                 item["min"] = 0
                 # Bound matches the currently configured Free Time window.
                 item["max"] = free_time_max
+                from mochi.config import FREE_TIME_MIN_GAP_MINUTES
+                from mochi.heartbeat_runtime import FREE_TIME_SEARCH_DAILY_MIN
+                from mochi.skills.photo.quota import FREE_TIME_MAX, FREE_TIME_MIN
+
+                item["gap_minutes"] = int(FREE_TIME_MIN_GAP_MINUTES)
+                item["search_daily_min"] = int(FREE_TIME_SEARCH_DAILY_MIN)
+                item["photo_daily_min"] = int(FREE_TIME_MIN)
+                item["photo_daily_max"] = int(FREE_TIME_MAX)
             elif key in {"SLEEP_AFTER_HOUR", "WAKE_EARLIEST_HOUR"}:
                 item["kind"] = "hour"
                 item["min"] = 0
@@ -1146,7 +1154,14 @@ if HAS_FASTAPI:
             return {
                 "state": "UNKNOWN",
                 "free_time_thoughts_today": 0,
+                "free_time_delivered_today": 0,
+                "free_time_failed_today": 0,
                 "free_time_thought_limit": None,
+                "free_time_search_today": 0,
+                "free_time_search_min": 2,
+                "free_time_photo_today": 0,
+                "free_time_photo_min": 1,
+                "free_time_photo_max": 3,
             }
 
     # ── Generic .env writer ───────────────────────────────────────────────
@@ -1227,11 +1242,15 @@ if HAS_FASTAPI:
     @app.get("/api/memory-items", dependencies=[Depends(_verify_token)])
     async def api_get_memory_items(
         q: str = "", sort: str = "importance",
-        page: int = 1, limit: int = 20,
+        page: int = 1, limit: int = 20, tag: str = "",
     ):
-        """Browse Memory Items with keyword search and pagination."""
+        """Browse Memory Items with keyword/tag search and pagination."""
         from mochi.config import OWNER_USER_ID
-        from mochi.db import _connect, get_memory_evidence_dates
+        from mochi.db import _connect, get_memory_evidence_dates, _row_tags
+        from mochi.memory_contract import (
+            MEMORY_TAG_LABELS_ZH,
+            normalize_memory_tag,
+        )
 
         uid = OWNER_USER_ID or 0
         page = max(1, page)
@@ -1243,6 +1262,14 @@ if HAS_FASTAPI:
         if q:
             conditions.append("content LIKE ?")
             params.append(f"%{q}%")
+        if tag:
+            try:
+                tag_key = normalize_memory_tag(tag)
+            except ValueError as exc:
+                conn.close()
+                raise HTTPException(400, str(exc))
+            conditions.append("tags LIKE ?")
+            params.append(f'%"{tag_key}"%')
         where = " AND ".join(conditions)
 
         order = "importance DESC, updated_at DESC" if sort == "importance" else "updated_at DESC"
@@ -1253,7 +1280,7 @@ if HAS_FASTAPI:
 
         offset = (page - 1) * limit
         rows = conn.execute(
-            f"SELECT id, content, importance, access_count, source, "
+            f"SELECT id, content, importance, access_count, tags, "
             f"created_at, updated_at FROM memory_items "
             f"WHERE {where} ORDER BY {order} LIMIT ? OFFSET ?",
             params + [limit, offset],
@@ -1269,13 +1296,21 @@ if HAS_FASTAPI:
             "page": page,
             "limit": limit,
             "pages": max(1, (total + limit - 1) // limit),
+            "tag_options": [
+                {"key": key, "label": label}
+                for key, label in MEMORY_TAG_LABELS_ZH.items()
+            ],
             "items": [
                 {
                     "id": r["id"],
                     "content": r["content"],
                     "importance": r["importance"],
                     "access_count": r["access_count"],
-                    "source": r["source"],
+                    "tags": _row_tags(r["tags"]),
+                    "tag_labels": [
+                        MEMORY_TAG_LABELS_ZH.get(t, t)
+                        for t in _row_tags(r["tags"])
+                    ],
                     "created_at": r["created_at"],
                     "updated_at": r["updated_at"],
                     **evidence_dates.get(r["id"], {
@@ -1286,6 +1321,61 @@ if HAS_FASTAPI:
                 for r in rows
             ],
         }
+
+    @app.get("/api/temp-memory-items", dependencies=[Depends(_verify_token)])
+    async def api_get_temp_memory_items(limit: int = 50):
+        """List today's temporary memories."""
+        from mochi.config import OWNER_USER_ID
+        from mochi.db import list_temp_memories
+        from mochi.memory_contract import MEMORY_TAG_LABELS_ZH
+
+        items = list_temp_memories(OWNER_USER_ID or 0, limit=limit)
+        return {
+            "items": [
+                {
+                    **item,
+                    "tag_labels": [
+                        MEMORY_TAG_LABELS_ZH.get(t, t)
+                        for t in (item.get("tags") or [])
+                    ],
+                }
+                for item in items
+            ],
+        }
+
+    @app.post(
+        "/api/temp-memory-items/delete",
+        dependencies=[Depends(_verify_token)],
+    )
+    async def api_delete_temp_memory_items(request: Request):
+        from mochi.db import delete_temp_memory_items
+        body = await request.json()
+        ids = body.get("ids", [])
+        if not ids:
+            raise HTTPException(400, "No item ids provided")
+        count = delete_temp_memory_items(ids)
+        return {"ok": True, "count": count}
+
+    @app.get("/api/diary", dependencies=[Depends(_verify_token)])
+    async def api_list_diary(page: int = 1, limit: int = 10, date: str = ""):
+        """Browse diary days (10/page) or fetch one day by date."""
+        from mochi.diary import list_diary_dates, list_diary_days, read_diary_day
+
+        if date:
+            try:
+                item = read_diary_day(date.strip())
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
+            if item is None:
+                raise HTTPException(404, f"No diary for {date}")
+            return {"item": item, "dates": list_diary_dates()}
+        return list_diary_days(page=page, limit=limit)
+
+    @app.get("/api/diary/dates", dependencies=[Depends(_verify_token)])
+    async def api_diary_dates():
+        """Dates that have diary journal content (for the date picker)."""
+        from mochi.diary import list_diary_dates
+        return {"dates": list_diary_dates()}
 
     @app.get(
         "/api/memory-extraction-status",
@@ -1350,17 +1440,24 @@ if HAS_FASTAPI:
         """Edit a single L2 memory item."""
         from mochi.config import OWNER_USER_ID
         from mochi.db import update_memory_item
+        from mochi.memory_contract import validate_memory_tags
 
         body = await request.json()
         uid = OWNER_USER_ID or 0
         content = body.get("content", "").strip()
         importance = max(1, min(3, int(body.get("importance", 1))))
+        tags = body.get("tags")
+        try:
+            tag_values = list(validate_memory_tags(tags)) if tags is not None else None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
         if not update_memory_item(
             item_id,
             uid,
             content=content,
             importance=importance,
+            tags=tag_values,
         ):
             raise HTTPException(404, f"Memory item {item_id} not found")
         log.info("Admin: updated memory item #%d imp=%d", item_id, importance)

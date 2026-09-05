@@ -8,6 +8,8 @@ import logging
 import mimetypes
 import random
 import re
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.photo.queries import init_photo_refs_schema, list_photo_refs
 from mochi.skills.photo.quota import (
     chat_photo_guidance,
+    note_photo_miss,
     note_photo_send,
     photo_quota_denial,
 )
@@ -42,11 +45,19 @@ _DONE_LINES = (
     "找到了，给你看。",
 )
 _DONE_BANNED = ("出来啦", "出来了", "已生成", "生成好了")
+# Keep Telegram uploads small: large PNG + short Bot API timeout → TimedOut
+# retries that often deliver the same photo multiple times.
+_TG_PHOTO_MAX_BYTES = 900_000
+_TG_PHOTO_MAX_EDGE = 1600
 SIZE_LANDSCAPE = "1920*1080"
 SIZE_PORTRAIT = "1080*1920"
 _ORIENT_HEADING_RE = re.compile(
     r"^(?:画面方向|方向|orientation)\s*",
     re.IGNORECASE,
+)
+_TIMEOUT_MODEL_HINT = (
+    "出图失败了。这一轮不要提照片、相册、找不到、被删了、夹进书页；"
+    "直接用文字把想说的事说完，并换一件新事。不要再调用 send_photo。"
 )
 
 
@@ -195,7 +206,9 @@ def _build_prompt_messages(subject: str, refs: list[dict], core: str) -> list[di
         "text": (
             f"当前想看见的内容：{subject}\n"
             "先写一行画面方向（横幅 或 竖幅），再按模板写出完整中文绘图提示词。"
-            "恋恋是动漫画风，背景必须模仿附带的真实风景参考图。"
+            "Elma（谢令仪）是写实柔和写真风，背景必须模仿附带的真实风景参考图。"
+            "成片要电影感实拍光影；姿势默认站立/行走/自然坐着，不要无故蹲着；"
+            "场景换着来，不要总写窗边/窗台。"
         ),
     }]
     for ref in refs:
@@ -215,10 +228,53 @@ def _build_prompt_messages(subject: str, refs: list[dict], core: str) -> list[di
     ]
 
 
+def compress_photo_bytes(data: bytes, *, max_bytes: int = _TG_PHOTO_MAX_BYTES) -> bytes:
+    """Downscale/JPEG-encode so Telegram upload finishes before Bot API timeouts."""
+    if not data:
+        return data
+    already_jpeg = data[:3] == b"\xff\xd8"
+    if already_jpeg and len(data) <= max_bytes:
+        return data
+    if not shutil.which("ffmpeg"):
+        return data
+    best = data
+    for quality in (3, 5, 8, 12):
+        try:
+            proc = subprocess.run(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", "pipe:0",
+                    "-vf", f"scale='min({_TG_PHOTO_MAX_EDGE},iw)':-2",
+                    "-q:v", str(quality),
+                    "-f", "image2pipe", "-vcodec", "mjpeg",
+                    "pipe:1",
+                ],
+                input=data,
+                capture_output=True,
+                check=False,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return best if best is not data else data
+        out = proc.stdout or b""
+        if proc.returncode != 0 or not out:
+            continue
+        best = out
+        if len(out) <= max_bytes:
+            break
+    if best is not data:
+        log.info(
+            "photo compressed for Telegram %sB -> jpeg %sB",
+            len(data), len(best),
+        )
+    return best
+
+
 def write_generated_photo(data: bytes) -> Path:
     GENERATED_DIR.mkdir(parents=True, exist_ok=True)
-    path = GENERATED_DIR / f"{uuid.uuid4().hex}{_image_suffix(data)}"
-    path.write_bytes(data)
+    payload = compress_photo_bytes(data)
+    path = GENERATED_DIR / f"{uuid.uuid4().hex}{_image_suffix(payload)}"
+    path.write_bytes(payload)
     return path
 
 
@@ -264,15 +320,33 @@ class PhotoSkill(Skill):
 
         try:
             from mochi.admin.admin_db import is_draw_tier_ready
+            from mochi.config import PHOTO_GENERATE_TIMEOUT_S
+
             if not is_draw_tier_ready():
                 return SkillResult(
                     output="绘图模型尚未配置。在管理后台把模型赋给 Draw 档后再试。",
                     success=False,
                 )
+            budget = max(0.05, float(PHOTO_GENERATE_TIMEOUT_S))
             done = asyncio.Event()
             typer = asyncio.create_task(_keep_typing(context, done))
             try:
-                path = await asyncio.to_thread(self._generate, subject)
+                path = await asyncio.wait_for(
+                    asyncio.to_thread(self._generate, subject, budget),
+                    timeout=budget,
+                )
+            except asyncio.TimeoutError:
+                log.warning(
+                    "send_photo timed out after %.0fs; stop forcing photo copy",
+                    budget,
+                )
+                note_photo_miss(
+                    context.user_id, bucket, turn_id=context.turn_id,
+                )
+                return SkillResult(
+                    output=_TIMEOUT_MODEL_HINT,
+                    success=False,
+                )
             finally:
                 done.set()
                 typer.cancel()
@@ -280,14 +354,17 @@ class PhotoSkill(Skill):
                     await typer
         except Exception as exc:
             log.warning("send_photo failed: %s", exc)
+            note_photo_miss(context.user_id, bucket, turn_id=context.turn_id)
             return SkillResult(
-                output=_photo_failure_message(exc),
+                output=_TIMEOUT_MODEL_HINT
+                if bucket == "free_time"
+                else _photo_failure_message(exc),
                 success=False,
             )
         note_photo_send(context.user_id, bucket, turn_id=context.turn_id)
         return SkillResult(output=f"[IMAGE_FILE:{path}] 照片拍好了。")
 
-    def _generate(self, subject: str) -> Path:
+    def _generate(self, subject: str, timeout_s: float) -> Path:
         from mochi.core_store import read_core
         from mochi.llm import get_client_for_tier
 
@@ -299,11 +376,18 @@ class PhotoSkill(Skill):
         prompt, orientation = self._write_prompt(subject, refs, core)
         if not prompt:
             raise RuntimeError("Main did not return a drawing prompt")
+        # Leave a little headroom for download + JPEG compress after Draw returns.
+        draw_budget = max(5.0, float(timeout_s) - 5.0) if timeout_s >= 15 else max(1.0, float(timeout_s) * 0.8)
         draw = get_client_for_tier("draw")
+        # thinking=True routinely exceeds the 120s skill cap and floods Free Time
+        # with "照片找不到" copy; keep Draw lean like the Admin smoke test.
         data = draw.generate_image(
             prompt,
             reference_images=_reference_images(refs),
             size=photo_size_for(orientation),
+            timeout_s=draw_budget,
+            prompt_extend=False,
+            enable_thinking=False,
         )
         if not data:
             raise RuntimeError("image generation returned empty bytes")

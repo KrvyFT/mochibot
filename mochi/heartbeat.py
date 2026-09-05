@@ -20,6 +20,7 @@ from mochi.db import (
     log_heartbeat,
 )
 from mochi.heartbeat_runtime import (
+    FREE_TIME_PREPARE_MAX_ATTEMPTS,
     begin_delivery,
     checkpoint_text_delivery,
     checkpoint_visible_delivery,
@@ -29,6 +30,7 @@ from mochi.heartbeat_runtime import (
     ensure_daily_free_time_plan,
     entry_from_claim,
     expire_unusable_free_time_runs,
+    force_direct_search_on_claim,
     in_free_time_window,
     get_schedulable_runs,
     last_delivered_free_time_at,
@@ -36,6 +38,7 @@ from mochi.heartbeat_runtime import (
     record_failure,
     recover_prior_tool_attempt,
     remove_delivered_component,
+    renew_claim_lease,
     should_skip_unavailable_slot,
     store_delivery_progress,
     store_prepared_result,
@@ -179,6 +182,7 @@ _runtime_delivery_callback = None
 _runtime_transport = ""
 _active_chat_tasks: set[asyncio.Task] = set()
 _chat_activity_generation = 0
+_free_time_preparing = 0
 
 
 def set_bedtime_callback(callback) -> None:
@@ -201,6 +205,25 @@ def set_main_runtime_callbacks(prepare_callback, delivery_callback, transport: s
     _runtime_prepare_callback = prepare_callback
     _runtime_delivery_callback = delivery_callback
     _runtime_transport = transport
+
+
+async def try_early_image_delivery(channel_id: int, path: str) -> bool:
+    """Push a Free Time photo as soon as Draw finishes (before prepare ends)."""
+    if _runtime_delivery_callback is None or not path:
+        return False
+    if has_active_chat():
+        return False
+    from mochi.ai_client import ChatResult
+
+    try:
+        return bool(
+            await _runtime_delivery_callback(
+                channel_id, ChatResult(images=[path]),
+            )
+        )
+    except Exception:
+        log.warning("early Free Time photo delivery failed", exc_info=True)
+        return False
 
 
 def track_active_chat_task() -> None:
@@ -228,6 +251,10 @@ def free_time_turn_available(chat_generation: int) -> bool:
         and not has_active_chat()
         and chat_generation == _chat_activity_generation
     )
+
+
+def is_free_time_preparing() -> bool:
+    return _free_time_preparing > 0
 
 
 def wake_up(reason: str = "unknown") -> None:
@@ -374,7 +401,15 @@ def _check_silence_pause() -> None:
 
 
 def get_stats() -> dict:
+    from mochi.config import OWNER_USER_ID
+    from mochi.heartbeat_runtime import (
+        FREE_TIME_SEARCH_DAILY_MIN,
+        count_delivered_search_shares,
+    )
+    from mochi.skills.photo.quota import FREE_TIME_MAX, FREE_TIME_MIN, today_photo_count
+
     now = datetime.now(TZ)
+    day = logical_today(now)
     start = datetime.combine(now.date(), datetime.min.time(), tzinfo=TZ).astimezone(
         timezone.utc,
     )
@@ -387,15 +422,43 @@ def get_stats() -> dict:
             "AND attempt_count > 0 AND created_at >= ? AND created_at < ?",
             (start.isoformat(), end.isoformat()),
         ).fetchone()
+        delivered_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM heartbeat_runs "
+            "WHERE entry_kind = 'free_time' AND status = 'delivered' "
+            "AND outcome = 'delivered' AND run_key LIKE ?",
+            (f"free_time:{day}:%",),
+        ).fetchone()
+        failed_row = conn.execute(
+            "SELECT COUNT(*) AS count FROM heartbeat_runs "
+            "WHERE entry_kind = 'free_time' AND status = 'delivered' "
+            "AND outcome = 'failed' AND run_key LIKE ?",
+            (f"free_time:{day}:%",),
+        ).fetchone()
     finally:
         conn.close()
+
+    user_id = OWNER_USER_ID or 0
+    search_today = (
+        count_delivered_search_shares(user_id, day=day) if user_id else 0
+    )
+    photo_today = (
+        today_photo_count(user_id, "free_time", day=day) if user_id else 0
+    )
     return {
         "state": _state,
         "state_changed_at": _state_changed_at.isoformat(),
         "free_time_thoughts_today": int(row["count"] or 0),
+        "free_time_delivered_today": int(delivered_row["count"] or 0),
+        "free_time_failed_today": int(failed_row["count"] or 0),
         "free_time_thought_limit": _effective("MAX_DAILY_FREE_TIME"),
+        "free_time_search_today": search_today,
+        "free_time_search_min": FREE_TIME_SEARCH_DAILY_MIN,
+        "free_time_photo_today": photo_today,
+        "free_time_photo_min": FREE_TIME_MIN,
+        "free_time_photo_max": FREE_TIME_MAX,
         "last_think_at": row["last_think_at"],
         "wake_reason": _wake_reason,
+        "plan_date": day,
     }
 
 
@@ -497,6 +560,34 @@ def parse_core_refresh_hours(raw) -> tuple[int, ...]:
             seen.add(hour)
             hours.append(hour)
     return tuple(hours or CORE_REFRESH_DEFAULT_HOURS)
+
+
+def core_refresh_hour_from_period_key(period_key: str) -> int | None:
+    """Extract the scheduled hour from ``YYYY-MM-DD-HH`` keys; force keys → None."""
+    key = (period_key or "").strip()
+    if not key or key.startswith("force-"):
+        return None
+    tail = key.rsplit("-", 1)[-1]
+    if len(tail) != 2 or not tail.isdigit():
+        return None
+    hour = int(tail)
+    return hour if 0 <= hour <= 23 else None
+
+
+def is_last_core_refresh_of_day(
+    period_key: str,
+    hours: tuple[int, ...] | None = None,
+) -> bool:
+    """True when *period_key* is the latest configured refresh hour that day."""
+    hour = core_refresh_hour_from_period_key(period_key)
+    if hour is None:
+        return False
+    slots = hours if hours is not None else parse_core_refresh_hours(
+        _effective("CORE_REFRESH_HOURS"),
+    )
+    if not slots:
+        return False
+    return hour == max(slots)
 
 
 def minutes_into_logical_day(hour: int, minute: int, maintenance_hour: int) -> int:
@@ -636,6 +727,7 @@ async def _run_relationship_morning_if_due(
 
 
 async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
+    global _free_time_preparing
     if claimed.get("result_json"):
         durable = DurableChatResult.from_json(claimed["result_json"])
         complete_without_delivery(claimed, durable, "stale")
@@ -649,21 +741,57 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
     if _runtime_prepare_callback is None:
         record_failure(claimed, "Main runtime callback is not registered")
         return None
+
+    force_direct_search_on_claim(claimed)
+    timeout_s = float(_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"))
     try:
-        result = await asyncio.wait_for(
-            _runtime_prepare_callback(entry_from_claim(claimed)),
-            timeout=_effective("LLM_HEARTBEAT_TIMEOUT_SECONDS"),
-        )
-        durable = result.to_durable()
-    except asyncio.TimeoutError:
-        record_failure(claimed, "Main runtime timed out")
-        log_heartbeat(_state, f"{claimed['entry_kind']}_timeout")
+        from mochi.config import FREE_TIME_PHOTO_PREPARE_TIMEOUT_S
+        from mochi.skills.photo.quota import free_time_photo_must_send
+
+        if free_time_photo_must_send(int(claimed["user_id"])):
+            # Must-try photo needs room for skill timeout + a text fallback round.
+            timeout_s = max(timeout_s, float(FREE_TIME_PHOTO_PREPARE_TIMEOUT_S))
+    except Exception:
+        log.debug("Free Time photo prepare timeout bump skipped", exc_info=True)
+    last_error = ""
+    durable: DurableChatResult | None = None
+    _free_time_preparing += 1
+    try:
+        for attempt in range(1, FREE_TIME_PREPARE_MAX_ATTEMPTS + 1):
+            renew_claim_lease(claimed)
+            try:
+                result = await asyncio.wait_for(
+                    _runtime_prepare_callback(entry_from_claim(claimed)),
+                    timeout=timeout_s,
+                )
+                durable = result.to_durable()
+                break
+            except asyncio.TimeoutError:
+                last_error = "Main runtime timed out"
+                log_heartbeat(
+                    _state,
+                    f"{claimed['entry_kind']}_timeout",
+                    f"attempt={attempt}/{FREE_TIME_PREPARE_MAX_ATTEMPTS}",
+                )
+                if attempt < FREE_TIME_PREPARE_MAX_ATTEMPTS:
+                    await asyncio.sleep(min(2 ** attempt, 8))
+                    continue
+            except Exception as exc:
+                last_error = f"Main failed: {exc}"
+                log_heartbeat(
+                    _state, f"{claimed['entry_kind']}_failure", str(exc)[:200],
+                )
+                durable = None
+                break
+    finally:
+        _free_time_preparing = max(0, _free_time_preparing - 1)
+
+    if durable is None:
+        record_failure(claimed, last_error or "Main runtime timed out")
         return None
-    except Exception as exc:
-        record_failure(claimed, f"Main failed: {exc}")
-        log_heartbeat(
-            _state, f"{claimed['entry_kind']}_failure", str(exc)[:200],
-        )
+    if durable.disposition == "invalid":
+        complete_without_delivery(claimed, durable, "active_chat")
+        log_heartbeat(_state, "free_time_active_chat")
         return None
     if durable.disposition == "skip" and not durable.successful_effects:
         complete_without_delivery(claimed, durable, "no_effect")
@@ -673,8 +801,9 @@ async def _prepare_autonomous(claimed: dict) -> DurableChatResult | None:
         complete_without_delivery(claimed, durable, "tools_only")
         log_heartbeat(_state, f"{claimed['entry_kind']}_tools_only")
         return None
+    # Text-first: photo/tool failure must not burn a slot that still has words.
     if durable.disposition != "deliver" or not (
-        durable.text or durable.stickers or durable.images
+        durable.text or durable.stickers or durable.images or durable.voices
     ):
         complete_without_delivery(claimed, durable, "no_effect")
         log_heartbeat(_state, "free_time_no_effect")
@@ -712,10 +841,11 @@ async def _deliver_autonomous(
 
     remaining = durable
     components = []
+    # Photos first: generation already finished; do not wait on text/stickers.
+    components.extend(("image", item) for item in remaining.images)
     if remaining.text:
         components.append(("text", remaining.text))
     components.extend(("sticker", item) for item in remaining.stickers)
-    components.extend(("image", item) for item in remaining.images)
     components.extend(("voice", item) for item in remaining.voices)
     for kind, value in components:
         if not free_time_turn_available(
@@ -803,6 +933,7 @@ async def run_main_runtime_tick(
         now=now,
         active_chat=active_chat,
         awake=True,
+        preparing=is_free_time_preparing(),
     )
     if active_chat:
         return created
@@ -824,6 +955,7 @@ async def run_main_runtime_tick(
             now=current_now,
             active_chat=has_active_chat(),
             awake=_state == AWAKE or in_window,
+            preparing=is_free_time_preparing(),
         )
         if has_active_chat():
             break
@@ -888,6 +1020,7 @@ async def heartbeat_loop() -> None:
                         now=now,
                         active_chat=has_active_chat(),
                         awake=False,
+                        preparing=is_free_time_preparing(),
                     )
                 if _fallback_wake_due(now.hour):
                     wake_up(f"sleep_end_{_wake_earliest_hour():02d}:00")

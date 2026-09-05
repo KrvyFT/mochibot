@@ -8,12 +8,17 @@ import logging
 import re
 import threading
 
-from mochi.config import MEMORY_EXTRACTION_BATCH_TURNS, OWNER_USER_ID
+from mochi.config import (
+    MEMORY_EXTRACTION_BATCH_TURNS,
+    MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS,
+    OWNER_USER_ID,
+)
 from mochi.conversation_text import strip_legacy_tool_fact_suffix
 from mochi.core_store import read_core
 from mochi.db import (
     commit_memory_extraction_batch,
     get_memory_extraction_batch,
+    get_memory_extraction_pending_turns,
     get_memory_extraction_references,
     get_memory_extraction_status,
     list_memory_extraction_users,
@@ -26,6 +31,8 @@ from mochi.memory_contract import (
     normalize_evidence_message_ids,
     validate_memory_content,
     validate_memory_importance,
+    validate_memory_kind,
+    validate_memory_tags,
 )
 from mochi.model_pool import get_pool
 from mochi.prompt_loader import get_prompt
@@ -34,13 +41,57 @@ from mochi.prompt_loader import get_prompt
 log = logging.getLogger(__name__)
 
 EXTRACTION_BATCH_SIZE = MEMORY_EXTRACTION_BATCH_TURNS
+HIGH_SIGNAL_BATCH_SIZE = max(
+    1,
+    min(
+        MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS,
+        MEMORY_EXTRACTION_BATCH_TURNS,
+    ),
+)
 _RUNNING_TASKS: dict[int, asyncio.Task] = {}
 _PENDING_WAKEUPS: set[int] = set()
 _TASKS_LOCK = threading.Lock()
 
+# Identity / preference / body / commitment cues that should not wait a full batch.
+_HIGH_SIGNAL_RE = re.compile(
+    r"(?:"
+    r"我叫|叫我|我是|我的名字|"
+    r"喜欢|讨厌|不吃|过敏|偏好|习惯|"
+    r"吃药|药|疼|病|失眠|身体|"
+    r"约定|答应|记得帮|别忘|提醒我|"
+    r"住在|工作|生日|纪念日|女朋友|男朋友|结婚"
+    r")",
+)
+
 
 class MemoryExtractionContractError(ValueError):
     """The Lite response cannot safely advance the extraction cursor."""
+
+
+def _batch_has_high_signal(turns: list[dict]) -> bool:
+    for turn in turns:
+        for key in ("user", "assistant"):
+            message = turn.get(key) or {}
+            content = str(message.get("content") or "")
+            if key == "assistant":
+                content = strip_legacy_tool_fact_suffix(content)
+            if _HIGH_SIGNAL_RE.search(content):
+                return True
+    return False
+
+
+def _extraction_threshold(user_id: int, pending_turns: int) -> int:
+    """Default batch size, or the high-signal floor when cues are present."""
+    if pending_turns < HIGH_SIGNAL_BATCH_SIZE:
+        return EXTRACTION_BATCH_SIZE
+    if pending_turns >= EXTRACTION_BATCH_SIZE:
+        return EXTRACTION_BATCH_SIZE
+    pending = get_memory_extraction_pending_turns(
+        user_id, limit=pending_turns,
+    )
+    if pending and _batch_has_high_signal(pending):
+        return HIGH_SIGNAL_BATCH_SIZE
+    return EXTRACTION_BATCH_SIZE
 
 
 def _tool_receipts(raw: str | None) -> list[str]:
@@ -102,7 +153,7 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
     batch_user_ids = {
         message["id"] for message in batch if message["role"] == "user"
     }
-    required = {"content", "importance", "evidence_message_ids"}
+    required = {"kind", "content", "importance", "tags", "evidence_message_ids"}
     validated: list[dict] = []
     for index, candidate in enumerate(parsed):
         if not isinstance(candidate, dict) or set(candidate) != required:
@@ -111,8 +162,10 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 f"{', '.join(sorted(required))}"
             )
         try:
+            kind = validate_memory_kind(candidate["kind"])
             content = validate_memory_content(candidate["content"])
             importance = validate_memory_importance(candidate["importance"])
+            tags = list(validate_memory_tags(candidate["tags"]))
             evidence = normalize_evidence_message_ids(
                 candidate["evidence_message_ids"]
             )
@@ -129,8 +182,10 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 "user messages from this batch"
             )
         validated.append({
+            "kind": kind,
             "content": content,
             "importance": importance,
+            "tags": tags,
             "evidence_message_ids": list(evidence),
         })
     return validated
@@ -236,8 +291,10 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
     candidates = validate_extraction_response(response.content, batch)
     candidates = _filter_batch_duplicates(candidates)
     candidates = _filter_core_duplicates(candidates, core)
-    candidates = _attach_embeddings(candidates)
-    inserted = commit_memory_extraction_batch(
+    core_candidates = [c for c in candidates if c["kind"] == "core"]
+    temp_candidates = [c for c in candidates if c["kind"] == "temp"]
+    core_candidates = _attach_embeddings(core_candidates)
+    result = commit_memory_extraction_batch(
         user_id,
         expected_cursor=cursor,
         through_message_id=batch[-1]["id"],
@@ -246,26 +303,35 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             for message in batch
             if message["role"] == "user"
         ],
-        memories=candidates,
+        memories=core_candidates,
+        temp_memories=temp_candidates,
     )
+    inserted = result["core_ids"]
     log.info(
-        "Memory extraction processed messages %d-%d: %d candidates, %d inserted",
+        "Memory extraction processed messages %d-%d: %d candidates "
+        "(%d core / %d temp), inserted %d core / %d temp",
         batch[0]["id"],
         batch[-1]["id"],
         len(candidates),
-        len(inserted),
+        len(core_candidates),
+        len(temp_candidates),
+        len(result["core_ids"]),
+        len(result["temp_ids"]),
     )
     return inserted
 
 
-def drain_memory_extraction(user_id: int = 0) -> int:
+def drain_memory_extraction(
+    user_id: int = 0,
+    *,
+    batch_size: int | None = None,
+) -> int:
     """Drain exact complete-turn batches, stopping safely on extraction failure."""
     uid = user_id or OWNER_USER_ID
+    size = max(1, int(batch_size or EXTRACTION_BATCH_SIZE))
     inserted_count = 0
     while True:
-        cursor, batch = get_memory_extraction_batch(
-            uid, EXTRACTION_BATCH_SIZE,
-        )
+        cursor, batch = get_memory_extraction_batch(uid, size)
         if not batch:
             return inserted_count
         try:
@@ -281,6 +347,10 @@ def drain_memory_extraction(user_id: int = 0) -> int:
                 uid, f"{type(exc).__name__}: {exc}",
             )
             return inserted_count
+        # After the first flush, continue with the default cadence.
+        size = EXTRACTION_BATCH_SIZE
+
+
 def schedule_memory_extraction(user_id: int = 0) -> bool:
     """Start one non-blocking worker per user when work is durable."""
     uid = user_id or OWNER_USER_ID
@@ -291,7 +361,13 @@ def schedule_memory_extraction(user_id: int = 0) -> bool:
     except Exception:
         log.exception("Could not inspect memory extraction state")
         return False
-    if status["pending_turns"] < EXTRACTION_BATCH_SIZE:
+    pending = int(status["pending_turns"])
+    try:
+        threshold = _extraction_threshold(uid, pending)
+    except Exception:
+        log.exception("Could not inspect high-signal extraction cues")
+        threshold = EXTRACTION_BATCH_SIZE
+    if pending < threshold:
         return False
     try:
         loop = asyncio.get_running_loop()
@@ -304,7 +380,9 @@ def schedule_memory_extraction(user_id: int = 0) -> bool:
             _PENDING_WAKEUPS.add(uid)
             return False
         task = loop.create_task(
-            asyncio.to_thread(drain_memory_extraction, uid),
+            asyncio.to_thread(
+                drain_memory_extraction, uid, batch_size=threshold,
+            ),
             name=f"memory-extraction-{uid}",
         )
         _RUNNING_TASKS[uid] = task
