@@ -41,3 +41,41 @@ async def test_send_message_replies_only_on_first_bubble(monkeypatch):
     assert calls[0].get("reply_to_message_id") == 99
     assert "reply_to_message_id" not in calls[1]
     assert "reply_to_message_id" not in calls[2]
+
+
+@pytest.mark.asyncio
+async def test_bubble_gap_does_not_wait_on_typing_retries(monkeypatch):
+    """Typing must not serialize behind infinite Bot API retries."""
+    import time
+
+    transport = tg.TelegramTransport()
+    sends = {"n": 0}
+
+    async def fake_send_message(**kwargs):
+        sends["n"] += 1
+        return SimpleNamespace(message_id=sends["n"])
+
+    async def slow_chat_action(**_kwargs):
+        await asyncio.sleep(0.4)
+
+    bot = SimpleNamespace(
+        send_message=fake_send_message,
+        send_chat_action=slow_chat_action,
+    )
+    transport._app = SimpleNamespace(bot=bot)
+    monkeypatch.setattr(tg, "TG_BUBBLE_DELAY_S", 0.05)
+    monkeypatch.setattr(tg, "_split_bubbles", lambda text, *_a: ["一", "二"])
+
+    async def immediate(factory, **_kwargs):
+        await factory()
+        return True
+
+    monkeypatch.setattr(tg, "call_telegram_api", immediate)
+
+    started = time.monotonic()
+    ok = await transport.send_message(1, "ignored")
+    elapsed = time.monotonic() - started
+    assert ok is True
+    assert sends["n"] == 2
+    # Gap overlaps typing; must not wait the full slow typing (0.4s).
+    assert elapsed < 0.25

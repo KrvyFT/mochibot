@@ -152,6 +152,17 @@ CONV_SUMMARY_MAX_TOKENS: int = max(
 MEMORY_EXTRACTION_BATCH_TURNS: int = max(
     1, _env_int("MEMORY_EXTRACTION_BATCH_TURNS", 10),
 )
+# High-signal turns (identity/preference/body/commitment) flush sooner.
+MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS: int = max(
+    1, _env_int("MEMORY_EXTRACTION_HIGH_SIGNAL_BATCH_TURNS", 4),
+)
+# When rolling summary lags, bound overflow fed into Main.
+CONV_OVERFLOW_MAX_MESSAGES: int = max(
+    0, _env_int("CONV_OVERFLOW_MAX_MESSAGES", 8),
+)
+CONV_OVERFLOW_MAX_TOKENS: int = max(
+    0, _env_int("CONV_OVERFLOW_MAX_TOKENS", 2000),
+)
 CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 2500)
 TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 
@@ -402,14 +413,16 @@ TOOL_RATE_LIMIT_PER_MIN = _env_int("TOOL_RATE_LIMIT_PER_MIN", 10)
 
 BUBBLE_ENABLED = _env_bool("BUBBLE_ENABLED", True)
 TG_INTERIM_ENABLED = _env_bool("TG_INTERIM_ENABLED", True)
-TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 1.0)
+# Gap between outbound bubbles. Keep a short breath, not a full second.
+TG_BUBBLE_DELAY_S = _env_float("TG_BUBBLE_DELAY_S", 0.25)
 TG_BUBBLE_MAX = _env_int("TG_BUBBLE_MAX", 8)
 TG_BUBBLE_DELIMITER = _env("TG_BUBBLE_DELIMITER", "|||")
 TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
 # Quiet-window coalescing for Telegram text/photo. Commands and stickers
 # stay immediate. False restores one-turn-per-message.
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
-TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 10.0)
+# Wait after the last owner message before starting a turn. Lower = snappier.
+TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 4.0)
 TG_MESSAGE_DEBOUNCE_MAX_ITEMS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_ITEMS", 20)
 TG_MESSAGE_DEBOUNCE_MAX_CHARS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_CHARS", 8000)
 # Outbound Bot API: wait_for each attempt, then retry forever after 3 quick tries.

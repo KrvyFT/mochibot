@@ -237,20 +237,39 @@ def test_photo_skill_generates_without_refs(tmp_path, monkeypatch):
     assert data  # may be JPEG-compressed for Telegram
 
 
-def test_photo_quota_phrases_and_daily_caps():
+def test_photo_quota_phrases_and_daily_caps(monkeypatch):
     from mochi.skills.photo.quota import (
         note_photo_send,
         photo_bucket,
         photo_quota_denial,
         user_requested_photo,
+        free_time_photo_guidance,
+        free_time_photo_must_send,
+        note_photo_miss,
+    )
+
+    monkeypatch.setattr(
+        "mochi.admin.admin_db.is_draw_tier_ready", lambda: True,
     )
 
     assert user_requested_photo("发一张照片呗")
     assert user_requested_photo("给我看看你")
     assert user_requested_photo("send a photo")
+    assert user_requested_photo("没拍好 再发一张看看")
+    assert user_requested_photo("再发一张")
+    assert user_requested_photo("重拍一张")
+    assert user_requested_photo("看看照片")
     assert not user_requested_photo("今天吃了什么")
+    assert not user_requested_photo("在吗")
     assert photo_bucket("runtime:free_time", "") == "free_time"
     assert photo_bucket("chat", "发张照片") == "requested"
+
+    uid = 910_001
+    day = "2099-01-02"
+    assert free_time_photo_must_send(uid, day=day) is True
+    note_photo_miss(uid, "free_time", day=day)
+    assert free_time_photo_must_send(uid, day=day) is False
+    assert "不要再调用 send_photo" in free_time_photo_guidance(uid, day=day)
 
     for _ in range(2):
         note_photo_send(1, "chat")
@@ -355,11 +374,8 @@ def test_send_photo_times_out_for_text_fallback(monkeypatch):
     elapsed = time.monotonic() - started
     assert result.success is False
     assert "出图超时" not in (result.output or "")
-    assert any(
-        token in (result.output or "")
-        for token in ("被删了", "没找到", "找不到", "翻不到")
-    )
     assert "不要再调用 send_photo" in (result.output or "")
+    assert "不要提照片" in (result.output or "") or "不要提照片、相册" in (result.output or "")
     assert elapsed < 1.0
 
 

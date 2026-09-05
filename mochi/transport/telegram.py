@@ -4,6 +4,7 @@ This is the default transport. Requires TELEGRAM_BOT_TOKEN in .env.
 """
 
 import asyncio
+import contextlib
 import logging
 import time
 from dataclasses import dataclass
@@ -139,6 +140,31 @@ async def _set_reaction(bot, chat_id: int, message_id: int, emoji: str | None) -
         pass
 
 
+async def _nudge_typing(bot, chat_id: int) -> None:
+    """Best-effort typing hint — never block outbound bubbles on retries."""
+    try:
+        await asyncio.wait_for(
+            bot.send_chat_action(chat_id=chat_id, action="typing"),
+            timeout=1.5,
+        )
+    except Exception:
+        pass
+
+
+async def _pause_between_bubbles(bot, chat_id: int) -> None:
+    """Overlap typing with the bubble gap so cadence stays short."""
+    typing = asyncio.create_task(_nudge_typing(bot, chat_id))
+    try:
+        if TG_BUBBLE_DELAY_S > 0:
+            await asyncio.sleep(TG_BUBBLE_DELAY_S)
+    finally:
+        if not typing.done():
+            typing.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing
+
+
+
 def _split_bubbles(text: str, max_bubbles: int = 8,
                    delimiter: str = "|||",
                    min_chars: int = 8) -> list[str]:
@@ -233,12 +259,7 @@ class TelegramTransport(Transport):
         bubbles = _split_bubbles(text, TG_BUBBLE_MAX, TG_BUBBLE_DELIMITER, TG_BUBBLE_MIN_CHARS)
         for i, bubble in enumerate(bubbles):
             if i > 0:
-                async def _typing():
-                    await self._app.bot.send_chat_action(
-                        chat_id=user_id, action="typing",
-                    )
-                await call_telegram_api(_typing, label="typing")
-                await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                await _pause_between_bubbles(self._app.bot, user_id)
             for start in range(0, len(bubble), 4096):
                 chunk = bubble[start:start + 4096]
                 # Everyday chat: only the first bubble replies to the user's
@@ -617,7 +638,7 @@ class TelegramTransport(Transport):
             )
             await self._run_owner_turn(group_pending, topic_group=group)
             if index + 1 < len(groups):
-                await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                await _pause_between_bubbles(pending.context.bot, pending.channel_id)
 
     async def _run_owner_turn(
         self,
@@ -761,12 +782,7 @@ class TelegramTransport(Transport):
                         ):
                             raise RuntimeError("overflow send failed")
                     for bubble in bubbles[1:]:
-                        async def _typing():
-                            await context.bot.send_chat_action(
-                                chat_id=chat_id, action="typing",
-                            )
-                        await call_telegram_api(_typing, label="typing")
-                        await asyncio.sleep(TG_BUBBLE_DELAY_S)
+                        await _pause_between_bubbles(context.bot, chat_id)
                         for start in range(0, len(bubble), 4096):
                             chunk = bubble[start:start + 4096]
 

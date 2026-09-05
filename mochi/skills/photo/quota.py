@@ -16,6 +16,11 @@ _REQUEST_RE = re.compile(
     r"发[一两几]?(?:张|个)?(?:照片|相片|自拍|图)|"
     r"拍[一两几]?(?:张|个)?(?:照|照片|相片)|"
     r"来[一两几]?(?:张|个)?(?:照片|相片|图)|"
+    # 「再发一张」「发一张看看」「重拍一张」——张后可不带「照片」
+    r"(?:再|重新)?发[一两几]?(?:张|个)(?:看看|瞧瞧|来看)?"
+    r"|(?:再|重新)?(?:拍|重拍)[一两几]?(?:张|个)(?:看看|瞧瞧)?"
+    r"|(?:没|没能|没有)?拍好|"
+    r"看看(?:这?张)?(?:照片|相片|图|自拍)|"
     r"(?:给|让)我看看你|"
     r"看看你(?:现在|今天|自己)?"
     r"|想看你(?:的)?(?:照片|相片)?"
@@ -73,12 +78,30 @@ def note_photo_send(
     record_photo_send(user_id, day or logical_today(), bucket, turn_id)
 
 
+def note_photo_miss(
+    user_id: int,
+    bucket: str,
+    *,
+    turn_id: str = "",
+    day: str | None = None,
+) -> None:
+    """Record a failed Free Time / chat draw so we stop re-forcing the same day."""
+    miss_bucket = "free_time_miss" if bucket == "free_time" else f"{bucket}_miss"
+    record_photo_send(user_id, day or logical_today(), miss_bucket, turn_id)
+
+
 def free_time_photo_must_send(user_id: int, *, day: str | None = None) -> bool:
     from mochi.admin.admin_db import is_draw_tier_ready
 
     if not is_draw_tier_ready():
         return False
-    return today_photo_count(user_id, "free_time", day=day) < FREE_TIME_MIN
+    day = day or logical_today()
+    if today_photo_count(user_id, "free_time", day=day) >= FREE_TIME_MIN:
+        return False
+    # One timed-out/failed attempt is enough — do not burn every slot on miss copy.
+    if today_photo_count(user_id, "free_time_miss", day=day) >= 1:
+        return False
+    return True
 
 
 def free_time_photo_guidance(user_id: int, *, day: str | None = None) -> str:
@@ -86,15 +109,22 @@ def free_time_photo_guidance(user_id: int, *, day: str | None = None) -> str:
 
     if not is_draw_tier_ready():
         return ""
+    day = day or logical_today()
     n = today_photo_count(user_id, "free_time", day=day)
+    misses = today_photo_count(user_id, "free_time_miss", day=day)
     if n >= FREE_TIME_MAX:
         return "今日 Free Time 照片已满三张，不要再调用 send_photo。"
+    if misses >= 1 and n < FREE_TIME_MIN:
+        return (
+            "今日 Free Time 出图已经失败过。不要再调用 send_photo，"
+            "也不要提照片找不到、被删了、夹进书里；直接用文字找他说话，换一件新事。"
+        )
     if n < FREE_TIME_MIN:
         return (
             "今日 Free Time 还没发过照片。这一轮尽量调用 send_photo，"
             "递一张照片给他看：可以是自己在真实世界散步/游玩/吃饭，"
             "也可以是刚在网上看到的景物或物件画成/拍成的样子。"
-            "字仍然要找他说话。若出图失败，仍用文字把事说完，不要空轮。"
+            "字仍然要找他说话。若出图失败，不要反复提照片，用文字把事说完即可。"
         )
     remaining = FREE_TIME_MAX - n
     return (

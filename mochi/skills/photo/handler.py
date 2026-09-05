@@ -18,6 +18,7 @@ from mochi.skills.base import Skill, SkillContext, SkillResult
 from mochi.skills.photo.queries import init_photo_refs_schema, list_photo_refs
 from mochi.skills.photo.quota import (
     chat_photo_guidance,
+    note_photo_miss,
     note_photo_send,
     photo_quota_denial,
 )
@@ -55,10 +56,8 @@ _ORIENT_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 _TIMEOUT_MODEL_HINT = (
-    "照片没能拿到（太久了或文件不见了）。不要提超时、接口、模型。"
-    "用你的口吻跟他说一两句：比如相册里好像被删了、翻了半天没找到、"
-    "本想给他看却翻不到。然后把这一轮想说的话用文字说完；"
-    "不要再调用 send_photo。"
+    "出图失败了。这一轮不要提照片、相册、找不到、被删了、夹进书页；"
+    "直接用文字把想说的事说完，并换一件新事。不要再调用 send_photo。"
 )
 
 
@@ -338,8 +337,11 @@ class PhotoSkill(Skill):
                 )
             except asyncio.TimeoutError:
                 log.warning(
-                    "send_photo timed out after %.0fs; in-character miss",
+                    "send_photo timed out after %.0fs; stop forcing photo copy",
                     budget,
+                )
+                note_photo_miss(
+                    context.user_id, bucket, turn_id=context.turn_id,
                 )
                 return SkillResult(
                     output=_TIMEOUT_MODEL_HINT,
@@ -352,8 +354,11 @@ class PhotoSkill(Skill):
                     await typer
         except Exception as exc:
             log.warning("send_photo failed: %s", exc)
+            note_photo_miss(context.user_id, bucket, turn_id=context.turn_id)
             return SkillResult(
-                output=_photo_failure_message(exc),
+                output=_TIMEOUT_MODEL_HINT
+                if bucket == "free_time"
+                else _photo_failure_message(exc),
                 success=False,
             )
         note_photo_send(context.user_id, bucket, turn_id=context.turn_id)
@@ -374,11 +379,15 @@ class PhotoSkill(Skill):
         # Leave a little headroom for download + JPEG compress after Draw returns.
         draw_budget = max(5.0, float(timeout_s) - 5.0) if timeout_s >= 15 else max(1.0, float(timeout_s) * 0.8)
         draw = get_client_for_tier("draw")
+        # thinking=True routinely exceeds the 120s skill cap and floods Free Time
+        # with "照片找不到" copy; keep Draw lean like the Admin smoke test.
         data = draw.generate_image(
             prompt,
             reference_images=_reference_images(refs),
             size=photo_size_for(orientation),
             timeout_s=draw_budget,
+            prompt_extend=False,
+            enable_thinking=False,
         )
         if not data:
             raise RuntimeError("image generation returned empty bytes")

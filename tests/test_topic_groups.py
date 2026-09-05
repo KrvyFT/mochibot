@@ -85,3 +85,17 @@ async def test_choose_reply_anchor_can_pick_or_skip(monkeypatch):
 async def test_choose_reply_anchor_empty_group():
     group = TopicGroup(texts=(), user_msg_ids=())
     assert await choose_reply_anchor(group, "hi") is None
+
+
+@pytest.mark.asyncio
+async def test_choose_reply_anchor_skips_lite_for_single_message(monkeypatch):
+    group = TopicGroup(texts=("只有一句",), user_msg_ids=(42,))
+    called = {"n": 0}
+
+    def boom(*_a, **_k):
+        called["n"] += 1
+        raise AssertionError("lite should not run for single message")
+
+    monkeypatch.setattr("mochi.llm.get_client_for_tier", boom)
+    assert await choose_reply_anchor(group, "嗯") is None
+    assert called["n"] == 0

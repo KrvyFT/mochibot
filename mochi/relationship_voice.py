@@ -300,6 +300,59 @@ def read_voice() -> str:
     return text + "\n" if text else starting_voice()
 
 
+_COMPACT_TIER = {
+    "Thriving": (
+        "当前相处偏满分档：可以重度病娇，仍保持天真礼貌。"
+        "Free Time 只短开场，不要一次刷四到六句。"
+    ),
+    "Healthy": (
+        "当前相处偏健康：偶尔轻轻想你；多数格仍是分享/问事。"
+        "Free Time 气泡保持短。"
+    ),
+    "Developing": (
+        "当前相处仍在发展：路过、分享、轻轻关心为主；亲密话极少。"
+        "Free Time 短开场即可。"
+    ),
+    "Strained": (
+        "当前相处偏紧：禁止主动「好想你」；保持距离感的关心或安静分享。"
+    ),
+    "At Risk": (
+        "当前相处偏危：禁止主动亲密表白；话更短，可以安静分享或走开。"
+    ),
+}
+
+
+def _infer_voice_tier(text: str) -> str:
+    """Best-effort tier from stored voice text (distinctive guideline lines)."""
+    body = text or ""
+    # Order matters: more specific Thriving/At Risk markers first.
+    markers = (
+        ("Thriving", "主动把袖子递过去"),
+        ("Thriving", "可以主动把袖子递过去"),
+        ("At Risk", "可以走远。问了就不知道呀"),
+        ("Strained", "占有玩笑可以带刺，或突然安静"),
+        ("Healthy", "袖子等对方伸手才给"),
+        ("Developing", "刚好走到这里"),
+    )
+    for tier, needle in markers:
+        if needle in body:
+            return tier
+    return STARTING_TIER
+
+
+def compact_voice_summary(full: str | None = None) -> str:
+    """Short Free Time injection: current tier cue + ban phrases only."""
+    text = full if full is not None else read_voice()
+    tier = _infer_voice_tier(text)
+    cue = _COMPACT_TIER.get(tier, _COMPACT_TIER[STARTING_TIER])
+    return (
+        "## 相处口吻（Free Time 摘要）\n"
+        f"{cue}\n"
+        f"{_FOOTER}\n"
+        "禁止复读同一意象（同一颗星、同一顿饭药、照片找不到）。\n"
+    )
+
+
 def write_voice(content: str) -> None:
     """Atomically replace the living prompt."""
     from mochi.core_store import DATA_DIR

@@ -17,6 +17,7 @@ from mochi.config import (
     RECALL_VEC_SIM_THRESHOLD, RECALL_BM25_WEIGHT, RECALL_VEC_SIM_WEIGHT,
     RECALL_KEYWORD_BOOST, RECALL_FTS_CANDIDATE_MULTIPLIER, RECALL_FALLBACK_LIMIT,
     VEC_SEARCH_NATIVE_ENABLED, VEC_SEARCH_CANDIDATE_LIMIT,
+    CONV_OVERFLOW_MAX_MESSAGES, CONV_OVERFLOW_MAX_TOKENS,
 )
 
 logger = logging.getLogger(__name__)
@@ -1362,6 +1363,30 @@ def get_memory_extraction_batch(
         conn.close()
 
 
+def get_memory_extraction_pending_turns(
+    user_id: int, *, limit: int | None = None,
+) -> list[dict]:
+    """Return pending complete turns after the extraction cursor (newest-last)."""
+    conn = _connect()
+    try:
+        state = _ensure_memory_extraction_state(conn, user_id)
+        turns = [
+            turn for turn in _pair_conversation_turns(
+                _eligible_conversation_messages(conn, user_id)
+            )
+            if (
+                turn["through_message_id"]
+                > state["last_processed_message_id"]
+            )
+        ]
+        conn.commit()
+        if limit is not None:
+            turns = turns[:max(0, int(limit))]
+        return turns
+    finally:
+        conn.close()
+
+
 def get_memory_extraction_status(
     user_id: int, batch_turns: int = 10,
 ) -> dict:
@@ -1645,6 +1670,31 @@ def get_conversation_context(
                 flattened.extend((turn["user"], turn["assistant"]))
             return flattened
 
+        def _cap_overflow(messages: list[dict]) -> list[dict]:
+            """Keep the newest overflow window under message/token budgets."""
+            max_messages = int(CONV_OVERFLOW_MAX_MESSAGES or 0)
+            max_tokens = int(CONV_OVERFLOW_MAX_TOKENS or 0)
+            if not messages or (max_messages <= 0 and max_tokens <= 0):
+                return messages
+            from mochi.token_estimator import estimate_tokens
+
+            selected: list[dict] = []
+            used_tokens = 0
+            for message in reversed(messages):
+                if max_messages > 0 and len(selected) >= max_messages:
+                    break
+                content = str(message.get("content") or "")
+                cost = estimate_tokens(content) if content else 0
+                if (
+                    max_tokens > 0
+                    and selected
+                    and used_tokens + cost > max_tokens
+                ):
+                    break
+                selected.append(message)
+                used_tokens += cost
+            return list(reversed(selected))
+
         recent = [
             message
             for _, item_messages, _ in recent_timeline
@@ -1654,7 +1704,7 @@ def get_conversation_context(
         return {
             "summary": summary,
             "through_message_id": through_message_id,
-            "overflow": _flatten(overflow),
+            "overflow": _cap_overflow(_flatten(overflow)),
             "recent": recent,
             "trailing": trailing,
         }

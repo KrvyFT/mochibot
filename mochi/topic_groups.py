@@ -158,6 +158,9 @@ async def choose_reply_anchor(
     """
     if not group.user_msg_ids:
         return None
+    # Single-bubble turns have nothing to disambiguate — skip the lite call.
+    if len(group.user_msg_ids) <= 1:
+        return None
 
     numbered = "\n".join(
         f"[{index}] {text.strip() or '(空)'}"
