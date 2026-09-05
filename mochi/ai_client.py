@@ -1000,7 +1000,8 @@ def _free_time_intimacy_guidance(runtime_entry: MainRuntimeEntry) -> str:
     body = by_tier.get(tier, by_tier["Developing"])
     return (
         f"{send_shape}\n{body}\n"
-        "禁止复读上一轮已经说过的同一意象（同一颗星、同一顿饭、照片找不到）。"
+        "禁止复读上一轮已经说过的同一意象（同一颗星、同一顿饭、照片找不到、"
+        "不吵你/等你弄完/开着灯醒着、旁边靠着/倒温水等同场陪伴填充）。"
     )
 
 

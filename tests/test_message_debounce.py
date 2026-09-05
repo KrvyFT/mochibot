@@ -102,6 +102,8 @@ async def test_telegram_flush_does_not_drain_mid_reply_backlog(monkeypatch):
 
     async def slow_grouped(self, pending):
         runs.append(pending.text)
+        if pending.force_reply_to_msg_id is not None:
+            runs.append(f"reply_to:{pending.force_reply_to_msg_id}")
         started.set()
         await release.wait()
 
@@ -135,13 +137,14 @@ async def test_telegram_flush_does_not_drain_mid_reply_backlog(monkeypatch):
         await transport._handle_message(_Update("first", 1), None)
         await asyncio.wait_for(started.wait(), timeout=1)
         assert runs == ["first"]
+        assert 42 in transport._flush_in_progress
 
         await transport._handle_message(_Update("second", 2), None)
         release.set()
         await asyncio.sleep(0.04)
         assert runs == ["first"]
         await asyncio.sleep(0.1)
-        assert runs == ["first", "second"]
+        assert runs == ["first", "second", "reply_to:2"]
     finally:
         tg.set_message_handler(None)
         await transport.stop()

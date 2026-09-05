@@ -82,11 +82,28 @@ class _PendingTurn:
     user_msg_id: int
     # Preserves every buffered owner message for topic-split + reply_to.
     source_items: list[tuple[str, int]] | None = None
+    # True when this item arrived while a prior flush/generation was running.
+    arrived_during_busy: bool = False
+    # Force first outbound bubble to reply_to this Telegram message id.
+    force_reply_to_msg_id: int | None = None
 
     def topic_items(self) -> list[tuple[str, int]]:
         if self.source_items:
             return list(self.source_items)
         return [(self.text, self.user_msg_id)]
+
+
+def _first_midgen_reply_target(items: list[_PendingTurn]) -> int | None:
+    """First user message id among items that arrived mid-generation."""
+    for item in items:
+        if not item.arrived_during_busy:
+            continue
+        topic = item.topic_items()
+        if topic:
+            return int(topic[0][1])
+        if item.user_msg_id:
+            return int(item.user_msg_id)
+    return None
 
 
 def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
@@ -109,6 +126,8 @@ def _merge_pending_turns(items: list[_PendingTurn]) -> _PendingTurn:
         context=last.context,
         user_msg_id=last.user_msg_id,
         source_items=source_items,
+        arrived_during_busy=any(item.arrived_during_busy for item in items),
+        force_reply_to_msg_id=_first_midgen_reply_target(items),
     )
 
 
@@ -202,6 +221,8 @@ class TelegramTransport(Transport):
             max_chars=TG_MESSAGE_DEBOUNCE_MAX_CHARS,
             on_runner_start=_track_debounced_chat,
         )
+        # channel_id → flush/generation in progress (mid-arrival tagging).
+        self._flush_in_progress: set[int] = set()
 
     @property
     def name(self) -> str:
@@ -581,6 +602,9 @@ class TelegramTransport(Transport):
             context=context,
             user_msg_id=update.message.message_id,
             source_items=[(text, update.message.message_id)],
+            arrived_during_busy=(
+                update.effective_chat.id in self._flush_in_progress
+            ),
         )
 
         if not _on_message_callback:
@@ -590,7 +614,7 @@ class TelegramTransport(Transport):
         if not TG_AGGREGATE_ENABLED or TG_MESSAGE_DEBOUNCE_S <= 0:
             from mochi.heartbeat import track_active_chat_task
             track_active_chat_task()
-            await self._run_topic_grouped_turns(pending)
+            await self._run_owner_turn_guarded(pending)
             return
 
         self._debouncer.delay_s = TG_MESSAGE_DEBOUNCE_S
@@ -603,10 +627,19 @@ class TelegramTransport(Transport):
             on_flush=self._flush_pending_turns,
         )
 
+    async def _run_owner_turn_guarded(self, pending: _PendingTurn) -> None:
+        """Mark channel busy so mid-turn arrivals can force reply anchors."""
+        key = pending.channel_id
+        self._flush_in_progress.add(key)
+        try:
+            await self._run_topic_grouped_turns(pending)
+        finally:
+            self._flush_in_progress.discard(key)
+
     async def _flush_pending_turns(self, items: list[_PendingTurn]) -> None:
         """Process one quiet-window batch; leave mid-reply arrivals for the next debounce."""
         pending = _merge_pending_turns(items)
-        await self._run_topic_grouped_turns(pending)
+        await self._run_owner_turn_guarded(pending)
 
     async def _run_topic_grouped_turns(self, pending: _PendingTurn) -> None:
         from mochi.topic_groups import TopicGroup, split_user_topics
@@ -620,6 +653,7 @@ class TelegramTransport(Transport):
             )
             await self._run_owner_turn(pending, topic_group=group)
             return
+        force_reply = pending.force_reply_to_msg_id
         for index, group in enumerate(groups):
             group_pending = _PendingTurn(
                 user_id=pending.user_id,
@@ -630,6 +664,8 @@ class TelegramTransport(Transport):
                 context=pending.context,
                 user_msg_id=group.anchor_msg_id or pending.user_msg_id,
                 source_items=list(zip(group.texts, group.user_msg_ids)),
+                # Only the first outbound of this flush replies to mid-gen #1.
+                force_reply_to_msg_id=force_reply if index == 0 else None,
             )
             await self._run_owner_turn(group_pending, topic_group=group)
             if index + 1 < len(groups):
@@ -881,7 +917,14 @@ class TelegramTransport(Transport):
                         return
                 reply_to = None
                 if result.text or result.stickers or getattr(result, "images", None) or getattr(result, "voices", None):
-                    reply_to = await choose_reply_anchor(topic_group, result.text or "")
+                    if pending.force_reply_to_msg_id:
+                        # Mid-generation backlog: first bubble replies to the
+                        # first user message that arrived while we were busy.
+                        reply_to = pending.force_reply_to_msg_id
+                    else:
+                        reply_to = await choose_reply_anchor(
+                            topic_group, result.text or "",
+                        )
                 delivered = await _deliver_final(result, reply_to)
                 if delivered:
                     result.confirm_delivered()
