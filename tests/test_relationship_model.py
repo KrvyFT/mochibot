@@ -346,8 +346,11 @@ def test_voice_follows_tier_and_never_names_the_score():
     from mochi.relationship_voice import compose_voice, starting_voice
 
     start = starting_voice()
+    assert "# 行为底盘" in start
     assert "# 行为准则" in start
     assert "路过" in start or "软软地待在旁边" in start
+    assert "含着一块棉花糖" in start
+    assert "每次回复拆分为" in start
     assert "RQI" not in start
     assert "病娇" not in start
     assert "重度" not in start
@@ -366,7 +369,7 @@ def test_voice_follows_tier_and_never_names_the_score():
     )
     assert thriving and healthy and strained
     assert thriving != healthy
-    assert "Elma 想你了" in thriving or "再待一下下" in thriving
+    assert "我想你了" in thriving or "再待一下下" in thriving
     assert "轻轻关心" in healthy or "有点想你了" in healthy or "明天有空" in healthy
     assert "不疾不徐" in healthy
     assert "沉默" in strained or "裂痕" in strained or "真讨厌" in strained

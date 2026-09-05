@@ -114,6 +114,10 @@ if HAS_FASTAPI:
             if request.method in _SAFE_METHODS:
                 return await call_next(request)
 
+            # Open debug endpoints intentionally skip CSRF + token.
+            if request.url.path.startswith("/api/debug/"):
+                return await call_next(request)
+
             # If the caller provides a Bearer token, they are an API client
             # (cURL, Postman, programmatic), not a CSRF victim's browser.
             auth = request.headers.get("Authorization", "")
@@ -1595,6 +1599,13 @@ if HAS_FASTAPI:
         skill.refresh_config()
         refresh_capability_summary()
         return {"ok": True}
+
+    # ── Debug routes (open, no auth) ────────────────────────────────
+    try:
+        from mochi.admin.debug_routes import register_debug_routes
+        register_debug_routes(app)
+    except ImportError:
+        pass
 
     # ── Chat migration routes (搬家) ────────────────────────────────
     try:

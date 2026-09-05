@@ -208,6 +208,7 @@ select.form-input { cursor:pointer; }
     <button class="nav-item" data-page="persona"><span class="nav-icon">📝</span> 人格 & Prompts</button>
     <button class="nav-item" data-page="memory"><span class="nav-icon">🧠</span> 记忆库</button>
     <button class="nav-item" data-page="migrate"><span class="nav-icon">📦</span> 搬家</button>
+    <button class="nav-item" data-page="debug"><span class="nav-icon">🛠</span> Debug</button>
   </nav>
   <div style="padding:8px 12px; border-top:1px solid var(--border);">
     <button onclick="restartAdminServer()" style="display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);border:none;background:none;width:100%;text-align:left;transition:background .15s;" onmouseover="this.style.background='var(--primary-bg)'" onmouseout="this.style.background='none'" id="admin-restart-btn">🔄 重启 Agent</button>
@@ -338,6 +339,46 @@ select.form-input { cursor:pointer; }
   </div>
 </section>
 
+<!-- ═══════ Debug ═══════ -->
+<section id="page-debug" class="page">
+  <h2 class="page-title">Debug</h2>
+  <div class="card" style="margin-bottom:16px;border-color:#e0a060">
+    <div class="card-title" style="color:#b86b00">关系健康 · 改分</div>
+    <p style="font-size:13px;color:var(--text-soft);margin:0 0 14px">
+      无鉴权接口。写入新评估快照并重写 <code>relationship_voice</code>。覆盖率 &lt;50% 时不算分档、不改 voice。
+    </p>
+    <div id="debug-rel-meta" style="font-size:12px;color:var(--text-soft);margin-bottom:12px">加载中…</div>
+    <div id="debug-rel-dims"></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:16px 0">
+      <div class="form-group" style="margin:0;min-width:140px">
+        <label class="form-label">ACS（可选 0–1）</label>
+        <input class="form-input" id="debug-acs" type="number" min="0" max="1" step="0.05" placeholder="空=不修正">
+      </div>
+      <div class="form-group" style="margin:0;min-width:140px">
+        <label class="form-label">LLMI（可选 0–1）</label>
+        <input class="form-input" id="debug-llmi" type="number" min="0" max="1" step="0.05" placeholder="空=不推导">
+      </div>
+      <div class="form-group" style="margin:0;flex:1;min-width:180px">
+        <label class="form-label">备注</label>
+        <input class="form-input" id="debug-note" type="text" value="debug" placeholder="debug">
+      </div>
+    </div>
+    <div id="debug-rel-preview" style="padding:12px 14px;border-radius:8px;background:var(--primary-bg);font-size:13px;margin-bottom:14px">
+      调整滑杆后自动预览 RQI
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      <label style="display:flex;align-items:center;gap:6px;font-size:13px;cursor:pointer">
+        <input type="checkbox" id="debug-refresh-voice" checked> 同步刷新 voice
+      </label>
+      <button class="btn btn-ghost btn-sm" onclick="loadDebugRelationship()">↻ 重新加载</button>
+      <button class="btn btn-ghost btn-sm" onclick="debugFillAll(8)">全维 8</button>
+      <button class="btn btn-ghost btn-sm" onclick="debugFillAll(5)">全维 5</button>
+      <button class="btn btn-primary" onclick="saveDebugRelationship()">写入评估</button>
+    </div>
+    <div id="debug-rel-result" style="margin-top:14px;font-size:13px"></div>
+  </div>
+</section>
+
 </main>
 
 <!-- Modal -->
@@ -454,6 +495,7 @@ const loaders = {
   persona: loadMemory,
   memory: loadMemoryBank,
   migrate: loadMigration,
+  debug: loadDebugRelationship,
 };
 
 document.getElementById('sidebar-nav').addEventListener('click', e => {
@@ -3456,6 +3498,171 @@ async function migPollMemJob() {
       if (statusEl) statusEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(data.error || '导入失败')}</span>`;
     }
   } catch(e) { /* network blip — keep polling */ }
+}
+
+// ── Debug · relationship scores ───────────────────────────
+let _debugRelMeta = null;
+let _debugPreviewTimer = null;
+
+async function loadDebugRelationship() {
+  const metaEl = document.getElementById('debug-rel-meta');
+  const dimsEl = document.getElementById('debug-rel-dims');
+  const resultEl = document.getElementById('debug-rel-result');
+  if (!metaEl || !dimsEl) return;
+  metaEl.textContent = '加载中…';
+  if (resultEl) resultEl.innerHTML = '';
+  try {
+    const data = await api('GET', '/debug/relationship');
+    _debugRelMeta = data;
+    const latest = data.latest;
+    metaEl.innerHTML = latest
+      ? `最近评估 #${latest.id} · RQI <b>${Number(latest.rqi).toFixed(2)}</b> · `
+        + `<b>${esc(latest.tier || '未分档')}</b> · 覆盖 ${(Number(latest.coverage) * 100).toFixed(0)}%`
+        + ` · ${esc(latest.created_at || '')}`
+        + ` · 历史 ${data.history_count} 条`
+      : `尚无评估 · owner=${data.user_id} · 历史 0 条`;
+
+    const dims = data.latest?.dimensions || {};
+    const keys = Object.keys(data.weights || {});
+    let html = '';
+    for (const key of keys) {
+      const label = data.labels[key] || key;
+      const weight = Math.round((data.weights[key] || 0) * 100);
+      const has = Object.prototype.hasOwnProperty.call(dims, key);
+      const val = has ? Number(dims[key]) : 7;
+      html += `<div style="display:grid;grid-template-columns:28px 1fr 56px;gap:10px;align-items:center;margin-bottom:10px">`
+        + `<input type="checkbox" class="debug-dim-on" data-key="${esc(key)}" ${has || !latest ? 'checked' : ''}>`
+        + `<div>`
+        + `<div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px">`
+        + `<span>${esc(label)} <span style="color:var(--text-soft)">(${weight}%)</span></span>`
+        + `<span id="debug-val-${esc(key)}">${val.toFixed(1)}</span>`
+        + `</div>`
+        + `<input type="range" class="debug-dim-score" data-key="${esc(key)}" min="0" max="10" step="0.5" value="${val}"`
+        + ` style="width:100%" oninput="onDebugDimInput(this)">`
+        + `</div>`
+        + `<input type="number" class="form-input debug-dim-num" data-key="${esc(key)}" min="0" max="10" step="0.5" value="${val}"`
+        + ` style="padding:4px 6px;font-size:12px" onchange="onDebugDimNum(this)">`
+        + `</div>`;
+    }
+    dimsEl.innerHTML = html;
+    if (latest && latest.acs != null) document.getElementById('debug-acs').value = latest.acs;
+    else document.getElementById('debug-acs').value = '';
+    if (latest && latest.llmi != null) document.getElementById('debug-llmi').value = latest.llmi;
+    else document.getElementById('debug-llmi').value = '';
+    ['debug-acs', 'debug-llmi'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.oninput = scheduleDebugPreview;
+    });
+    document.querySelectorAll('.debug-dim-on').forEach(cb => {
+      cb.onchange = scheduleDebugPreview;
+    });
+    scheduleDebugPreview();
+  } catch (e) {
+    metaEl.textContent = '加载失败: ' + e.message;
+    dimsEl.innerHTML = '';
+  }
+}
+
+function onDebugDimInput(el) {
+  const key = el.dataset.key;
+  const v = Number(el.value);
+  const label = document.getElementById('debug-val-' + key);
+  if (label) label.textContent = v.toFixed(1);
+  const num = document.querySelector(`.debug-dim-num[data-key="${key}"]`);
+  if (num) num.value = v;
+  scheduleDebugPreview();
+}
+
+function onDebugDimNum(el) {
+  let v = Number(el.value);
+  if (Number.isNaN(v)) v = 0;
+  v = Math.max(0, Math.min(10, v));
+  el.value = v;
+  const key = el.dataset.key;
+  const range = document.querySelector(`.debug-dim-score[data-key="${key}"]`);
+  if (range) range.value = v;
+  const label = document.getElementById('debug-val-' + key);
+  if (label) label.textContent = v.toFixed(1);
+  scheduleDebugPreview();
+}
+
+function debugFillAll(score) {
+  document.querySelectorAll('.debug-dim-on').forEach(cb => { cb.checked = true; });
+  document.querySelectorAll('.debug-dim-score').forEach(el => {
+    el.value = score;
+    onDebugDimInput(el);
+  });
+}
+
+function collectDebugScores() {
+  const dimensions = {};
+  document.querySelectorAll('.debug-dim-on').forEach(cb => {
+    if (!cb.checked) return;
+    const key = cb.dataset.key;
+    const range = document.querySelector(`.debug-dim-score[data-key="${key}"]`);
+    dimensions[key] = Number(range?.value ?? 0);
+  });
+  const acsRaw = document.getElementById('debug-acs')?.value;
+  const llmiRaw = document.getElementById('debug-llmi')?.value;
+  const acs = acsRaw === '' || acsRaw == null ? null : Number(acsRaw);
+  const llmi = llmiRaw === '' || llmiRaw == null ? null : Number(llmiRaw);
+  return {
+    dimensions,
+    acs: Number.isFinite(acs) ? acs : null,
+    llmi: Number.isFinite(llmi) ? llmi : null,
+    note: document.getElementById('debug-note')?.value || 'debug',
+    refresh_voice: !!document.getElementById('debug-refresh-voice')?.checked,
+  };
+}
+
+function scheduleDebugPreview() {
+  clearTimeout(_debugPreviewTimer);
+  _debugPreviewTimer = setTimeout(previewDebugRelationship, 200);
+}
+
+async function previewDebugRelationship() {
+  const box = document.getElementById('debug-rel-preview');
+  if (!box) return;
+  const body = collectDebugScores();
+  if (!Object.keys(body.dimensions).length) {
+    box.textContent = '至少勾选一个维度';
+    return;
+  }
+  try {
+    const r = await api('POST', '/debug/relationship/preview', body);
+    const cov = (Number(r.coverage) * 100).toFixed(0);
+    box.innerHTML = `预览 RQI <b>${Number(r.rqi).toFixed(2)}</b> · `
+      + `<b>${esc(r.tier || '未分档')}</b> · 覆盖 ${cov}%`
+      + (r.tier_summary ? ` · ${esc(r.tier_summary)}` : '')
+      + (r.acs_modifier != null ? ` · ACS修正×${r.acs_modifier}` : '');
+  } catch (e) {
+    box.textContent = '预览失败: ' + e.message;
+  }
+}
+
+async function saveDebugRelationship() {
+  const body = collectDebugScores();
+  if (!Object.keys(body.dimensions).length) {
+    showToast('至少勾选一个维度');
+    return;
+  }
+  const resultEl = document.getElementById('debug-rel-result');
+  if (resultEl) resultEl.innerHTML = '<span style="color:var(--text-soft)">写入中…</span>';
+  try {
+    const r = await api('POST', '/debug/relationship', body);
+    if (resultEl) {
+      resultEl.innerHTML = `已写入 #${r.assessment_id} · RQI <b>${Number(r.rqi).toFixed(2)}</b> · `
+        + `<b>${esc(r.tier || '未分档')}</b>`
+        + (r.voice_refreshed ? ' · voice 已刷新' : ' · voice 未改（未分档或未勾选）')
+        + (r.momentum ? ` · ${esc(r.momentum.description || r.momentum.trajectory)}` : '');
+    }
+    showToast('评估已写入');
+    loaded.debug = false;
+    await loadDebugRelationship();
+  } catch (e) {
+    if (resultEl) resultEl.innerHTML = `<span style="color:var(--danger)">❌ ${esc(e.message)}</span>`;
+    showToast('写入失败: ' + e.message);
+  }
 }
 </script>
 </body>

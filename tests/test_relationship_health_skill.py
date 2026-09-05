@@ -349,9 +349,11 @@ async def test_prompt_section_starts_developing_and_rewrites_after_assess():
 
     skill = RelationshipHealthSkill()
     before = skill.prompt_section()
-    assert before.startswith("# 行为准则")
+    assert before.startswith("# 行为底盘")
+    assert "# 行为准则" in before
     assert "# 深层人格" in before
     assert "# 关系互动" in before
+    assert "# 语言硬规则" in before
     assert "路过" in before or "软软地待在旁边" in before
     assert "RQI" not in before
     assert "病娇" not in before
@@ -399,13 +401,14 @@ async def test_other_subject_does_not_rewrite_the_living_voice():
     assert skill.prompt_section() == before
 
 
-def test_core_budget_is_2500():
+def test_core_budget_is_4000():
     from mochi.config import CORE_MAX_TOKENS
     from mochi.token_estimator import estimate_tokens
     from mochi.relationship_voice import starting_voice
 
-    assert CORE_MAX_TOKENS == 2500
-    assert estimate_tokens(starting_voice()) < 2000
+    assert CORE_MAX_TOKENS == 4000
+    # Voice now carries the full behavioral persona; keep under Main budget headroom.
+    assert estimate_tokens(starting_voice()) < 3500
 
 
 @pytest.mark.asyncio

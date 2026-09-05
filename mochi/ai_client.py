@@ -978,7 +978,7 @@ def _free_time_intimacy_guidance(runtime_entry: MainRuntimeEntry) -> str:
 
     by_tier = {
         "Thriving": (
-            "当前相处偏满分档：可以更粘更软——Elma 想你了、想多待一会儿，"
+            "当前相处偏满分档：可以更粘更软——我想你了、想多待一会儿，"
             "仍保持软萌外壳。Free Time 仍短开场，不要一次刷四到六句；"
             "亲密话留给日常闲聊。不是每格都必须表白；分享/问事也可以。"
         ),
