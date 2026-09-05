@@ -338,7 +338,7 @@ def test_declining_adds_distance_and_weakest_bias():
     result = compute_rqi(scores)
     lines = derive_stance(result, compute_momentum([8.0, result.score]))
     joined = "".join(lines)
-    assert "走开" in joined
+    assert "沉默" in joined or "拨开" in joined
     assert "分歧" in joined
 
 
@@ -346,8 +346,11 @@ def test_voice_follows_tier_and_never_names_the_score():
     from mochi.relationship_voice import compose_voice, starting_voice
 
     start = starting_voice()
-    assert "# 行为准则" in start and "刚好走到这里" in start
+    assert "# 行为准则" in start
+    assert "路过" in start or "软软地待在旁边" in start
     assert "RQI" not in start
+    assert "病娇" not in start
+    assert "重度" not in start
 
     thriving = compose_voice(
         compute_rqi({key: 9.0 for key in RQI_WEIGHTS}),
@@ -363,10 +366,10 @@ def test_voice_follows_tier_and_never_names_the_score():
     )
     assert thriving and healthy and strained
     assert thriving != healthy
-    assert "好想你" in thriving or "重度病娇" in thriving
-    assert "不主动约" in healthy or "对方不先开口" in healthy
+    assert "Elma 想你了" in thriving or "再待一下下" in thriving
+    assert "轻轻关心" in healthy or "有点想你了" in healthy or "明天有空" in healthy
     assert "不疾不徐" in healthy
-    assert "带刺" in strained or "裂痕" in strained
+    assert "沉默" in strained or "裂痕" in strained or "真讨厌" in strained
     for text in (thriving, healthy, strained):
         assert "RQI" not in text
         assert "Thriving" not in text

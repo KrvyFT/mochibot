@@ -604,14 +604,9 @@ class TelegramTransport(Transport):
         )
 
     async def _flush_pending_turns(self, items: list[_PendingTurn]) -> None:
+        """Process one quiet-window batch; leave mid-reply arrivals for the next debounce."""
         pending = _merge_pending_turns(items)
         await self._run_topic_grouped_turns(pending)
-        # Messages that arrived while we were unreplied / retrying.
-        while True:
-            backlog = await self._debouncer.drain(pending.channel_id)
-            if not backlog:
-                return
-            await self._run_topic_grouped_turns(_merge_pending_turns(backlog))
 
     async def _run_topic_grouped_turns(self, pending: _PendingTurn) -> None:
         from mochi.topic_groups import TopicGroup, split_user_topics

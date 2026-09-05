@@ -69,33 +69,35 @@ def test_send_photo_hidden_until_draw_ready(monkeypatch):
     assert skill.tool_available("send_photo") is True
 
 
-def test_photo_prompt_keeps_anime_character_in_real_world():
+def test_photo_prompt_keeps_elma_in_real_world():
     text = get_prompt("photo_prompt")
-    assert "动漫画风" in text
+    assert "写实" in text
     assert "不要默认蹲着" in text or "不要无故蹲" in text
     assert "窗边" in text
     assert "电影感" in text
     assert "现实" in text
-    assert "恋恋" in text
+    assert "Elma" in text
+    assert "谢令仪" in text
     assert "横幅" in text and "竖幅" in text
     assert "光线" in text and "构图" in text and "镜头参数" in text
     assert "运镜方式" in text
     assert "3840x2160" in text
-    assert "素颜或淡妆" not in text
+    assert "恋恋" not in text
+    assert "动漫画风" not in text
 
 
 def test_parse_drawn_prompt_picks_1080p_16x9():
     from mochi.skills.photo.handler import parse_drawn_prompt, photo_size_for
 
-    prompt, orientation = parse_drawn_prompt("竖幅\n恋恋在真实街边散步。")
+    prompt, orientation = parse_drawn_prompt("竖幅\nElma 在真实街边散步。")
     assert orientation == "portrait"
-    assert prompt.startswith("恋恋")
+    assert prompt.startswith("Elma")
     assert photo_size_for(orientation) == "1080*1920"
     prompt, orientation = parse_drawn_prompt("画面方向：横幅\n光线：侧光")
     assert orientation == "landscape"
     assert prompt == "光线：侧光"
     assert photo_size_for(orientation) == "1920*1080"
-    _, orientation = parse_drawn_prompt("恋恋坐在真实咖啡馆里。")
+    _, orientation = parse_drawn_prompt("Elma 坐在真实咖啡馆里。")
     assert orientation == "landscape"
 
 
@@ -198,19 +200,20 @@ def test_photo_skill_generates_without_refs(tmp_path, monkeypatch):
     monkeypatch.setattr(photo_handler, "GENERATED_DIR", tmp_path / "generated_photos")
     monkeypatch.setattr(photo_handler, "PHOTO_REFS_DIR", tmp_path / "photo_refs")
     monkeypatch.setattr(photo_handler, "pick_photo_refs", lambda subject: [])
-    monkeypatch.setattr(core_store, "read_core", lambda: "古明地恋，动漫角色")
+    monkeypatch.setattr(core_store, "read_core", lambda: "Elma，谢令仪")
 
     class _Main:
         def chat(self, messages, max_tokens=1100):
             system = next(m["content"] for m in messages if m["role"] == "system")
-            assert "动漫画风" in system
+            assert "写实" in system
+            assert "Elma" in system
             return SimpleNamespace(
-                content="动漫角色站在真实咖啡馆窗边搅动咖啡，木质装修，侧光。",
+                content="Elma（谢令仪）站在真实咖啡馆窗边搅动咖啡，木质装修，侧光。",
             )
 
     class _Draw:
         def generate_image(self, prompt, **kwargs):
-            assert "动漫角色" in prompt
+            assert "Elma" in prompt
             assert "咖啡馆" in prompt
             assert kwargs.get("size") == "1920*1080"
             return png

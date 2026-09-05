@@ -61,11 +61,12 @@ async def test_later_message_resets_quiet_window():
 
 
 @pytest.mark.asyncio
-async def test_messages_during_flush_start_next_batch():
+async def test_messages_during_flush_wait_another_quiet_window():
+    """After on_flush returns, mid-flush arrivals still need a full quiet window."""
     flushed: list[list[str]] = []
     started = asyncio.Event()
     release = asyncio.Event()
-    debouncer = MessageDebouncer(delay_s=0.04)
+    debouncer = MessageDebouncer(delay_s=0.08)
 
     async def on_flush(items: list[str]) -> None:
         flushed.append(list(items))
@@ -78,8 +79,72 @@ async def test_messages_during_flush_start_next_batch():
     await debouncer.enqueue(1, "b", text="b", on_flush=on_flush)
     await debouncer.enqueue(1, "c", text="c", on_flush=on_flush)
     release.set()
+    await asyncio.sleep(0.04)
+    assert flushed == [["a"]]
     await asyncio.sleep(0.08)
     assert flushed == [["a"], ["b", "c"]]
+
+
+@pytest.mark.asyncio
+async def test_telegram_flush_does_not_drain_mid_reply_backlog(monkeypatch):
+    """Replies in flight must not steal buffered messages and skip debounce."""
+    import mochi.transport.telegram as tg
+
+    monkeypatch.setattr(tg, "TG_AGGREGATE_ENABLED", True)
+    monkeypatch.setattr(tg, "TG_MESSAGE_DEBOUNCE_S", 0.08)
+    monkeypatch.setattr(
+        tg.TelegramTransport, "_dispatch_state_signals", staticmethod(lambda: None),
+    )
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    runs: list[str] = []
+
+    async def slow_grouped(self, pending):
+        runs.append(pending.text)
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(
+        tg.TelegramTransport, "_run_topic_grouped_turns", slow_grouped,
+    )
+
+    async def unused_callback(_msg):
+        raise AssertionError("Main must not run before debounce flush")
+
+    tg.set_message_handler(unused_callback)
+    transport = tg.TelegramTransport()
+    try:
+        class _Message:
+            photo = None
+            caption = None
+
+            def __init__(self, text: str, message_id: int):
+                self.text = text
+                self.message_id = message_id
+
+            async def reply_text(self, *_args, **_kwargs):
+                return None
+
+        class _Update:
+            def __init__(self, text: str, message_id: int):
+                self.message = _Message(text, message_id)
+                self.effective_user = type("U", (), {"id": 1})()
+                self.effective_chat = type("C", (), {"id": 42})()
+
+        await transport._handle_message(_Update("first", 1), None)
+        await asyncio.wait_for(started.wait(), timeout=1)
+        assert runs == ["first"]
+
+        await transport._handle_message(_Update("second", 2), None)
+        release.set()
+        await asyncio.sleep(0.04)
+        assert runs == ["first"]
+        await asyncio.sleep(0.1)
+        assert runs == ["first", "second"]
+    finally:
+        tg.set_message_handler(None)
+        await transport.stop()
 
 
 @pytest.mark.asyncio

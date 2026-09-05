@@ -31,6 +31,8 @@ from mochi.memory_contract import (
     normalize_evidence_message_ids,
     validate_memory_content,
     validate_memory_importance,
+    validate_memory_kind,
+    validate_memory_tags,
 )
 from mochi.model_pool import get_pool
 from mochi.prompt_loader import get_prompt
@@ -151,7 +153,7 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
     batch_user_ids = {
         message["id"] for message in batch if message["role"] == "user"
     }
-    required = {"content", "importance", "evidence_message_ids"}
+    required = {"kind", "content", "importance", "tags", "evidence_message_ids"}
     validated: list[dict] = []
     for index, candidate in enumerate(parsed):
         if not isinstance(candidate, dict) or set(candidate) != required:
@@ -160,8 +162,10 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 f"{', '.join(sorted(required))}"
             )
         try:
+            kind = validate_memory_kind(candidate["kind"])
             content = validate_memory_content(candidate["content"])
             importance = validate_memory_importance(candidate["importance"])
+            tags = list(validate_memory_tags(candidate["tags"]))
             evidence = normalize_evidence_message_ids(
                 candidate["evidence_message_ids"]
             )
@@ -178,8 +182,10 @@ def validate_extraction_response(raw: str, batch: list[dict]) -> list[dict]:
                 "user messages from this batch"
             )
         validated.append({
+            "kind": kind,
             "content": content,
             "importance": importance,
+            "tags": tags,
             "evidence_message_ids": list(evidence),
         })
     return validated
@@ -285,8 +291,10 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
     candidates = validate_extraction_response(response.content, batch)
     candidates = _filter_batch_duplicates(candidates)
     candidates = _filter_core_duplicates(candidates, core)
-    candidates = _attach_embeddings(candidates)
-    inserted = commit_memory_extraction_batch(
+    core_candidates = [c for c in candidates if c["kind"] == "core"]
+    temp_candidates = [c for c in candidates if c["kind"] == "temp"]
+    core_candidates = _attach_embeddings(core_candidates)
+    result = commit_memory_extraction_batch(
         user_id,
         expected_cursor=cursor,
         through_message_id=batch[-1]["id"],
@@ -295,14 +303,20 @@ def _run_batch(user_id: int, cursor: int, batch: list[dict]) -> list[int]:
             for message in batch
             if message["role"] == "user"
         ],
-        memories=candidates,
+        memories=core_candidates,
+        temp_memories=temp_candidates,
     )
+    inserted = result["core_ids"]
     log.info(
-        "Memory extraction processed messages %d-%d: %d candidates, %d inserted",
+        "Memory extraction processed messages %d-%d: %d candidates "
+        "(%d core / %d temp), inserted %d core / %d temp",
         batch[0]["id"],
         batch[-1]["id"],
         len(candidates),
-        len(inserted),
+        len(core_candidates),
+        len(temp_candidates),
+        len(result["core_ids"]),
+        len(result["temp_ids"]),
     )
     return inserted
 

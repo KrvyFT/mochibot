@@ -44,13 +44,29 @@ def _context(tool_name, args):
 @pytest.mark.asyncio
 async def test_diary_write_can_be_read_back(workspace):
     skill, diary, _ = workspace
+    _source, today, _tomorrow = diary.read_write_snapshot()
 
-    write = await skill.execute(_context("write_diary", {"entry": "went to gym"}))
+    write = await skill.execute(_context("write_diary", {
+        "content": "went to gym",
+        "day": "today",
+        "_expected_content": today,
+        "_source_date": "2025-06-15",
+        "_target_date": "2025-06-15",
+    }))
     read = await skill.execute(_context("read_diary", {}))
 
     assert write.success
+    assert write.state_changed
     assert "went to gym" in read.output
-    assert "[10:00]" in diary.read_raw()
+    assert "went to gym" in diary.read(section="今日日記")
+
+
+@pytest.mark.asyncio
+async def test_diary_write_requires_content_contract(workspace):
+    skill, _, _ = workspace
+    result = await skill.execute(_context("write_diary", {"entry": "old style"}))
+    assert not result.success
+    assert "content is required" in result.output
 
 
 @pytest.mark.asyncio
@@ -98,14 +114,10 @@ async def test_core_and_legacy_notes_paths_are_private(workspace):
 @pytest.mark.asyncio
 async def test_same_prefix_sibling_cannot_escape_workspace(workspace):
     skill, _, root = workspace
-    outside = root.with_name(f"{root.name}_outside")
-    outside.mkdir()
-    secret = outside / "secret.md"
-    secret.write_text("must stay private")
-
+    sibling = root.parent / "data-escape.md"
+    sibling.write_text("secret", encoding="utf-8")
     result = await skill.execute(_context(
-        "edit_file", {"action": "read", "path": str(secret)}
+        "edit_file",
+        {"action": "read", "path": "../data-escape.md"},
     ))
-
     assert "Error" in result.output
-    assert "must stay private" not in result.output

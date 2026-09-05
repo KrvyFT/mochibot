@@ -23,6 +23,7 @@ async def run_maintenance(user_id: int = 0) -> dict:
         cleanup_heartbeat_log,
         cleanup_old_trash,
         cleanup_proactive_log,
+        clear_temp_memories_before,
     )
     from mochi.diary import diary
     from mochi.knowledge_graph import cleanup_expired_triples
@@ -30,9 +31,11 @@ async def run_maintenance(user_id: int = 0) -> dict:
     import mochi.skills as skill_registry
     from mochi.adaptive_tool_load import recalculate
 
+    today = logical_today()
     results: dict = {
-        "diary": diary.rollover(logical_today()),
+        "diary": diary.rollover(today),
     }
+    results["temp_memory_purge"] = clear_temp_memories_before(today, uid)
     core_stats = get_core_stats()
     estimated_tokens = core_stats["tokens"]
     results["core_audit"] = (

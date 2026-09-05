@@ -27,11 +27,6 @@ multi_turn: true
 |-----------|------|----------|-------------|
 | date | string | no | YYYY-MM-DD 格式。不填 = 今天 |
 
-### list_files (routed)
-列出 data/ 内可读写的 Markdown 文件；结果有系统数量与目录深度边界。
-
-无需参数。
-
 ### edit_file (routed)
 按用户需要读取或覆盖 Markdown 文件。
 

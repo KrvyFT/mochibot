@@ -562,6 +562,34 @@ def parse_core_refresh_hours(raw) -> tuple[int, ...]:
     return tuple(hours or CORE_REFRESH_DEFAULT_HOURS)
 
 
+def core_refresh_hour_from_period_key(period_key: str) -> int | None:
+    """Extract the scheduled hour from ``YYYY-MM-DD-HH`` keys; force keys → None."""
+    key = (period_key or "").strip()
+    if not key or key.startswith("force-"):
+        return None
+    tail = key.rsplit("-", 1)[-1]
+    if len(tail) != 2 or not tail.isdigit():
+        return None
+    hour = int(tail)
+    return hour if 0 <= hour <= 23 else None
+
+
+def is_last_core_refresh_of_day(
+    period_key: str,
+    hours: tuple[int, ...] | None = None,
+) -> bool:
+    """True when *period_key* is the latest configured refresh hour that day."""
+    hour = core_refresh_hour_from_period_key(period_key)
+    if hour is None:
+        return False
+    slots = hours if hours is not None else parse_core_refresh_hours(
+        _effective("CORE_REFRESH_HOURS"),
+    )
+    if not slots:
+        return False
+    return hour == max(slots)
+
+
 def minutes_into_logical_day(hour: int, minute: int, maintenance_hour: int) -> int:
     """Minutes since MAINTENANCE_HOUR on a 24h clock that wraps past midnight."""
     hour %= 24

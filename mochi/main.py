@@ -243,14 +243,32 @@ async def main():
             logical_date: str,
             period_key: str,
         ) -> ChatResult:
+            from mochi.heartbeat import is_last_core_refresh_of_day
+
+            last_of_day = is_last_core_refresh_of_day(period_key)
             entry = MainRuntimeEntry.core_refresh(
                 logical_date=logical_date,
                 period_key=period_key,
                 user_id=user_id,
                 channel_id=user_id,
                 transport=_t.name,
+                is_last_refresh_of_day=last_of_day,
             )
-            return await chat(runtime_entry=entry)
+            result = await chat(runtime_entry=entry)
+            if (
+                last_of_day
+                and result.disposition == "deliver"
+                and (
+                    result.text
+                    or result.stickers
+                    or getattr(result, "images", None)
+                    or getattr(result, "voices", None)
+                )
+            ):
+                delivered = await _t.send_chat_result(user_id, result)
+                if delivered:
+                    result.confirm_delivered()
+            return result
 
         async def prepare_self_reminder(entry: MainRuntimeEntry) -> ChatResult:
             return await chat(runtime_entry=entry)

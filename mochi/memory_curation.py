@@ -472,7 +472,8 @@ def curate_memory_items(
                     user_id,
                     operation["content"],
                     operation["importance"],
-                    source="weekly_main",
+                    source="",
+                    tags=operation.get("tags"),
                     evidence_message_ids=evidence,
                     conn=conn,
                 )

@@ -26,11 +26,12 @@ def test_agent_replaces_complete_core_with_internal_conflict_check():
 
 
 PINNED = (
-    "我是恋恋。\n"
-    "礼貌、话短。\n"
+    "我是 Elma。\n"
+    "软软的、话短。\n"
     "以上设置不要删除覆写"
 )
 LIVE = "### 他是谁\n- 称呼：心宿二"
+
 
 
 def test_main_keeps_pinned_identity_when_rewrite_drops_it():
@@ -45,7 +46,7 @@ def test_main_keeps_pinned_identity_when_rewrite_drops_it():
     written = core_store.read_core()
     assert written.startswith(PINNED)
     assert "认识：2026-09-01" in written
-    assert "我是恋恋。" in written
+    assert "我是 Elma。" in written
 
 
 def test_main_ignores_rewritten_text_above_the_pin_marker():
@@ -62,7 +63,7 @@ def test_main_ignores_rewritten_text_above_the_pin_marker():
     )
 
     written = core_store.read_core()
-    assert "我是恋恋。" in written
+    assert "我是 Elma。" in written
     assert "我是另一张脸。" not in written
     assert "- 称呼：你" in written
 
@@ -81,10 +82,59 @@ def test_weekly_keeps_pinned_identity():
         user_id=1,
         period_key="2026-W36",
         expected_content=expected,
-        content="### 他是谁\n- 称呼：心宿二\n- 近况：复学",
+        content="### 他是谁\n- 称呼：心宿二\n- 认识：已复学",
     )
 
     assert outcome == "committed"
     written = core_store.read_core()
     assert written.startswith(PINNED)
-    assert "近况：复学" in written
+    assert "认识：已复学" in written
+
+
+def test_living_core_rejects_daily_chronicle_heading():
+    core_store.replace_core(f"{PINNED}\n\n{LIVE}")
+    expected = core_store.read_core()
+    with pytest.raises(core_store.CoreHygieneError) as exc:
+        core_store.replace_core_exact(
+            expected_content=expected,
+            content=(
+                f"{PINNED}\n\n"
+                "# 今日近况\n"
+                "今天吃了晚饭。"
+            ),
+        )
+    assert "diary_chronicle_heading" in str(exc.value)
+    assert core_store.read_core() == expected
+
+
+def test_living_core_rejects_timed_multi_day_chronicle():
+    core_store.replace_core(f"{PINNED}\n\n{LIVE}")
+    expected = core_store.read_core()
+    with pytest.raises(core_store.CoreHygieneError) as exc:
+        core_store.replace_core_exact(
+            expected_content=expected,
+            content=(
+                f"{PINNED}\n\n"
+                "### 他是谁\n"
+                "- 称呼：心宿二\n\n"
+                "2026-09-04 夜间 22:06 修好了 free time。\n"
+                "2026-09-05 上午 09:06 他睡醒。"
+            ),
+        )
+    assert "diary_chronicle_timeline" in str(exc.value)
+    assert core_store.read_core() == expected
+
+
+def test_living_core_allows_single_dated_durable_fact():
+    core_store.replace_core(f"{PINNED}\n\n{LIVE}")
+    expected = core_store.read_core()
+    core_store.replace_core_exact(
+        expected_content=expected,
+        content=(
+            f"{PINNED}\n\n"
+            "### 他是谁\n"
+            "- 称呼：心宿二\n"
+            "2026-09-04 凌晨，他第一次说想要一个锚点。"
+        ),
+    )
+    assert "想要一个锚点" in core_store.read_core()

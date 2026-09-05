@@ -163,7 +163,7 @@ CONV_OVERFLOW_MAX_MESSAGES: int = max(
 CONV_OVERFLOW_MAX_TOKENS: int = max(
     0, _env_int("CONV_OVERFLOW_MAX_TOKENS", 2000),
 )
-CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 2500)
+CORE_MAX_TOKENS = _env_int("CORE_MAX_TOKENS", 4000)
 TRASH_PURGE_DAYS = _env_int("TRASH_PURGE_DAYS", 30)
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -422,7 +422,7 @@ TG_BUBBLE_MIN_CHARS = _env_int("TG_BUBBLE_MIN_CHARS", 8)
 # stay immediate. False restores one-turn-per-message.
 TG_AGGREGATE_ENABLED = _env_bool("TG_AGGREGATE_ENABLED", True)
 # Wait after the last owner message before starting a turn. Lower = snappier.
-TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 4.0)
+TG_MESSAGE_DEBOUNCE_S = _env_float("TG_MESSAGE_DEBOUNCE_S", 15.0)
 TG_MESSAGE_DEBOUNCE_MAX_ITEMS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_ITEMS", 20)
 TG_MESSAGE_DEBOUNCE_MAX_CHARS = _env_int("TG_MESSAGE_DEBOUNCE_MAX_CHARS", 8000)
 # Outbound Bot API: wait_for each attempt, then retry forever after 3 quick tries.
